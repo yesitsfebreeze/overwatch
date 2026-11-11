@@ -3,6 +3,10 @@ import { memIo } from "./io.ts"
 import { add, incidentReport, lessons, load, note, REPEAT_AT, tallyLine, totals, WINDOW_DAYS, type Incidents } from "./incidents.ts"
 import { learned } from "./surface.ts"
 
+// The fs engine resolves a path before a hook sees it: win32 delivers 'C:\state\x' for '/state/x'.
+// Normalize back so the POSIX keys the mocks read match on every host (as surface.test.ts does).
+const norm = (p: unknown) => String(p).replace(/\\/g, "/").replace(/^[A-Za-z]:/, "")
+
 const NONE: Incidents = { days: {}, recent: [] }
 const NOW = new Date("2026-11-11T12:00:00Z")
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86_400_000)
@@ -55,9 +59,9 @@ test("session: a refused edit, an invalid call and a refused stop are each recor
   const files: Record<string, string> = {}
   on("session.cwd", async () => ({ value: "/repo" }) as any)
   on("env.get", async (_: any, e: any) => ({ value: (e?.name ?? e) === "XDG_STATE_HOME" ? "/state" : undefined }) as any)
-  on("fs.read", async (_: any, e: any) => (String(e?.path ?? e) in files ? { value: files[String(e?.path ?? e)] } : { deny: "ENOENT" }) as any)
-  on("fs.write", async (_: any, e: any) => ((files[e.path] = e.text), { value: undefined }) as any)
-  on("fs.exists", async (_: any, e: any) => ({ value: String(e?.path ?? e) in files }) as any)
+  on("fs.read", async (_: any, e: any) => (norm(e?.path ?? e) in files ? { value: files[norm(e?.path ?? e)] } : { deny: "ENOENT" }) as any)
+  on("fs.write", async (_: any, e: any) => ((files[norm(e.path)] = e.text), { value: undefined }) as any)
+  on("fs.exists", async (_: any, e: any) => ({ value: norm(e?.path ?? e) in files }) as any)
   on("process.run", async () => ({ value: { exitCode: 0, stdout: "", stderr: "" } }) as any)
   on("tool.list", async () => ({ value: [] }) as any)
   on("prompt.compose", async () => ({ sections: [] }) as any)
