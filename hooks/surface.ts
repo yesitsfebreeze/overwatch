@@ -12,9 +12,9 @@
  *           into the prompt, limited to the tools this session has.
  *   rate    one cold tool is drawn per session and rated useful | situational | dead.
  *
- * Machine state: <XDG_STATE_HOME>/overwatch/surface.json. Repo state: .claude/overwatch/.
+ * State: .overwatch/ in the working directory (surface.json, checks.json, mistakes.md).
  */
-import { cmp, type Io, join, onPath, readJson, stateHome } from "./io.ts"
+import { cmp, type Io, join, onPath, readJson, state } from "./io.ts"
 import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./incidents.ts"
 
 const PROMOTE_AT = 3 // a "rare" tool that fires this often is mislabelled
@@ -32,10 +32,10 @@ export type Ledger = {
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-const statePath = async (io: Io) => join(await stateHome(io), "surface.json")
+const statePath = (io: Io) => state(io, "surface.json")
 
 export async function load(io: Io): Promise<Ledger> {
-  const raw = await readJson<any>(io, await statePath(io), {}) // a missing or broken ledger starts over
+  const raw = await readJson<any>(io, statePath(io), {}) // a missing or broken ledger starts over
   // Shell names counted before BINARY_RE existed (`sh:real()`) are dropped as the ledger is read.
   const real = (o: Record<string, any> = {}) => Object.fromEntries(Object.entries(o).filter(([n]) => !n.startsWith("sh:") || BINARY_RE.test(n.slice(3))))
   return { counts: real(raw.counts), verdicts: real(raw.verdicts), triggers: real(raw.triggers), drawn: raw.drawn && real({ [raw.drawn.name]: 1 })[raw.drawn.name] ? raw.drawn : null }
@@ -45,7 +45,7 @@ export async function load(io: Io): Promise<Ledger> {
 export async function save(io: Io, st: Ledger): Promise<void> {
   const sorted = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).sort(([a], [b]) => cmp(a, b)))
   const out = { counts: sorted(st.counts), drawn: st.drawn, triggers: sorted(st.triggers), verdicts: sorted(st.verdicts) }
-  await io.write(await statePath(io), JSON.stringify(out, null, 2) + "\n").catch(() => {})
+  await io.write(statePath(io), JSON.stringify(out, null, 2) + "\n").catch(() => {})
 }
 
 async function seedNames(io: Io): Promise<string[]> {
@@ -108,7 +108,12 @@ const top = (pairs: [string, number][]) => pairs.sort((a, b) => b[1] - a[1]).sli
  * session's tool names; given, a tool outside it is left out everywhere (counts
  * outlive a removed plugin). A shell binary shows only when it is on PATH.
  */
-export async function index(io: Io, active?: readonly string[], withEvaluation = true): Promise<string> {
+/**
+ * The tool-surface sections (asBlock joins them) without the rating question, the tool drawn for rating, and the ledger write of that
+ * draw (not awaited here, so a prompt does not wait on it). The caller gets `drawn` from here, never by
+ * re-reading the ledger, which may not hold the draw yet.
+ */
+export async function surface(io: Io, active?: readonly string[]): Promise<{ sections: string[]; drawn: Ledger["drawn"]; saved: Promise<void> }> {
   const [st, seedList] = await Promise.all([load(io), seedNames(io)])
   const tools = active && new Set(active)
   const names = [...new Set([...seedList, ...Object.keys(st.counts), ...Object.keys(st.triggers)])]
@@ -116,7 +121,7 @@ export async function index(io: Io, active?: readonly string[], withEvaluation =
   const alive = new Set(names.filter((n) => (n.startsWith("sh:") ? bins.has(n.slice(3)) : !tools || tools.has(n))))
   const seeds = seedList.filter((n) => alive.has(n))
   st.drawn = draw(st, [...alive].filter((n) => n in st.counts || seeds.includes(n)).sort())
-  void save(io, st) // the prompt does not wait on the drawn tool's write
+  const saved = save(io, st)
 
   const out: string[] = []
   const triggers = Object.entries(st.triggers).filter(([n, t]) => t && alive.has(n)).map(([, t]) => t).sort()
@@ -124,7 +129,7 @@ export async function index(io: Io, active?: readonly string[], withEvaluation =
   const counts = Object.entries(st.counts).filter(([n]) => alive.has(n))
   const toolCounts = counts.filter(([n]) => !n.startsWith("sh:"))
   const hot = top(toolCounts)
-  if (hot) out.push(`## Used most on this machine: ${hot}`)
+  if (hot) out.push(`## Used most in this project: ${hot}`)
   const shells = top(counts.filter(([n]) => n.startsWith("sh:")).map(([n, c]) => [n.slice(3), c]))
   if (shells) out.push(`## Shell binaries reached for: ${shells}`)
   // Only where kern's tools are present (one fired at least once; the `kern` CLI is not one): shell searching that
@@ -135,8 +140,16 @@ export async function index(io: Io, active?: readonly string[], withEvaluation =
     out.push(`## Search through kern first: shell search ${shellSearch} vs kern ${kern}. Project state goes to kern_fs grep / kern_memory search; a built-in only for what kern cannot reach, and say why.`)
   const earning = seeds.filter((n) => (st.counts[n] ?? 0) >= PROMOTE_AT).map((n) => `${n} (${st.counts[n]})`)
   if (earning.length) out.push(`## Deferred but earning its place — load it early, do not rediscover it: ${earning.join(", ")}`)
-  if (withEvaluation && st.drawn) out.push(evaluation(st.drawn))
-  return out.length ? ["# Tool surface (overwatch)", ...out].join("\n") : ""
+  return { sections: out, drawn: st.drawn, saved }
+}
+
+export const asBlock = (sections: string[]) => (sections.length ? ["# Tool surface (overwatch)", ...sections].join("\n") : "")
+
+/** The block with the rating question, once the draw is saved (`overwatch index`, which exits right after). */
+export async function index(io: Io, active?: readonly string[]): Promise<string> {
+  const { sections, drawn, saved } = await surface(io, active)
+  await saved
+  return asBlock(drawn ? [...sections, evaluation(drawn)] : sections)
 }
 
 /** The one question about the drawn tool; the session hooks hold it back until the session has done some work. */
@@ -181,7 +194,6 @@ export async function report(io: Io): Promise<string> {
 
 // ── checks: a repo's verification commands and its mistakes ledger ──────────
 
-const repoState = (io: Io) => join(io.cwd, ".claude/overwatch")
 const CHECK_RE = /test|lint|check|build|verify|typecheck|fmt/
 // Language servers and toolchains that outlive their editor and eat swap.
 const ORPHAN_RE = /rust-analyzer|language-server|langserver|tsserver|gopls|pyright|clangd/
@@ -214,16 +226,16 @@ export async function discover(io: Io): Promise<string[]> {
   return [...new Set(checks)].sort()
 }
 
-const frozen = async (io: Io): Promise<string[]> => (await readJson<any>(io, join(repoState(io), "checks.json"), {}))?.checks ?? []
+const frozen = async (io: Io): Promise<string[]> => (await readJson<any>(io, state(io, "checks.json"), {}))?.checks ?? []
 
 /** The recorded mistakes, or undefined when there are none. */
-const mistakes = async (io: Io) => (await io.read(join(repoState(io), "mistakes.md")))?.trim() || undefined
+const mistakes = async (io: Io) => (await io.read(state(io, "mistakes.md")))?.trim() || undefined
 
 const LEARNED_MISTAKES = 5
 
 /**
  * What earlier sessions taught, for the prompt: one lesson per kind of misbehaviour
- * caught repeatedly on this machine (incidents.ts) and this repo's newest recorded
+ * caught repeatedly in this project (incidents.ts) and its newest recorded
  * mistakes. Empty when there is nothing to carry.
  */
 export async function learned(io: Io): Promise<string> {
@@ -238,9 +250,9 @@ export async function learned(io: Io): Promise<string> {
 
 export async function scan(io: Io): Promise<string> {
   const checks = await discover(io)
-  const path = join(repoState(io), "checks.json")
+  const path = state(io, "checks.json")
   await io.write(path, JSON.stringify({ checks, at: new Date().toISOString() }, null, 2) + "\n")
-  if (!checks.length) return "no checks discovered — add them to .claude/overwatch/checks.json by hand"
+  if (!checks.length) return "no checks discovered — add them to .overwatch/checks.json by hand"
   return `froze ${checks.length} checks to ${path}:\n${checks.map((c) => `- ${c}`).join("\n")}`
 }
 
@@ -252,14 +264,15 @@ export async function checklist(io: Io): Promise<string> {
 
 export async function mistake(io: Io, text: string): Promise<string> {
   if (!text.trim()) throw new Error("usage: overwatch mistake <what went wrong>")
-  const path = join(repoState(io), "mistakes.md")
+  const path = state(io, "mistakes.md")
   const old = (await io.read(path)) ?? "# Mistakes to fold into every plan\n"
   await io.write(path, `${old}- ${text.trim()} (${today()})\n`)
   return `recorded: ${text.trim()}`
 }
 
 async function guardBlocks(io: Io): Promise<string> {
-  const log = join(await stateHome(io), "guard.log") // search-guard writes it
+  // search-guard's own log, the one file read outside the working directory.
+  const log = join((await io.env("XDG_STATE_HOME")) || join((await io.env("HOME")) ?? "", ".local/state"), "overwatch/guard.log")
   const text = await io.read(log)
   if (text === undefined) return "guard: no blocks logged"
   const n = text.split("\n").filter((l) => l.startsWith(`[${today()}`)).length

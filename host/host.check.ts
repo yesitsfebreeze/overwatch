@@ -2,7 +2,7 @@
 // verdict with a real shell check, and the MCP server over stdio. Run: bun test ./host/host.check.ts
 // (named *.check.ts so `claude plugin test .` does not load it into the hooks engine).
 import { expect, test } from "bun:test"
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fromNode } from "../bin/node-io.ts"
@@ -11,7 +11,6 @@ import { hook } from "./hooks.ts"
 
 const sandbox = () => {
   const dir = mkdtempSync(join(tmpdir(), "ow-"))
-  process.env.XDG_STATE_HOME = join(dir, "state")
   process.env.OVERWATCH_PROJECT = dir
   return { dir, io: fromNode(dir) }
 }
@@ -65,4 +64,17 @@ test("mcp: initialize, tools/list, tools/call over stdio", async () => {
   expect(out.map((o) => o.id)).toEqual([1, 2, 3])
   expect(out[1].result.tools.map((t: any) => t.name)).toContain("guard_add")
   expect(out[2].result.content[0].text).toContain('Added #1 "a"')
+})
+
+test("state: everything lands in .overwatch/ in the project; a git repo is asked to ignore it until it does", async () => {
+  const { dir, io } = sandbox()
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).not.toContain(".gitignore") // no repo: nothing to ignore
+  Bun.spawnSync(["git", "init", "-q", dir])
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).toContain("printf '\\n.overwatch/\\n' >> .gitignore")
+  await callTool(io, "task_add", { titles: ["a task"] })
+  await callTool(io, "mistake", { text: "a lesson" })
+  await onEvent(io, { kind: "pre_tool", cwd: dir, tool: "Edit" }) // no guards yet: refused and recorded
+  for (const f of ["plan.json", "mistakes.md", "incidents.json"]) expect(existsSync(join(dir, ".overwatch", f))).toBe(true)
+  writeFileSync(join(dir, ".gitignore"), "\n.overwatch/\n")
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).not.toContain(".gitignore")
 })

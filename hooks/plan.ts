@@ -26,12 +26,25 @@ export const LARGE_CHANGE_LINES = 50
 /** A change under this many lines is small: no review pass is asked for. */
 export const SMALL_CHANGE_LINES = 10
 
-const lineCount = (s: unknown) => (typeof s === "string" && s ? s.replace(/\n$/, "").split("\n").length : 0)
-/** Lines one edit-tool call touches: the larger of the replaced and the new text, summed over `edits` and git-fs `items`. */
+/** Lines in `s`, a trailing newline not starting one; counted without copying, as a whole-file write passes through here. */
+const lineCount = (s: unknown) => {
+  if (typeof s !== "string" || !s) return 0
+  let n = 1
+  for (let i = s.indexOf("\n"); i !== -1 && i < s.length - 1; i = s.indexOf("\n", i + 1)) n++
+  return n
+}
+/**
+ * Lines one edit-tool call touches: the larger of the replaced and the new text, summed over `edits` and git-fs `items`.
+ * A call whose size the input cannot show (a whole-file write, whose replaced text is unseen; a replace_all) counts as
+ * at least SMALL_CHANGE_LINES, so it never slips under the small-change exemption.
+ */
 export const changedLines = (i: any): number => {
   const parts = [i?.edits, i?.items].filter(Array.isArray).flat()
   if (parts.length) return parts.reduce((n: number, x: unknown) => n + changedLines(x), 0)
-  return Math.max(lineCount(i?.old_string ?? i?.old ?? i?.oldText), lineCount(i?.new_string ?? i?.new ?? i?.newText ?? i?.content ?? i?.new_source))
+  const old = i?.old_string ?? i?.old ?? i?.oldText
+  const whole = i?.content ?? i?.text
+  const n = Math.max(lineCount(old), lineCount(i?.new_string ?? i?.new ?? i?.newText ?? whole ?? i?.new_source))
+  return i?.replace_all === true || (old === undefined && whole !== undefined) ? Math.max(n, SMALL_CHANGE_LINES) : n
 }
 
 /** One gauge on followline's line, as `$.followline.put` takes it (followline's own type, kept local: no dependency). */
@@ -128,7 +141,7 @@ export const overall = (s: Plan): number =>
 
 /**
  * The plan as one followline gauge: overall progress, red while a guard fails,
- * green once everything holds. Followline owns the drawing; a `slots` setting that still names `tasksitter` draws it too (followline.ts).
+ * green once everything holds. Followline owns the drawing.
  */
 export function slot(s: Plan): Slot {
   if (!s.tasks.length && !s.guards.length) return { id: "plan", label: "tasks", pct: 0, detail: "no plan" }
@@ -150,7 +163,7 @@ export const CONTRACT = `Every stop is refused until all tasks are done, every g
 /** What the model reads beside every prompt: the full rules until `told`, then one line. */
 export function reminder(s: Plan, told = false, contract = CONTRACT): string {
   const empty = !s.tasks.length && !s.guards.length
-  if (told) return empty ? `[overwatch] No plan. Before changing files: ${tool("task_add")} + ${tool("guard_add")} (rules given earlier this session).` : `[overwatch] ${summary(s)}.`
+  if (told) return `[overwatch] ${empty ? `No plan. Before changing files: ${tool("task_add")} + ${tool("guard_add")}` : `${summary(s)}. Add tasks and guards for new work`} (rules given earlier this session).`
   if (empty)
     return `[overwatch] No plan yet. If this request involves creating, changing or fixing anything, you MUST first, BEFORE starting the work, (1) break it into tasks with ${tool("task_add")} {titles:[…]} and (2) add one guard per thing the work must deliver with ${tool("guard_add")} {question:"<one yes/no question about the finished work>", check:"<shell command, exit 0 = upheld>"} (leave out check only when no command decides it; files:[…] lets the judge read them). File edits are refused until both exist. Report progress with task_progress {task_id, progress} and finish with task_complete {task_id} as you go. For a question or chat that changes nothing, skip all of this. ${contract}`
   return `[overwatch] ${summary(s)}. Keep this current with the plan tools (task_add, task_progress, task_start, task_complete, task_replace, task_remove, guard_add, guard_check, plan_show); add tasks and guards for new work. ${contract}`

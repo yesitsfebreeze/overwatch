@@ -1,6 +1,6 @@
 import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
-import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
+import { GUARD_MET, JUDGE_URL, checkScript, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
 import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 
@@ -25,7 +25,7 @@ async function show($: any, s: Plan): Promise<void> {
 /** Runs one guard's check from the session root; a check past CHECK_TIMEOUT_MS counts as not upheld. */
 const runCheck = async ($: any, g: Guard, cwd?: string): Promise<Guard> => {
   try {
-    const r = await $.process.run(["sh", "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+    const r = await $.process.run(["sh", "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
     return checked(g, r.exitCode, r.stdout + r.stderr)
   } catch (err: any) {
     return checked(g, null, `[check did not finish: ${err?.message ?? err}]`)

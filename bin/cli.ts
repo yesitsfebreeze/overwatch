@@ -20,7 +20,7 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch mcp                    stdio MCP server with every overwatch tool (other agents)
   overwatch hook <host> <event>    command hook for another agent: host event JSON on stdin
 
-Repo state: .claude/overwatch/. Machine state: <XDG_STATE_HOME>/overwatch/surface.json.`
+State: .overwatch/ in the working directory (gitignore it).`
 
 async function main(argv: string[]): Promise<{ text: string; code: number }> {
   const io = fromNode()

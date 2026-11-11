@@ -109,9 +109,9 @@ test('a minified tool result keeps the context an inner hook added', async ($, o
 });
 
 test('decompress reads the exact id back, never a longer one ending the same', async ($, on) => {
-  mock.env(on, { HOME: '/h' });
+  on('session.cwd' as never, (async () => ({ value: '/h' })) as never);
   on('session.id' as never, (async () => ({ value: 'sid' })) as never);
-  const files: Record<string, string> = { '/h/.claude/componion/sid/f11.1.txt': 'eleventh', '/h/.claude/componion/sid/f1.1.txt': 'first' };
+  const files: Record<string, string> = { '/h/.overwatch/context/sid/f11.1.txt': 'eleventh', '/h/.overwatch/context/sid/f1.1.txt': 'first' };
   on('fs.read' as never, (async (_$: unknown, e: { path: string }) => {
     return norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' };
   }) as never);
@@ -121,9 +121,9 @@ test('decompress reads the exact id back, never a longer one ending the same', a
 });
 
 test('decompress resolves a fold short id through its alias, and still an old toolu id', async ($, on) => {
-  mock.env(on, { HOME: '/h' });
+  on('session.cwd' as never, (async () => ({ value: '/h' })) as never);
   on('session.id' as never, (async () => ({ value: 'sid' })) as never);
-  const files: Record<string, string> = { '/h/.claude/componion/sid/toolu_x.txt': 'out', '/h/.claude/componion/sid/f2.3.ref': 'toolu_x' };
+  const files: Record<string, string> = { '/h/.overwatch/context/sid/toolu_x.txt': 'out', '/h/.overwatch/context/sid/f2.3.ref': 'toolu_x' };
   on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' })) as never);
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f2.3' } as any)).result).toBe('out');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: '#toolu_x' } as any)).result).toBe('out');
@@ -131,10 +131,10 @@ test('decompress resolves a fold short id through its alias, and still an old to
 });
 
 test('decompress of a stored Bash result returns its plain output, not escaped JSON', async ($, on) => {
-  mock.env(on, { HOME: '/h' });
+  on('session.cwd' as never, (async () => ({ value: '/h' })) as never);
   on('session.id' as never, (async () => ({ value: 'sid' })) as never);
   const bash = JSON.stringify({ stdout: 'a "q"\nb', stderr: 'warn', interrupted: false, isImage: false, noOutputExpected: false });
-  const files: Record<string, string> = { '/h/.claude/componion/sid/t1.txt': bash, '/h/.claude/componion/sid/t2.txt': '{"k":1}', '/h/.claude/componion/sid/t3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) };
+  const files: Record<string, string> = { '/h/.overwatch/context/sid/t1.txt': bash, '/h/.overwatch/context/sid/t2.txt': '{"k":1}', '/h/.overwatch/context/sid/t3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) };
   on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' })) as never);
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't1' } as any)).result).toBe('a "q"\nb\nwarn');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't2' } as any)).result).toBe('{"k":1}');

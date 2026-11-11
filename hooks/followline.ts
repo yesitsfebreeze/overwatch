@@ -40,11 +40,8 @@ export function line(slots: Record<string, FollowlineSlot>, order: readonly stri
   return out
 }
 
-/** Slot ids from before the parts were merged, as a `slots` setting may still name them. */
-const RENAMED: Record<string, string> = { tasksitter: "plan" }
-
 /** The `slots` setting as slot ids in draw order. */
-export const slotOrder = (setting: unknown): string[] => [...new Set(String(setting ?? "").split(",").map(s => s.trim()).filter(Boolean).map(id => RENAMED[id] ?? id))]
+export const slotOrder = (setting: unknown): string[] => [...new Set(String(setting ?? "").split(",").map(s => s.trim()).filter(Boolean))]
 
 export const register: Register = (on, options) => {
   const order = slotOrder(options.slots)

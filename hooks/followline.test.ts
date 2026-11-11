@@ -47,7 +47,3 @@ test("a producer's put draws the line above the prompt", { plugins: [producer] }
   expect(tree).not.toContain("60%")
 })
 
-test("slots: a setting that still names tasksitter draws the plan gauge, once", () => {
-  expect(slotOrder("componion, tasksitter,kern,plan")).toEqual(["componion", "plan", "kern"])
-  expect(slotOrder(undefined)).toEqual([])
-})

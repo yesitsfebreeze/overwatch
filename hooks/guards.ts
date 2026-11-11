@@ -82,7 +82,7 @@ export function fitResults(results: string[], budget = MAX_RESULTS * 600): strin
 }
 
 /** User-role text the harness wrote: stop-hook feedback, skill expansions, reminders. */
-const MACHINE = /^(Stop hook feedback|(?:overwatch|tasksitter): not done|Base directory for this skill|<command-(name|message)>|<system-reminder>|<task-notification>)/
+const MACHINE = /^(Stop hook feedback|overwatch: not done|Base directory for this skill|<command-(name|message)>|<system-reminder>|<task-notification>)/
 
 const human = (m: Msg) => {
   if (m.role !== "user" || hasToolResult(m.content)) return false
@@ -139,8 +139,28 @@ export function guardId(question: string, taken: string[] = []): string {
 export const UNCHECKABLE =
   /\b(clean|elegant|readable|maintainable|idiomatic|well[- ](structured|designed|written)|good|nice|proper|appropriate|robust|scalable|performant|secure enough|best practice)\b/i
 
-/** A check that exits 0 whatever happened: a bare true/:/exit 0/echo, or anything ending in `|| true`, `; exit 0` and the like. */
-export const NOOP_CHECK = /^(?:true|:|exit\s+0|(?:echo|printf)\b[^|;&]*)$|(?:\|\||;)\s*(?:true|:|exit\s+0)\s*$/
+/** A command that exits 0 whatever happened, as the last word of a check. */
+const ALWAYS = String.raw`(?:true|:|exit\s+0|(?:echo|printf)(?:[ \t][^|;&\n]*)?)`
+
+const BARE = new RegExp(`^(?:${ALWAYS}|exit)$`)
+const OR_ALWAYS = new RegExp(String.raw`\|\|\s*${ALWAYS}$`)
+const LAST_ALWAYS = new RegExp(String.raw`[;\n]\s*${ALWAYS}$`)
+const ENDS_EARLIER = /\bexit\s+[1-9]|\bset\s+-[a-z]*e/
+
+/**
+ * Whether a check exits 0 whatever happened: a bare true/:/exit/echo, anything ending in `|| true`, or a
+ * last `; true` / `; echo done` with no earlier `exit N` or `set -e` that could end it first. Trailing
+ * comments, `;` and wrapping parens are looked through. A pipe into tail/head/tee is not one: checkScript
+ * runs with pipefail.
+ */
+export function cannotFail(check: string): boolean {
+  let c = check.replace(/[ \t]+#[^\n'"]*$/, "").replace(/[;\s]+$/, "").trim()
+  while (/^\(.*\)$/s.test(c)) c = c.slice(1, -1).trim()
+  return BARE.test(c) || OR_ALWAYS.test(c) || (LAST_ALWAYS.test(c) && !ENDS_EARLIER.test(c))
+}
+
+/** The script a check runs as under `sh -c`: with pipefail where the shell has it, so `cmd | tail` fails with cmd. */
+export const checkScript = (check: string) => `(set -o pipefail) 2>/dev/null && set -o pipefail\n${check}`
 
 /** A new guard, or the reason it is refused: a question the judge cannot decide. */
 export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[]): Guard | string {
@@ -148,7 +168,7 @@ export function makeGuard(taken: Guard[], question: string, check?: string, file
   if (q.length < 15) return "a guard is one yes/no question of at least 15 characters"
   const c = check?.trim()
   if (check !== undefined && !c) return "check needs a command"
-  if (c && NOOP_CHECK.test(c)) return `check cannot fail: \`${c}\`; give a command whose exit code decides the question`
+  if (c && cannotFail(c)) return `check cannot fail: \`${c}\`; give a command whose exit code decides the question`
   const taste = !c && q.replace(/`[^`]*`/g, "").match(UNCHECKABLE)
   if (taste) return `taste words cannot be judged: ${taste[0]}`
   const g: Guard = { id: guardId(q, taken.map((x) => x.id)), question: q }

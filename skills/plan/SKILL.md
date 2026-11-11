@@ -26,8 +26,9 @@ File edits are refused until the plan has both tasks and guards. A question or c
 
 ## Finishing
 
-Every stop is refused while a task is open, a guard is not upheld, or files changed and
-`/simplify` has not run on the change since. A large change (50+ changed lines) needs
+Every stop is refused while a task is open, a guard is not upheld, or 10+ lines changed and
+`/simplify` has not run on the change since (a whole-file write or a replace_all always
+counts as 10+). A large change (50+ changed lines) needs
 `/code-review` before `/simplify`. Invoke them with the Skill tool once tasks and guards are
 clear; edits they make count as part of that pass.
 

@@ -38,10 +38,23 @@ export async function readJson<T>(io: Io, path: string, fallback: T): Promise<T>
 
 export const abs = (io: Io, p: string) => (p.startsWith("/") ? p : join(io.cwd, p))
 
-/** The machine state folder every part writes under: <XDG_STATE_HOME>/overwatch (search-guard's guard.log sits there too). */
-export async function stateHome(io: Io): Promise<string> {
-  const base = (await io.env("XDG_STATE_HOME")) || join((await io.env("HOME")) ?? "", ".local/state")
-  return join(base, "overwatch")
+/** The one folder overwatch keeps its working data in, inside the working directory: nothing of its own goes to the home folder. */
+export const STATE_DIR = ".overwatch"
+export const state = (io: Io, ...parts: string[]) => join(io.cwd, STATE_DIR, ...parts)
+
+/**
+ * The line that asks the agent to gitignore the state folder; empty outside a git repo
+ * and once git ignores it (`git check-ignore -q`: 0 ignored, 1 not ignored, 128 no repo).
+ * A shell command, so the edit gate does not ask for a plan first.
+ */
+export async function ignoreHint(io: Io): Promise<string> {
+  const r = await io.run(["git", "check-ignore", "-q", STATE_DIR], { timeoutMs: 5000 })
+  return r.code === 1 ? `[overwatch] overwatch keeps its working data in \`${STATE_DIR}/\` in this directory, and git does not ignore it yet. Ignore it now, before anything else: \`printf '\\n${STATE_DIR}/\\n' >> .gitignore\`.` : ""
+}
+
+/** The session's Io in a hook; a function declaration, the one form `$` may be handed to. */
+export async function sessionIo($: any): Promise<Io> {
+  return fromEngine($, await $.session.cwd())
 }
 
 /** The `Io` over the engine's `$`, for hooks. */

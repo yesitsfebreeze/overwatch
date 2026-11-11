@@ -4,19 +4,19 @@
  * instead of `$.state`. Every host adapter (MCP server, command hooks, pi, opencode,
  * Hermes) goes through `callTool` and `onEvent`.
  *
- * State is per project, not per session: an MCP server is never told which session
- * calls it, so the plan file is keyed by the project root (the git toplevel, else the
+ * State is per project, not per session (.overwatch/plan.json in the project root): an MCP server is never told which session
+ * calls it, so the plan file sits in the project root (the git toplevel, else the
  * directory). Ceiling: two sessions in one project share one plan; key by session once
  * every host passes a session id to its MCP servers.
  */
 import type { Guard, Plan, StopBook } from "../types/index.d.ts"
 import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, stopVerdict, withDecided } from "../hooks/plan.ts"
-import { openGuards } from "../hooks/guards.ts"
+import { checkScript, openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
 import { COMMAND_TOOLS } from "../hooks/commands.ts"
-import { hash, schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
-import { join, stateHome, type Io } from "../hooks/io.ts"
+import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
+import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
 
 export { schemaOf }
 
@@ -52,22 +52,18 @@ export async function projectRoot(io: Io, dir = io.cwd): Promise<string> {
   return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : dir
 }
 
-async function stateFile(io: Io, root: string): Promise<string> {
-  return join(await stateHome(io), "plans", `${hash(root)}.json`)
-}
-
 /** Read-modify-write of the project's state. Ceiling: no lock, so a hook and a tool call landing in the same millisecond can lose one write; add a lock file if that shows up. */
 export async function withState<T>(io: Io, root: string, f: (s: State) => Promise<[State, T]> | [State, T]): Promise<T> {
-  const path = await stateFile(io, root)
+  const path = join(root, STATE_DIR, "plan.json")
   let s: State
   try { s = { ...FRESH_STATE, ...JSON.parse((await io.read(path)) ?? "") } } catch { s = FRESH_STATE }
   const [next, out] = await f(s)
-  if (next !== s) await io.write(path, JSON.stringify({ ...next, root }, null, 1))
+  if (next !== s) await io.write(path, JSON.stringify(next, null, 1))
   return out
 }
 
 const runCheck = async (io: Io, g: Guard, cwd: string): Promise<Guard> => {
-  const r = await io.run(["sh", "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+  const r = await io.run(["sh", "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
   return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
 }
 
@@ -115,9 +111,9 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   const at: Io = { ...io, cwd: root }
   switch (e.kind) {
     case "start": {
-      // The lessons of earlier sessions ride the start, once: caught habits and this repo's recorded mistakes.
-      const lessons = await learned(at).catch(() => "")
-      return withState(io, root, (s) => [{ ...s, told: false }, { context: [plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
+      // Once per session: the lessons of earlier sessions (caught habits, recorded mistakes) and, while git does not ignore the state folder, the line that asks for it.
+      const [lessons, hint] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at)])
+      return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
     }
     case "prompt":
       return withState(io, root, (s) => [

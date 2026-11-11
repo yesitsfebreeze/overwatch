@@ -1,8 +1,8 @@
 import type { Register } from "claude-code"
-import { fromEngine, type Io } from "./io.ts"
+import { sessionIo as io, type Io } from "./io.ts"
 import { hygiene } from "./hygiene.ts"
 import { loadout } from "./loadout.ts"
-import { checklist, evaluation, firedBy, index, learned, load, mistake, rate, report, scan, status, tally, VERDICTS } from "./surface.ts"
+import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
 import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
 /** One flat tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
@@ -20,7 +20,7 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: checklist,
   },
   scan: {
-    description: "Discover this repo's test/lint/build commands (package.json scripts, Cargo.toml, go.mod, Makefile, justfile, pyproject.toml) and freeze them into .claude/overwatch/checks.json for checks. A discovery pass, not law: a wrong guess is fixed by editing checks.json.",
+    description: "Discover this repo's test/lint/build commands (package.json scripts, Cargo.toml, go.mod, Makefile, justfile, pyproject.toml) and freeze them into .overwatch/checks.json for checks. A discovery pass, not law: a wrong guess is fixed by editing checks.json.",
     run: scan,
   },
   status: {
@@ -28,13 +28,13 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: status,
   },
   report: {
-    description: "What overwatch recorded on this machine: how often each tool and shell binary fired, the verdicts given, the learned trigger lines, and the misbehaviour caught in the last 30 days (edits before a plan, stops with work open, invalid calls, failed turns) with the newest catches. Read-only.",
+    description: "What overwatch recorded in this project: how often each tool and shell binary fired, the verdicts given, the learned trigger lines, and the misbehaviour caught in the last 30 days (edits before a plan, stops with work open, invalid calls, failed turns) with the newest catches. Read-only.",
     run: report,
   },
   rate: {
-    description: "Record a verdict on the tool the tool-surface block asked about, judged against the work actually done in this session. useful: it should have been reached here and was not (trigger required: that line ships into every later session). situational: correct to sit idle. dead: nothing needs it. With no basis to judge, say so as the reason; never invent a trigger.",
+    description: "Record a verdict on the tool the 'Evaluation due' question named, judged against the work actually done in this session. useful: it should have been reached here and was not (trigger required: that line ships into every later session). situational: correct to sit idle. dead: nothing needs it. With no basis to judge, say so as the reason; never invent a trigger.",
     properties: {
-      name: { type: "string", description: "The tool or binary as the tool-surface block named it, e.g. \"WebFetch\" or \"sh:units\"." },
+      name: { type: "string", description: "The tool or binary as the 'Evaluation due' question named it, e.g. \"WebFetch\" or \"sh:units\"." },
       verdict: { type: "string", enum: [...VERDICTS], description: "useful, situational or dead." },
       reason: { type: "string", description: "One line why, from this session's work." },
       trigger: { type: "string", description: "Required for useful: the situation that should have fired it, e.g. \"a unit conversion in a shell pipeline\"." },
@@ -43,7 +43,7 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: (io, e) => rate(io, text(e.name), text(e.verdict), text(e.reason), text(e.trigger) || undefined),
   },
   mistake: {
-    description: "Record a mistake that cost time twice, with the why, so every later session in this repo starts with it and every checklist carries it, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .claude/overwatch/mistakes.md in this repo.",
+    description: "Record a mistake that cost time twice, with the why, so every later session in this repo starts with it and every checklist carries it, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .overwatch/mistakes.md in this directory.",
     properties: { text: { type: "string", description: "The mistake and what to do instead, one line." } },
     required: ["text"],
     run: (io, e) => mistake(io, text(e.text)),
@@ -64,10 +64,6 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
 }
 
 const SURFACE = { plugin: "overwatch", key: "surface" } as const
-/** The session's Io; a function declaration, the one form `$` may be handed to. */
-async function io($: any): Promise<Io> {
-  return fromEngine($, await $.session.cwd())
-}
 
 /**
  * The block overwatch adds to this session's system prompt: the tool surface (what
@@ -79,12 +75,11 @@ async function io($: any): Promise<Io> {
 export async function surfaceBlock($: any, offered: readonly string[]): Promise<string> {
   const { value } = await $.state.get(SURFACE)
   if (typeof value === "string") return value
-  const listed: string[] = await $.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => [])
-  const at = await io($)
-  const parts = await Promise.all([index(at, [...new Set([...offered, ...listed])], false), learned(at)]).catch(() => undefined)
+  const [listed, at]: [string[], Awaited<ReturnType<typeof io>>] = await Promise.all([$.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => []), io($)])
+  const parts = await Promise.all([surface(at, [...new Set([...offered, ...listed])]), learned(at)]).catch(() => undefined)
   if (parts === undefined) return "" // a failed build is retried on the next request, not cached
-  const block = parts.filter(Boolean).join("\n\n")
-  const drawn = (await load(at).catch(() => undefined))?.drawn
+  const [{ sections, drawn }, lessons] = parts
+  const block = [asBlock(sections), lessons].filter(Boolean).join("\n\n")
   // The rating question waits in $.state for takeEvaluation; an empty block is cached too: it is the answer for this session.
   await Promise.all([$.state.set(SURFACE, block), drawn && $.state.set(EVALUATION, evaluation(drawn))])
   return block

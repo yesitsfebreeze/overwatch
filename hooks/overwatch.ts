@@ -3,6 +3,7 @@ import { catalog, declareCatalog, guardCall, takeNotice, TOOL_PREFIX } from "./c
 import { COMMAND_TOOLS, countCall, flushCalls, register as commands, takeEvaluation } from "./commands.ts"
 import { COMPACTION_TOOLS, compactToolCall, compactTurnEnd, compactionEnabled, register as compaction } from "./compaction.ts"
 import { register as followline } from "./followline.ts"
+import { ignoreHint, sessionIo } from "./io.ts"
 import { PLAN_TOOLS } from "./plan.ts"
 import { planReminder, register as plan, startPlan } from "./plan-hooks.ts"
 
@@ -12,10 +13,19 @@ import { planReminder, register as plan, startPlan } from "./plan-hooks.ts"
 // parts share (tool.call, turn.complete, prompt.submit, session.start) are hooked here,
 // once, and call each part's handler: no part reaches into another.
 //
+/** Whether this session was already asked to gitignore the state folder (a reload asks again while it still is not). */
+let hinted = false
+async function takeIgnoreHint($: any): Promise<string> {
+  if (hinted) return ""
+  hinted = true
+  try { return await ignoreHint(await sessionIo($)) } catch { return "" } // never costs the prompt its reminder
+}
+
 // Loaded from a watched folder (--plugin-dir, CLAUDE_CODE_PLUGIN_DIRS), a save reloads
 // it: `register` runs again and so does `session.start`, which re-declares every tool
 // through the catalog (catalog.ts).
 export const register: Register = async (on, options) => {
+  hinted = false
   const compacting = compactionEnabled(options)
   const cat = catalog({ ...COMMAND_TOOLS, ...PLAN_TOOLS, ...(compacting ? COMPACTION_TOOLS : {}) })
   // Before everything else: a stale call is refused before any part sees it.
@@ -36,11 +46,12 @@ export const register: Register = async (on, options) => {
     return next(e)
   })
 
-  // Beside every prompt, each at most once where it is a one-off: a tool-reload notice
-  // (catalog.ts), the surface ledger's rating question (commands.ts), then the plan.
+  // Beside every prompt, each at most once where it is a one-off: the ask to gitignore
+  // .overwatch/, a tool-reload notice (catalog.ts), the surface ledger's rating question
+  // (commands.ts), then the plan.
   on("prompt.submit", async ($, e: any, next) => {
-    const [notice, evaluation, reminder] = await Promise.all([takeNotice($), takeEvaluation($), planReminder($, e)])
-    return next({ ...e, context: [...(e.context ?? []), ...[notice, evaluation, reminder].filter(Boolean)] })
+    const parts = await Promise.all([takeIgnoreHint($), takeNotice($), takeEvaluation($), planReminder($, e)])
+    return next({ ...e, context: [...(e.context ?? []), ...parts.filter(Boolean)] })
   })
 
   await compaction(on, options)

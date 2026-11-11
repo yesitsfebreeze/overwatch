@@ -1,6 +1,6 @@
 import { test, expect } from "claude-code/testing"
 import { memIo, type Io } from "./io.ts"
-import { discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, tally } from "./surface.ts"
+import { asBlock, discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, surface, tally } from "./surface.ts"
 import { EVALUATE_AFTER_CALLS } from "./commands.ts"
 
 // The fs engine resolves a path before a hook sees it: win32 delivers 'C:\state\x' for '/state/x'.
@@ -80,11 +80,13 @@ test("ledger: tally adds a turn's fires; rate refuses a useful verdict without a
   expect(draw(await load(m), ["WebFetch"])).toBeNull()
 })
 
-test("index: the evaluation can be left out; evaluation() names the drawn tool", async () => {
+test("surface: the block without the question, the drawn tool returned with it; evaluation() names it", async () => {
   const m = io()
   await save(m, { counts: { Bash: 9, Read: 3 }, verdicts: {}, triggers: {}, drawn: null })
   expect(await index(m, ["Bash", "Read"])).toContain("Evaluation due")
-  expect(await index(m, ["Bash", "Read"], false)).not.toContain("Evaluation due")
+  const { sections, drawn } = await surface(m, ["Bash", "Read"])
+  expect(asBlock(sections)).not.toContain("Evaluation due")
+  expect(drawn?.name).toBeDefined()
   expect(evaluation({ name: "Read", uses: 3 })).toContain('name: "Read"')
 })
 
@@ -92,10 +94,9 @@ test("session: rating held back while the session is unused, asked once after re
   on("tool.list", async () => ({ value: [{ name: "Agent", description: "", mcp: false }] }) as any)
   on("prompt.compose", async () => ({ sections: [] }) as any)
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))
-  // A machine ledger in memory: two used tools, so one is drawn for rating.
-  const files: Record<string, string> = { "/state/overwatch/surface.json": JSON.stringify({ counts: { Bash: 9, Read: 3 } }) }
+  // A project ledger in memory: two used tools, so one is drawn for rating.
+  const files: Record<string, string> = { "/repo/.overwatch/surface.json": JSON.stringify({ counts: { Bash: 9, Read: 3 } }) }
   on("session.cwd", async () => ({ value: "/repo" }) as any)
-  on("env.get", async (_: any, e: any) => ({ value: (e?.name ?? e) === "XDG_STATE_HOME" ? "/state" : undefined }) as any)
   on("fs.read", async (_: any, e: any) => (norm(e?.path ?? e) in files ? { value: files[norm(e?.path ?? e)] } : { deny: "ENOENT" }) as any)
   on("fs.write", async (_: any, e: any) => ((files[norm(e.path)] = e.text), { value: undefined }) as any)
   on("fs.exists", async (_: any, e: any) => ({ value: norm(e?.path ?? e) in files }) as any)
@@ -103,7 +104,7 @@ test("session: rating held back while the session is unused, asked once after re
   on("tool.call", async () => ({ result: "ok" }) as any)
   on("turn.complete", async () => ({ text: "" }) as any)
   const built = JSON.stringify((await ($.prompt.compose as any)({ model: "m", promptModel: "m", surfaces: [], tools: ["Bash", "Read"], outputStyle: null, traits: [] })).sections)
-  expect(built).toContain("Used most on this machine")
+  expect(built).toContain("Used most in this project")
   expect(JSON.stringify((await ($.prompt.compose as any)({ model: "m", promptModel: "m", surfaces: [], tools: ["Bash", "Read"], outputStyle: null, traits: [] })).sections)).not.toContain("Evaluation due")
   const submit = async () => JSON.stringify(await $.prompt.submit({ text: "hi" } as any))
   expect(await submit()).not.toContain("Evaluation due")

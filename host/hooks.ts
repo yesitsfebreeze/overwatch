@@ -36,10 +36,12 @@ const claudeShape = (events: Record<string, Kind>): Host => ({
   },
 })
 
+const CLAUDE = claudeShape({ SessionStart: "start", UserPromptSubmit: "prompt", PreToolUse: "pre_tool", Stop: "stop" })
+
 export const HOSTS: Record<string, Host> = {
-  claude: claudeShape({ SessionStart: "start", UserPromptSubmit: "prompt", PreToolUse: "pre_tool", Stop: "stop" }),
-  codex: claudeShape({ SessionStart: "start", UserPromptSubmit: "prompt", PreToolUse: "pre_tool", Stop: "stop" }),
-  droid: claudeShape({ SessionStart: "start", UserPromptSubmit: "prompt", PreToolUse: "pre_tool", Stop: "stop" }),
+  claude: CLAUDE,
+  codex: CLAUDE,
+  droid: CLAUDE,
   gemini: {
     events: { SessionStart: "start", BeforeAgent: "prompt", BeforeTool: "pre_tool", AfterAgent: "stop" },
     tool: (p) => p.tool_name ?? "",

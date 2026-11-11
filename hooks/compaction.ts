@@ -37,9 +37,8 @@ const VERBATIM = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SKIP_KEYS = new Set(['data', 'base64', 'source']);
 const MAX_TOOLS = 8;
 export const FOLD_TAG = '[overwatch fold';
-// Folds written before the rename, still in a running session's history.
-const OLD_FOLD_TAG = '[componion fold';
 import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
+import { STATE_DIR } from './io.ts';
 import { incident } from './incidents.ts';
 
 export const tokens = (chars: number) => Math.ceil(chars / 4);
@@ -161,7 +160,7 @@ const oneLine = (t: string, n: number) => t.replace(/\s+/g, ' ').trim().slice(0,
 // first prompt (its context blocks ride on it) and every earlier fold.
 export function frozenEnd(messages: readonly SessionMessage[]): number {
   let i = messages.length ? 1 : 0;
-  while (i < messages.length && (messages[i].text.startsWith(FOLD_TAG) || messages[i].text.startsWith(OLD_FOLD_TAG))) i++;
+  while (i < messages.length && messages[i].text.startsWith(FOLD_TAG)) i++;
   return i;
 }
 
@@ -219,7 +218,7 @@ export const statusPayload = (s: Status, ts: number) => ({ v: 1, ts, ...s });
 
 type State = { home: string };
 
-// Sibling of the per-session originals dir, so decompress/search_context never list it.
+// The one file written outside the working directory: kern's deck reads it at this path.
 // Plain write: $.fs has no rename, so a reader may rarely see a torn file and must treat bad JSON as silent.
 async function publish($: EngineInterface, s: Status) {
   try {
@@ -229,7 +228,7 @@ async function publish($: EngineInterface, s: Status) {
 }
 
 async function dir($: EngineInterface, s: State) {
-  return (s.home ||= `${await $.env.get('HOME')}/.claude/componion/${await $.session.id()}`);
+  return (s.home ||= `${await $.session.cwd()}/${STATE_DIR}/context/${await $.session.id()}`);
 }
 
 // Originals stay on disk; the model reads them back through decompress.

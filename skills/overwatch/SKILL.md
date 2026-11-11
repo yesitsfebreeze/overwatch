@@ -1,6 +1,6 @@
 ---
 name: overwatch
-description: What overwatch recorded and a repo's verification checks. Use when asking what the agent was caught doing or which tools get used here ("overwatch report"), rating the tool the tool-surface block asked about, before declaring a change done ("what should I run?"), to record a mistake worth not repeating, or when the machine feels loaded.
+description: What overwatch recorded and a repo's verification checks. Use when asking what the agent was caught doing or which tools get used here ("overwatch report"), rating the tool the "Evaluation due" question named, before declaring a change done ("what should I run?"), to record a mistake worth not repeating, or when the machine feels loaded.
 argument-hint: "[status | scan | checks | mistake <text> | report | index | rate ...]"
 ---
 
@@ -13,17 +13,16 @@ terminal as `"${CLAUDE_PLUGIN_ROOT}/bin/overwatch" <action>` (bun). Invoked as `
 
 | need | tool |
 |---|---|
-| rate the tool the tool-surface block asked about | `rate {name, verdict, reason, trigger?}` |
-| what was caught in the last 30 days, what gets used on this machine, verdicts, triggers | `report` |
+| rate the tool the "Evaluation due" question named | `rate {name, verdict, reason, trigger?}` |
+| what was caught in the last 30 days, what gets used in this project, verdicts, triggers | `report` |
 | the tool-surface block, on demand | script only: `overwatch index` |
 | freeze this repo's test/lint/build commands | `scan` |
 | the checklist to run before saying a change is done | `checks` |
 | record a mistake so later checklists carry it | `mistake {text}` |
 | git state, frozen checks, catch counts, guard blocks, memory hogs | `status` |
 
-State: `.claude/overwatch/{checks.json,mistakes.md}` per repo,
-`$XDG_STATE_HOME/overwatch/{surface.json,incidents.json}` per machine. Plain files — read or edit
-them directly when that is shorter.
+State: `.overwatch/{checks.json,mistakes.md,surface.json,incidents.json}` in the working
+directory, gitignored. Plain files — read or edit them directly when that is shorter.
 
 ## Catches — what the agent was caught doing
 

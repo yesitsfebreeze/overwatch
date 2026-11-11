@@ -12,16 +12,37 @@ One plugin, one language (TypeScript), one binary (`bin/overwatch`), one core fo
 | step | what happens | where |
 |---|---|---|
 | catch | a file edit before the plan has tasks and guards is refused; a stop with a task open, a guard failing or the review pass due is refused; a call that does not fit a tool's schema is refused; a turn's failed tool calls are noticed | `plan-hooks.ts`, `catalog.ts`, `compaction.ts`, `host/core.ts` |
-| record | every catch is one entry in the incident ledger: kind, project, what was open. Counts per day for 30 days, the newest 40 entries. `mistake` adds a lesson by hand, per repo | `incidents.ts`, `<XDG_STATE_HOME>/overwatch/incidents.json`, `.claude/overwatch/mistakes.md` |
-| improve | a kind caught 3 times in 30 days is a habit: its one-line lesson rides every later session's system prompt with the count, beside the repo's newest 5 recorded mistakes and the learned tool triggers. A habit that stops drops out by itself as its days leave the window | `learned` in `surface.ts`, added by `commands.ts` |
+| record | every catch is one entry in the incident ledger: kind and what was open. Counts per day for 30 days, the newest 40 entries. `mistake` adds a lesson by hand | `incidents.ts`, `.overwatch/incidents.json`, `.overwatch/mistakes.md` |
+| improve | a kind caught 3 times in 30 days is a habit: its one-line lesson rides every later session's system prompt with the count, beside the newest 5 recorded mistakes and the learned tool triggers. A habit that stops drops out by itself as its days leave the window | `learned` in `surface.ts`, added by `commands.ts` |
 
 `status` shows the counts in one line, `report` the counts and the newest catches. Other agents
 record through the same core and get the lessons at session start.
 
+## State
+
+Everything overwatch writes sits in `.overwatch/` in the working directory (the project root
+for other agents), nothing in the home folder:
+
+| file | what |
+|---|---|
+| `incidents.json` | the incident ledger |
+| `surface.json` | tool and shell-binary counts, verdicts, learned triggers |
+| `checks.json`, `mistakes.md` | the frozen checks and the recorded mistakes |
+| `plan.json` | tasks and guards, for agents other than Claude Code (which keeps them per session) |
+| `context/<session>/` | originals of cut and folded messages, read back by `decompress` |
+
+In a git repository that does not ignore `.overwatch/`, the agent is asked once per session to
+add it to `.gitignore` (`io.ts`, `ignoreHint`; decided by `git check-ignore`). Plain files: read,
+edit or delete them freely.
+
+Two files of other plugins stay where those plugins look: kern's turn deck reads compaction's
+status from `~/.claude/componion/status/<session>.json`, and `status` counts search-guard's
+blocks from `<XDG_STATE_HOME>/overwatch/guard.log`. The Jev dataset (`~/.jev/log/`) is shared too.
+
 ## Parts
 
-It replaces six plugins. Their names remain only where something outside reads them: the
-`~/.claude/componion/` state folder, the `componion` gauge id and the Jev dataset's client name.
+It replaces six plugins. Their names remain only where something outside reads them: kern's
+status file, the `componion` gauge id and the Jev dataset's client name.
 
 | part | was | what it does |
 |---|---|---|
@@ -46,8 +67,8 @@ skill and Bash. The skills stay for the judgement around them.
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
 | `status` | | git state, frozen checks, catches of the last 30 days, guard blocks, language servers over 500MB |
 | `report` | | tool and binary usage, verdicts, learned triggers, catches with the newest entries |
-| `rate` | `name`, `verdict`, `reason`, `trigger?` | rates the tool the tool-surface block asked about; `useful` needs `trigger` |
-| `mistake` | `text` | records a mistake for every later session in this repo and every checklist |
+| `rate` | `name`, `verdict`, `reason`, `trigger?` | rates the tool the "Evaluation due" question named; `useful` needs `trigger` |
+| `mistake` | `text` | records a mistake for every later session in this directory and every checklist |
 | `loadout` | | active plugins per layer as one table |
 | `hygiene_ledger` | `repo?` | lints and ranks a repo's skills, writes LEDGER.md |
 
@@ -92,12 +113,13 @@ The plan part (once tasksitter, itself merged from taskview and orly). Its tools
 - **The view.** The plan draws nothing itself. It publishes one gauge,
   `tasks`, through followline (`$.followline.put`): overall progress, done
   count, upheld guards and the active task; red while a guard fails, green once
-  everything holds. Its slot id is `plan`; a `slots` setting that still says `tasksitter` draws it too.
+  everything holds. Its slot id is `plan`.
 - **The stop.** Every stop runs the guard checks and the judge, then is
   refused (the turn continues) while any of these holds:
   1. a task is open;
   2. a guard is not upheld (the reason quotes the check's output tail);
-  3. files changed and `/simplify` has not run since, or the change is large
+  3. 10+ lines changed (`SMALL_CHANGE_LINES`; a whole-file write or a replace_all counts
+     as 10+) and `/simplify` has not run since, or the change is large
      (`LARGE_CHANGE_LINES`, 50 changed lines summed over the edit-tool calls)
      and `/code-review` has not run since either (typed or through the Skill
      tool; `/review` counts as `/code-review`).
@@ -186,9 +208,7 @@ guards with a `check` hold the stop; a toast says so once.
 
 `slots` (followline) sets the gauges and their order. The default is `componion,plan,kern` (`componion` is the context gauge kern publishes).
 The compaction settings (`toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, …) keep
-their old names and defaults. Compaction state still lives in `~/.claude/componion/`, so folds
-from earlier sessions stay readable and kern's turn deck keeps finding `status/<session>.json`.
-`failures.log` is no longer written: a failed turn is an entry in the incident ledger.
+their old names and defaults.
 
 ## Check
 
@@ -196,19 +216,18 @@ from earlier sessions stay readable and kern's turn deck keeps finding `status/<
 claude plugin validate .
 claude plugin test .          # every part: compaction, followline, surface, incidents, tools, versions, tasks, hygiene
 bin/overwatch hygiene --selftest
-claude --plugin-dir . -p hi --debug-file /tmp/ow.log; grep "did not load" /tmp/ow.log   # the engine's load rules
+claude --plugin-dir . -p hi --debug-file ow.log; grep "did not load" ow.log   # the engine's load rules
 ```
 
 ## Other agents
 
 The plan part (tasks, guards, edit gate, stop hold) and the command tools run in every major agent
 from one core, `host/core.ts`, which reuses `hooks/plan.ts` (the pure plan logic split out of
-`plan-hooks.ts`) and `hooks/commands.ts`. State is a file per project under
-`<XDG_STATE_HOME>/overwatch/plans/`. Install for any agent: point it at [install.txt](install.txt).
+`plan-hooks.ts`) and `hooks/commands.ts`. State is `.overwatch/plan.json` in the project root. Install for any agent: point it at [install.txt](install.txt).
 
 | agent | how | tools | reminder | edit gate | stop hold |
 |---|---|---|---|---|---|
-| Claude Code | hooks module (this plugin) | native | every prompt | yes | yes, plus /simplify and /code-review |
+| Claude Code | hooks module (this plugin) | native | full rules once, then one line per prompt | yes | yes, plus /simplify and /code-review |
 | Codex CLI | `.codex-plugin`, `adapters/codex` | MCP | every prompt | `apply_patch`, Edit, Write | Stop |
 | pi | `package.json` "pi", `adapters/pi` | native | every run | edit, write | agent_before_settle |
 | opencode 2.x | `adapters/opencode` | native | every request | permission `edit` | re-prompt on session.idle |

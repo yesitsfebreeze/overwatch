@@ -33,14 +33,6 @@ test("guards: ids from telling words, taste words refused unless a check decides
   expect(makeGuard([], "short?")).toContain("at least 15")
   expect(makeGuard([], "Is the parser code clean and readable?")).toContain("taste words")
   expect(makeGuard([], "Is the parser code clean and readable?", "bun test")).toMatchObject({ check: "bun test" })
-})
-
-test("guard: a no-op check that cannot fail is refused", () => {
-  const q = "Do the parser tests pass?"
-  for (const c of ["true", ":", "exit 0", "echo done", "printf ok", "bun test || true", "bun test; exit 0", "bun test ;  true"])
-    expect(makeGuard([], q, c)).toContain("check cannot fail")
-  for (const c of ["bun test", "test -f out.txt", "echo x | grep -q x", "grep -q true config.json", "true && bun test"])
-    expect(makeGuard([], q, c)).toMatchObject({ check: c })
   let s = run("guard_add", P([]), { question: "Do the tests pass with bun test?", check: "bun test" }).state
   expect(s.guards.map((g) => g.id)).toEqual(["tests-pass-bun"])
   expect(run("guard_drop", s, { guard_id: "nope" }).warn).toBe(true)
@@ -48,6 +40,17 @@ test("guard: a no-op check that cannot fail is refused", () => {
   expect(s.guards).toEqual([])
   // A judged guard retires once upheld; a check guard runs at every stop.
   expect(openGuards([G("a", { check: "true", met: true }), G("b", { met: true }), G("c")]).map((g) => g.id)).toEqual(["a", "c"])
+})
+
+test("guard: a no-op check that cannot fail is refused", () => {
+  const q = "Do the parser tests pass?"
+  const never = ["true", ":", "exit", "exit 0", "true;", "echo done", "printf ok", "bun test || true", "bun test; exit 0", "bun test ;  true",
+    "bun test || echo failed", "bun test; echo done", "bun test || true;", "bun test || true # flaky", "(bun test || true)"]
+  for (const c of never) expect([c, makeGuard([], q, c)]).toEqual([c, expect.stringContaining("check cannot fail")])
+  const can = ["bun test", "test -f out.txt", "echo x | grep -q x", "grep -q true config.json", "true && bun test", "echo running tests\nbun test",
+    "set -e; bun test; true", "test -f out.txt || exit 1; exit 0", "echo-server --selftest", "bun test 2>&1 | tail -20"]
+  for (const c of can) expect(makeGuard([], q, c)).toMatchObject({ check: c })
+  // A pipe into tail/head/tee is not refused here: checkScript runs every check with pipefail.
 })
 
 test("lastTurn: from the last human message, tool calls numbered, results paired", () => {
@@ -140,12 +143,18 @@ test("verify: a small change needs no review pass", () => {
 })
 
 test("changedLines: replaced or new text, summed over edits and items", () => {
-  expect(changedLines({ content: "a\nb\nc" })).toBe(3)
-  expect(changedLines({ content: "a\nb\n" })).toBe(2)
+  expect(changedLines({ old_string: "a\nb\nc", new_string: "x\n" })).toBe(3)
   expect(changedLines({ old_string: "a\nb", new_string: "x" })).toBe(2)
   expect(changedLines({ edits: [{ old_string: "a", new_string: "b\nc" }, { oldText: "q", newText: "r" }] })).toBe(3)
   expect(changedLines({ items: [{ path: "f", old: "a", new: "b\nc\nd" }, { path: "g", edits: [{ old: "x", new: "y" }] }] })).toBe(4)
   expect(changedLines({})).toBe(0)
+})
+
+test("changedLines: an unmeasurable call is never a small change", () => {
+  // A whole-file write (Write, git-fs write) hides the replaced text; replace_all hides how often it hits.
+  for (const i of [{ content: "a" }, { path: "f", text: "a\nb" }, { items: [{ path: "f", text: "x" }] }, { old_string: "a", new_string: "b", replace_all: true }])
+    expect(changedLines(i)).toBeGreaterThanOrEqual(SMALL_CHANGE_LINES)
+  expect(changedLines({ content: "x\n".repeat(400) })).toBe(400)
 })
 
 // ── the flat tools ───────────────────────────────────────────────────
@@ -192,7 +201,7 @@ test("review fixes: progress needs a number, stalls ignore output noise, harness
     { role: "user", content: [{ type: "text", text: "add a README" }] },
     { role: "assistant", content: [{ type: "tool_use", id: "a", name: "Write", input: { file_path: "README.md" } }] },
     { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "ok" }] },
-    { role: "user", content: [{ type: "text", text: "Stop hook feedback:\ntasksitter: not done" }] },
+    { role: "user", content: [{ type: "text", text: "Stop hook feedback:\noverwatch: not done" }] },
   ] as any)
   expect(turn.user_request).toBe("add a README")
 })
@@ -217,10 +226,13 @@ test("reminder and gate: both ask for tasks and guards", () => {
 })
 
 test("reminder once: the full rules, then one line", () => {
-  expect(reminder(EMPTY, true)).not.toContain("you MUST first")
-  expect(reminder(EMPTY, true)).toContain("mcp__overwatch__task_add")
-  expect(reminder(EMPTY, true).length).toBeLessThan(200)
+  const short = reminder(EMPTY, true)
+  expect(short).not.toContain("you MUST first")
+  expect(short).toContain("mcp__overwatch__task_add")
+  expect(short.length).toBeLessThan(200)
   expect(reminder(P([OPEN]), true)).not.toContain("Every stop is refused")
+  // A later request still hears it needs its own tasks and guards.
+  expect(reminder(P([DONE]), true)).toContain("Add tasks and guards for new work")
   expect(reminder(P([OPEN]))).toContain("Every stop is refused")
 })
 
@@ -231,6 +243,16 @@ test("session: reminder once per session, then the short line", async ($, on) =>
   const second = await ctx()
   expect(second).not.toContain("you MUST first")
   expect(second).toContain("rules given earlier this session")
+})
+
+test("session: a git repo that does not ignore .overwatch/ is asked to, once; an ignored one never", async ($, on) => {
+  let code = 1 // git check-ignore: 1 = not ignored
+  on("prompt.submit", async (_: any, e: any) => ({ ...e }))
+  on("session.cwd", async () => ({ value: "/repo" }) as any)
+  on("process.run", async (_: any, e: any) => ({ value: { exitCode: (e.argv ?? e)[1] === "check-ignore" ? code : 0, stdout: "", stderr: "" } }) as any)
+  const ctx = async () => JSON.stringify(await $.prompt.submit({ text: "hi" } as any))
+  expect(await ctx()).toContain(">> .gitignore")
+  expect(await ctx()).not.toContain(">> .gitignore")
 })
 
 // ── end to end ───────────────────────────────────────────────────────
