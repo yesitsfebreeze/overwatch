@@ -5,7 +5,7 @@
  * `fromNode()` (bin/node-io.ts) in a terminal.
  */
 /** The environment variables overwatch reads; a new one is added here and in engineEnv. */
-export type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HYGIENE_TRANSCRIPTS"
+export type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HYGIENE_TRANSCRIPTS" | "TMPDIR"
 export type Run = { code: number; stdout: string; stderr: string }
 export type Entry = { name: string; kind: "file" | "dir" | "other"; mtimeMs: number }
 
@@ -97,6 +97,7 @@ async function engineEnv($: any, name: EnvName): Promise<string | undefined> {
     case "XDG_STATE_HOME": return $.env.get("XDG_STATE_HOME")
     case "CLAUDE_CONFIG_DIR": return $.env.get("CLAUDE_CONFIG_DIR")
     case "HYGIENE_TRANSCRIPTS": return $.env.get("HYGIENE_TRANSCRIPTS")
+    case "TMPDIR": return $.env.get("TMPDIR")
   }
 }
 

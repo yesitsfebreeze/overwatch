@@ -1,5 +1,6 @@
 import type { Register } from "claude-code"
 import { sessionIo as io, type Io } from "./io.ts"
+import { clean, disk, MIN_MIB } from "./gardener.ts"
 import { hygiene } from "./hygiene.ts"
 import { loadout } from "./loadout.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
@@ -60,6 +61,23 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
       if (r.code) throw new Error(r.text)
       return r.text
     },
+  },
+  disk: {
+    description: "The disk gardener's survey: how full the disk is and what can go, each unit proven and judged. Leftover (idle temp entries, build output of projects not committed to for 30 days) and rebuildable (node_modules, target, .venv … with their manifest beside them) are what disk_clean deletes; in-use, kept and unverified units, caches with their owner's command, large files and what grew since the last survey are report-only. scope project (default, seconds) looks at the working directory, disk at the home folder, temp folders, caches and app data (minutes). Deletes nothing.",
+    properties: {
+      scope: { type: "string", enum: ["project", "disk"], description: "project: the working directory, the first step. disk: the whole disk, when the project did not free enough." },
+      min_mib: { type: "number", description: `Smallest unit listed, in MiB. Default ${MIN_MIB}.` },
+    },
+    run: (io, e) => disk(io, e.scope === "disk" ? "disk" : "project", Number(e.min_mib) > 0 ? Number(e.min_mib) : MIN_MIB),
+  },
+  disk_clean: {
+    description: "Delete paths the disk survey listed as leftover or rebuildable. Each path is judged again at this moment and refused unless it is a temp entry or proven build output that nothing uses: no link, no git-tracked file, no checkout with uncommitted or unpushed work inside, no open file, not changed in the last 2 hours, not in a kept project. A dry run unless apply is true; deletion is permanent. Returns one line per path and the free space before and after.",
+    properties: {
+      paths: { type: "array", items: { type: "string" }, minItems: 1, description: "Absolute paths, as the disk survey printed them." },
+      apply: { type: "boolean", description: "true deletes; left out, it only says what would go." },
+    },
+    required: ["paths"],
+    run: (io, e) => clean(io, (Array.isArray(e.paths) ? e.paths : []).map(text).filter(Boolean), e.apply === true),
   },
 }
 

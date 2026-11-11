@@ -14,6 +14,7 @@ import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH,
 import { checkScript, openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
+import { fullNotice } from "../hooks/gardener.ts"
 import { COMMAND_TOOLS } from "../hooks/commands.ts"
 import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
 import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
@@ -111,9 +112,9 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   const at: Io = { ...io, cwd: root }
   switch (e.kind) {
     case "start": {
-      // Once per session: the lessons of earlier sessions (caught habits, recorded mistakes) and, while git does not ignore the state folder, the line that asks for it.
-      const [lessons, hint] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at)])
-      return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
+      // Once per session: the gardener's ask while the disk is nearly full, the lessons of earlier sessions (caught habits, recorded mistakes) and, while git does not ignore the state folder, the line that asks for it.
+      const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), fullNotice(at).then(plain, () => "")])
+      return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
     }
     case "prompt":
       return withState(io, root, (s) => [

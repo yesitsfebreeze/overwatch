@@ -28,6 +28,7 @@ for other agents), nothing in the home folder:
 | `incidents.json` | the incident ledger |
 | `surface.json` | tool and shell-binary counts, verdicts, learned triggers |
 | `checks.json`, `mistakes.md` | the frozen checks and the recorded mistakes |
+| `disk.json` | the gardener's last survey per scope, its deletions, and the user's `keep` and `owners` lists |
 | `plan.json` | tasks and guards, for agents other than Claude Code (which keeps them per session) |
 | `context/<session>/` | originals of cut and folded messages, read back by `decompress` |
 | `status/<session>.json` | compaction's status, which kern's turn deck reads |
@@ -41,7 +42,7 @@ Outside it, only what other plugins own: `status` counts search-guard's blocks f
 
 ## Parts
 
-It replaces six plugins. Their names remain only where something outside reads them: the
+It replaces seven plugins. Their names remain only where something outside reads them: the
 `componion` gauge id and the Jev dataset's client name.
 
 | part | was | what it does |
@@ -52,6 +53,7 @@ It replaces six plugins. Their names remain only where something outside reads t
 | followline | followline | one line above the prompt: a mood face, then one gauge per slot that plugins publish through `$.followline.put` |
 | surface | steward | tool-surface ledger, learned triggers, frozen verification checks, mistakes ledger (`/overwatch`) |
 | loadout | loadout | one table of the active plugins per layer: global, account, project, local (`/loadout`) |
+| gardener | disk-gardener | knows when the project's disk is nearly full and asks for a cleanup: this project first, then the whole disk. Finds proven leftovers (idle temp entries, build output that rebuilds), deletes only what it proved again at that moment, reports what grows (`/gardener`) |
 | hygiene | skill-hygiene | rates the skills in a repository's `skills/` folder, writes LEDGER.md, syncs one GitHub issue per finding (`/hygiene`) |
 
 ## Tools
@@ -71,6 +73,8 @@ skill and Bash. The skills stay for the judgement around them.
 | `mistake` | `text` | records a mistake for every later session in this directory and every checklist |
 | `loadout` | | active plugins per layer as one table |
 | `hygiene_ledger` | `repo?` | lints and ranks a repo's skills, writes LEDGER.md |
+| `disk` | `scope?` (`project`, `disk`), `min_mib?` | how full the disk is and what can go: leftover, rebuildable, unverified, in use, caches with their owner's command, large files, what grew since the last survey. Deletes nothing |
+| `disk_clean` | `paths[]`, `apply?` | deletes surveyed leftovers, each judged again first; a dry run without `apply` |
 
 Every tool runs in-process (`hooks/commands.ts` calls the same functions `bin/overwatch` does);
 a refusal (a `useful` rating without a trigger) is an error result.
@@ -171,6 +175,31 @@ guards with a `check` hold the stop; a toast says so once.
   guard" is an instruction, not enforced.
 - Guard checks run from the directory the session started in.
 
+## Disk gardener
+
+- **The watch.** One `df` on the working directory, at most every 5 minutes, beside a prompt or a
+  main-thread tool result (so a build that fills the disk mid-turn is noticed). From
+  `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space:
+  `disk` on this project first, `disk {scope: "disk"}` only if that was not enough. Other agents
+  get the same ask at session start.
+- **Finding.** Nothing is trusted by name alone where a name is ambiguous. `node_modules` needs
+  its `package.json`, `target` its `CACHEDIR.TAG` or manifest, `.venv` its `pyvenv.cfg`;
+  `dist`, `build`, `out`, `coverage` count only where git ignores the folder and tracks nothing
+  in it (the table is `OUTPUT` in `hooks/gardener.ts`). Temp folders (`/tmp`, `/var/tmp`,
+  `$TMPDIR`) are listed entry by entry; a busy one is split up to three levels deep, so one live
+  process does not hide dead siblings.
+- **Judging.** Leftover: an idle temp entry, or output of a project whose last commit is 30 days
+  old. Rebuildable: proven output of a live project. In use: changed in the last 2 hours, or a
+  process works there. Unverified: no proof, git-tracked files, a checkout with uncommitted or
+  unpushed work at or under it, a tool's own folder under `~/.x/`. Only the first two are deleted.
+- **Deleting.** `disk_clean` judges each path again from scratch, refuses links and paths with an
+  open file, and runs `rm -rf --` on the real path. Caches go only through their owner's command,
+  which the survey prints (`OWNERS`, extended by `owners` in `.overwatch/disk.json`).
+- **Limits.** `find`, `du`, `df`, `git`, `lsof` from a POSIX shell: no Windows. Without `lsof`
+  the open-file and working-directory checks are skipped; the 2-hour rule still holds. Sizes are
+  allocated blocks; hard links shared between units are counted in each. `keep` is per project
+  (`.overwatch/disk.json`), not machine-wide. `~/Library` is listed one level deep, not searched.
+
 ## Needs
 
 - `bun` and `TYPESAFE_API_KEY` (in the shell profile, never in a settings file) for compaction.
@@ -183,8 +212,8 @@ guards with a `check` hold the stop; a toast says so once.
 - `hooks/overwatch.ts` is the plugin's one hooks module and the only place parts meet. The
   engine takes one unmatched hook per event from a plugin (checked when the module loads), so
   the four events several parts share are hooked there, once, and call each part's handler:
-  `tool.call` (count for the surface ledger, then minify), `turn.complete` (flush the counts,
-  then fold when it pays), `prompt.submit` (reload notice, rating question, plan reminder) and
+  `tool.call` (count for the surface ledger, minify, the disk notice), `turn.complete` (flush the counts,
+  then fold when it pays), `prompt.submit` (reload notice, disk notice, rating question, plan reminder) and
   `session.start` (declare the catalog, set up the plan). No part imports another part's hooks.
 - Each part is one file that registers only its own matched hooks: `followline.ts`,
   `compaction.ts`, `commands.ts` (the command tools, the session block, call counting),
@@ -192,17 +221,17 @@ guards with a `check` hold the stop; a toast says so once.
   `$` is only handed to function declarations, and `$.env.get` takes literal names (`io.ts`
   lists the ones read).
 - `hooks/io.ts` is the one door to the machine: the logic (`surface.ts`, `incidents.ts`,
-  `loadout.ts`, `hygiene.ts`) takes an `Io`, which is `$` in a hook and node in `bin/node-io.ts`.
+  `loadout.ts`, `hygiene.ts`, `gardener.ts`) takes an `Io`, which is `$` in a hook and node in `bin/node-io.ts`.
 - `hooks/plan.ts` is the plan's pure logic (tools, reminder, gate, stop verdict, check helpers);
   `plan-hooks.ts` runs it in Claude Code's engine, `host/core.ts` in every other agent.
 - `hooks/incidents.ts` is the incident ledger: `incident($, kind, detail)` from a hook,
   `note(io, kind, detail)` from the core.
 - `bin/overwatch` (bun) runs every command from a terminal: `status`, `scan`, `checks`,
-  `mistake`, `report`, `index`, `rate`, `loadout`, `hygiene`. `data/` holds the surface seed.
+  `mistake`, `report`, `index`, `rate`, `loadout`, `hygiene`, `disk`, `disk-clean`. `data/` holds the surface seed.
 - The session block (tool surface plus lessons) is added by `commands.ts` through `prompt.compose`,
   built once per session from the tools the session has, so a removed plugin's tools never show
   and the prompt cache stays warm.
-- `skills/` holds `overwatch`, `plan`, `loadout`, `hygiene` and `verification-before-completion`.
+- `skills/` holds `overwatch`, `plan`, `loadout`, `hygiene`, `gardener` and `verification-before-completion`.
 
 ## Settings
 

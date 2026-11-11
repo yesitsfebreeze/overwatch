@@ -2,7 +2,7 @@ import { test, expect } from "claude-code/testing"
 import { COMMAND_TOOLS } from "./commands.ts"
 
 test("tools: flat, no action switch, required fields named in the schema", () => {
-  expect(Object.keys(COMMAND_TOOLS)).toEqual(["checks", "scan", "status", "report", "rate", "mistake", "loadout", "hygiene_ledger"])
+  expect(Object.keys(COMMAND_TOOLS)).toEqual(["checks", "scan", "status", "report", "rate", "mistake", "loadout", "hygiene_ledger", "disk", "disk_clean"])
   for (const t of Object.values(COMMAND_TOOLS)) {
     expect(Object.keys(t.properties ?? {})).not.toContain("action")
     for (const r of t.required ?? []) expect(Object.keys(t.properties ?? {})).toContain(r)
@@ -16,7 +16,8 @@ test("session: a command tool runs in-process; a refusal is an error result", as
   on("process.run", async (_: any, e: any) => (runs.push(e), { value: { exitCode: 0, stdout: "", stderr: "" } }) as any)
   const ok = JSON.stringify(await $.tool.call({ tool: "mcp__overwatch__checks" } as any))
   expect(ok).toContain("no checks frozen")
-  expect(runs).toEqual([]) // in-process: reading the frozen checks spawns nothing
+  // In-process: reading the frozen checks spawns nothing. The one `df` is the gardener reading the free space beside the result.
+  expect(runs.filter((r) => r.argv?.[0] !== "df")).toEqual([])
   const bad = await $.tool.call({ tool: "mcp__overwatch__rate", name: "WebFetch", verdict: "useful", reason: "x" } as any)
   expect(JSON.stringify(bad)).toContain("needs a trigger")
   expect((bad as any).isError).toBe(true)

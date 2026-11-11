@@ -3,6 +3,7 @@ import { catalog, declareCatalog, guardCall, takeNotice, TOOL_PREFIX } from "./c
 import { COMMAND_TOOLS, countCall, flushCalls, register as commands, takeEvaluation } from "./commands.ts"
 import { COMPACTION_TOOLS, compactToolCall, compactTurnEnd, compactionEnabled, register as compaction } from "./compaction.ts"
 import { register as followline } from "./followline.ts"
+import { FULL_PERCENT, fullNotice } from "./gardener.ts"
 import { ignoreHint, sessionIo } from "./io.ts"
 import { PLAN_TOOLS } from "./plan.ts"
 import { planReminder, register as plan, startPlan } from "./plan-hooks.ts"
@@ -21,11 +22,30 @@ async function takeIgnoreHint($: any): Promise<string> {
   try { return await ignoreHint(await sessionIo($)) } catch { return "" } // never costs the prompt its reminder
 }
 
+/** How often the free space is read (one `df`), and whether this crossing of the threshold was already announced. */
+const DISK_CHECK_MS = 5 * 60_000
+let diskAt = 0
+let diskTold = false
+/** The gardener's ask to free space: once each time the disk crosses `full` percent, checked at most every DISK_CHECK_MS. */
+async function takeDiskNotice($: any, full: number): Promise<string> {
+  if (!(full > 0) || Date.now() - diskAt < DISK_CHECK_MS) return ""
+  diskAt = Date.now()
+  try {
+    const notice = await fullNotice(await sessionIo($), full)
+    const first = !!notice && !diskTold
+    diskTold = !!notice
+    return first ? notice : ""
+  } catch { return "" } // never costs a prompt or a tool result
+}
+
 // Loaded from a watched folder (--plugin-dir, CLAUDE_CODE_PLUGIN_DIRS), a save reloads
 // it: `register` runs again and so does `session.start`, which re-declares every tool
 // through the catalog (catalog.ts).
 export const register: Register = async (on, options) => {
   hinted = false
+  diskAt = 0
+  diskTold = false
+  const full = typeof options.diskFullPercent === "number" ? options.diskFullPercent : FULL_PERCENT
   const compacting = compactionEnabled(options)
   const cat = catalog({ ...COMMAND_TOOLS, ...PLAN_TOOLS, ...(compacting ? COMPACTION_TOOLS : {}) })
   // Before everything else: a stale call is refused before any part sees it.
@@ -33,10 +53,13 @@ export const register: Register = async (on, options) => {
   // followline first, so its $.followline.put exists before a part publishes a slot.
   await followline(on, options)
 
-  // Every tool call: counted for the surface ledger, its result minified by compaction.
+  // Every tool call: counted for the surface ledger, its result minified by compaction. A main-thread
+  // result also carries the gardener's ask when the disk filled up mid-turn (a build, a download).
   on("tool.call", async ($, e, next) => {
     countCall(e as any)
-    return compacting ? compactToolCall($, e, next as any) : next(e)
+    const r: any = await (compacting ? compactToolCall($, e, next as any) : next(e))
+    const notice = (e as any).agentId || r?.deny !== undefined ? "" : await takeDiskNotice($, full)
+    return notice ? { ...r, context: [...(r?.context ?? []), notice] } : r
   })
 
   // After a turn: the counts go to the ledger, compaction folds when it pays.
@@ -47,10 +70,10 @@ export const register: Register = async (on, options) => {
   })
 
   // Beside every prompt, each at most once where it is a one-off: the ask to gitignore
-  // .overwatch/, a tool-reload notice (catalog.ts), the surface ledger's rating question
+  // .overwatch/, the gardener's ask when the disk is nearly full, a tool-reload notice (catalog.ts), the surface ledger's rating question
   // (commands.ts), then the plan.
   on("prompt.submit", async ($, e: any, next) => {
-    const parts = await Promise.all([takeIgnoreHint($), takeNotice($), takeEvaluation($), planReminder($, e)])
+    const parts = await Promise.all([takeIgnoreHint($), takeDiskNotice($, full), takeNotice($), takeEvaluation($), planReminder($, e)])
     return next({ ...e, context: [...(e.context ?? []), ...parts.filter(Boolean)] })
   })
 

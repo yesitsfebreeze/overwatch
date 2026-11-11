@@ -1,4 +1,5 @@
 // overwatch's one binary: every command over the same modules the hooks run (hooks/*.ts), through the bun Io.
+import { clean, disk } from "../hooks/gardener.ts"
 import { hygiene } from "../hooks/hygiene.ts"
 import { loadout } from "../hooks/loadout.ts"
 import { checklist, index, mistake, rate, report, scan, status } from "../hooks/surface.ts"
@@ -17,6 +18,8 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch rate <name> <useful|situational|dead> <reason> [--trigger <situation>]
   overwatch loadout                active plugins per layer
   overwatch hygiene [repo] [--issues] [--selftest]   skill ledger for a repo's skills/
+  overwatch disk [disk] [--min-mib <n>]   what can go: this project, or the whole disk
+  overwatch disk-clean [--apply] <path…>  delete surveyed leftovers; a dry run without --apply
   overwatch mcp                    stdio MCP server with every overwatch tool (other agents)
   overwatch hook <host> <event>    command hook for another agent: host event JSON on stdin
 
@@ -35,6 +38,11 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
     case "report": return ok(await report(io))
     case "loadout": return ok(await loadout(io))
     case "hygiene": return hygiene(io, args)
+    case "disk": {
+      const m = args.indexOf("--min-mib")
+      return ok(await disk(io, args[0] === "disk" ? "disk" : "project", m < 0 ? undefined : Number(args[m + 1]) || undefined))
+    }
+    case "disk-clean": return ok(await clean(io, args.filter((a) => a !== "--apply"), args.includes("--apply")))
     case "mcp": await serve(io); return { text: "", code: 0 }
     case "hook": return hook(io, args[0] ?? "", args[1] ?? "", await Bun.stdin.text())
     case "index": return ok(await index(io, args.includes("--active") ? JSON.parse(await Bun.stdin.text()) : undefined))
