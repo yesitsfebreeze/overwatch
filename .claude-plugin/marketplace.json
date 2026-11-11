@@ -1,0 +1,12 @@
+{
+  "name": "overwatch",
+  "owner": {
+    "name": "Stefan Hoevelmanns"
+  },
+  "plugins": [
+    {
+      "name": "overwatch",
+      "source": "./"
+    }
+  ]
+}

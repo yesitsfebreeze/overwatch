@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""steward — verification checks, a mistakes ledger and a session vitals line.
+
+Ported from pi's steward extension, minus what Claude Code already does
+(background jobs, loops, file-staleness tracking).
+
+  steward scan             discover this repo's checks and freeze them
+  steward plan             the frozen checks plus the mistakes to avoid
+  steward mistake <text>   record one mistake, folded into every later plan
+  steward status           git state, frozen checks, guard blocks, memory hogs
+  steward index            the tool-surface block (what session start injects)
+  steward report           usage counts, verdicts, learned triggers
+  steward rate <name> <useful|situational|dead> <reason> [--trigger <line>]
+  steward tally            fold a finished turn's tool fires in (Stop hook)
+
+Repo state: .claude/steward/. Machine state (tool surface):
+<XDG_STATE_HOME>/steward/surface.json.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import reflex  # noqa: E402  (same directory, no package)
+
+PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT", str(Path(__file__).resolve().parent.parent))
+STATE = Path(".claude/steward")
+CHECKS = STATE / "checks.json"
+MISTAKES = STATE / "mistakes.md"
+CHECK_RE = re.compile(r"test|lint|check|build|verify|typecheck|fmt")
+# Language servers and toolchains that outlive their editor and eat swap.
+ORPHAN_RE = re.compile(r"rust-analyzer|language-server|langserver|tsserver|gopls|pyright|clangd")
+
+
+def sh(*args, **kwargs):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10, **kwargs).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def discover():
+    checks = []
+    pkg = Path("package.json")
+    if pkg.exists():
+        try:
+            scripts = json.loads(pkg.read_text()).get("scripts", {})
+            checks += [f"npm run {s}" for s in scripts if re.match(r"^(test|lint|typecheck|build|check)", s)]
+        except (json.JSONDecodeError, OSError):
+            pass
+    if Path("Cargo.toml").exists():
+        checks += ["cargo test", "cargo clippy"]
+    if Path("go.mod").exists():
+        checks.append("go test ./...")
+    if Path("Makefile").exists():
+        checks += ["make test", "make lint"]
+    for name in ("justfile", "Justfile", ".justfile"):
+        jf = Path(name)
+        if not jf.exists():
+            continue
+        # Parameters sit between the name and the colon (`verify rev="HEAD":`); `:=` is a variable.
+        recipes = re.findall(r"^([a-zA-Z][\w-]*)[^:\n]*:(?!=)", jf.read_text(), re.M)
+        checks += [f"just {r}" for r in recipes if CHECK_RE.search(r)]
+        break
+    if Path("pyproject.toml").exists():
+        checks.append("pytest")
+    # A justfile recipe wrapping cargo/npm supersedes the raw command.
+    wrapped = {c.split()[-1] for c in checks if c.startswith("just ")}
+    # `verify` is the project's own gate (kern's runs from a clean worktree), so it covers both.
+    if wrapped & {"test", "verify"}:
+        checks = [c for c in checks if c not in ("cargo test", "npm run test", "pytest")]
+    if "verify" in wrapped:
+        checks = [c for c in checks if c != "just test"]
+    if wrapped & {"check", "verify"}:
+        checks = [c for c in checks if c != "cargo clippy"]
+    return sorted(dict.fromkeys(checks))
+
+
+def mistakes_text():
+    return MISTAKES.read_text().strip() if MISTAKES.exists() else "(none recorded)"
+
+
+def scan():
+    checks = discover()
+    STATE.mkdir(parents=True, exist_ok=True)
+    CHECKS.write_text(json.dumps(
+        {"checks": checks, "at": datetime.now(timezone.utc).isoformat(timespec="seconds")}, indent=2) + "\n")
+    if not checks:
+        return "no checks discovered — add them to .claude/steward/checks.json by hand"
+    body = "\n".join(f"- {c}" for c in checks)
+    return f"froze {len(checks)} checks to {CHECKS}:\n{body}"
+
+
+def frozen():
+    try:
+        return json.loads(CHECKS.read_text()).get("checks", [])
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def plan():
+    checks = frozen()
+    if not checks:
+        return "no checks frozen — run `steward scan` first"
+    body = "\n".join(f"- {c}" for c in checks)
+    return ("# verification plan\nrun these, in order, before calling the change done:\n"
+            f"{body}\n\n# mistakes to avoid\n{mistakes_text()}")
+
+
+def mistake(text):
+    if not text:
+        return "usage: steward mistake <what went wrong>"
+    STATE.mkdir(parents=True, exist_ok=True)
+    if not MISTAKES.exists():
+        MISTAKES.write_text("# Mistakes to fold into every plan\n")
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with MISTAKES.open("a") as fh:
+        fh.write(f"- {text} ({stamp})\n")
+    return f"recorded: {text}"
+
+
+def guard_blocks():
+    log = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "steward/guard.log"
+    if not log.exists():
+        return "guard: no blocks logged"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    n = sum(1 for line in log.read_text().splitlines() if line.startswith(f"[{today}"))
+    return f"guard: {n} block(s) today ({log})"
+
+
+def memory():
+    out = sh("ps", "-axo", "rss=,comm=")
+    rows = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            mb = int(parts[0]) // 1024
+        except ValueError:
+            continue
+        rows.append((mb, parts[1]))
+    rows.sort(reverse=True)
+    top = [f"  {mb}MB {name.split('/')[-1]}" for mb, name in rows[:5]]
+    orphans = [f"  {mb}MB {name.split('/')[-1]}" for mb, name in rows if ORPHAN_RE.search(name) and mb > 500]
+    lines = ["memory (top 5):", *top]
+    if orphans:
+        lines += ["language servers over 500MB — check for orphans after an editor exit:", *orphans]
+    return "\n".join(lines)
+
+
+def status():
+    lines = ["# steward"]
+    dirty = sh("git", "status", "--porcelain").strip().splitlines()
+    lines.append(f"git: dirty, {len(dirty)} path(s)\n" + "\n".join(f"  {d}" for d in dirty[:10])
+                 if dirty else "git: clean")
+    checks = frozen()
+    lines.append(f"checks: {', '.join(checks)}" if checks else "checks: none frozen (run `steward scan`)")
+    mist = mistakes_text()
+    lines.append(f"mistakes: {len(mist.splitlines()) - 1} recorded" if mist != "(none recorded)"
+                 else "mistakes: none recorded")
+    lines.append(guard_blocks())
+    lines.append(memory())
+    lines.append(reflex.report(PLUGIN_ROOT).splitlines()[0])
+    return "\n".join(lines)
+
+
+def main(argv):
+    act = argv[0] if argv else "status"
+    rest = " ".join(argv[1:])
+    if act == "scan":
+        return scan()
+    if act == "plan":
+        return plan()
+    if act == "mistake":
+        return mistake(rest)
+    if act == "status":
+        return status()
+    if act == "index":
+        return reflex.index(PLUGIN_ROOT)
+    if act == "report":
+        return reflex.report(PLUGIN_ROOT)
+    if act == "tally":
+        try:
+            return reflex.tally(json.load(sys.stdin))
+        except (json.JSONDecodeError, ValueError):
+            return "reflex: no hook payload on stdin"
+    if act == "rate":
+        args, trigger = argv[1:], None
+        if "--trigger" in args:
+            i = args.index("--trigger")
+            trigger = " ".join(args[i + 1:]).strip() or None
+            args = args[:i]
+        if len(args) < 2:
+            return ('usage: steward rate <name> <useful|situational|dead> "<reason>" '
+                    '[--trigger "<situation>"]')
+        return reflex.rate(args[0], args[1], " ".join(args[2:]).strip(), trigger)
+    return __doc__
+
+
+if __name__ == "__main__":
+    print(main(sys.argv[1:]))

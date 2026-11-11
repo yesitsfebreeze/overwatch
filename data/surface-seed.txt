@@ -1,0 +1,30 @@
+# Tool names steward may draw from for a cold-tool evaluation, one per line.
+# Seeded with this harness's deferred and rare surface — the tools whose value
+# is unobservable until something deliberately points at them. Edit freely.
+Agent
+Artifact
+ArtifactComments
+ArtifactData
+AskUserQuestion
+CronCreate
+CronList
+EnterPlanMode
+EnterWorktree
+ExitPlanMode
+LSP
+Monitor
+NotebookEdit
+PushNotification
+RemoteTrigger
+ScheduleWakeup
+SendMessage
+Skill
+TaskStop
+ToolSearch
+WebFetch
+WebSearch
+Workflow
+ListAgents
+mcp__kern__kern_asp
+mcp__kern__kern_fs
+mcp__kern__kern_memory
