@@ -218,11 +218,11 @@ export const statusPayload = (s: Status, ts: number) => ({ v: 1, ts, ...s });
 
 type State = { home: string };
 
-// The one file written outside the working directory: kern's deck reads it at this path.
+// What kern's deck reads: a sibling of the originals dir, so decompress/search_context never list it.
 // Plain write: $.fs has no rename, so a reader may rarely see a torn file and must treat bad JSON as silent.
 async function publish($: EngineInterface, s: Status) {
   try {
-    const path = `${await $.env.get('HOME')}/.claude/componion/status/${await $.session.id()}.json`;
+    const path = `${await $.session.cwd()}/${STATE_DIR}/status/${await $.session.id()}.json`;
     await $.fs.write(path, JSON.stringify(statusPayload(s, Date.now())));
   } catch { /* status is best effort */ }
 }

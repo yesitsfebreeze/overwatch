@@ -30,19 +30,19 @@ for other agents), nothing in the home folder:
 | `checks.json`, `mistakes.md` | the frozen checks and the recorded mistakes |
 | `plan.json` | tasks and guards, for agents other than Claude Code (which keeps them per session) |
 | `context/<session>/` | originals of cut and folded messages, read back by `decompress` |
+| `status/<session>.json` | compaction's status, which kern's turn deck reads |
 
 In a git repository that does not ignore `.overwatch/`, the agent is asked once per session to
 add it to `.gitignore` (`io.ts`, `ignoreHint`; decided by `git check-ignore`). Plain files: read,
 edit or delete them freely.
 
-Two files of other plugins stay where those plugins look: kern's turn deck reads compaction's
-status from `~/.claude/componion/status/<session>.json`, and `status` counts search-guard's
-blocks from `<XDG_STATE_HOME>/overwatch/guard.log`. The Jev dataset (`~/.jev/log/`) is shared too.
+Outside it, only what other plugins own: `status` counts search-guard's blocks from
+`<XDG_STATE_HOME>/overwatch/guard.log`, and the Jev dataset (`~/.jev/log/`) is shared.
 
 ## Parts
 
-It replaces six plugins. Their names remain only where something outside reads them: kern's
-status file, the `componion` gauge id and the Jev dataset's client name.
+It replaces six plugins. Their names remain only where something outside reads them: the
+`componion` gauge id and the Jev dataset's client name.
 
 | part | was | what it does |
 |---|---|---|
