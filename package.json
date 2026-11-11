@@ -1,0 +1,18 @@
+{
+  "name": "overwatch",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Overwatches coding agents: tasks and guards that hold every stop until the work is done, an edit gate, repo checks and a mistakes ledger. One core, adapters for Claude Code, Codex, pi, opencode, Hermes, Gemini CLI, Copilot CLI, Cursor and Factory Droid.",
+  "license": "MIT",
+  "bin": { "overwatch": "bin/overwatch" },
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./adapters/pi/overwatch.ts"],
+    "skills": ["./skills/tasksitter", "./skills/overwatch", "./skills/verification-before-completion"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

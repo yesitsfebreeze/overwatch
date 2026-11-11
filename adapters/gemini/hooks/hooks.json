@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "overwatch hook gemini SessionStart" }] }],
+    "BeforeAgent": [{ "hooks": [{ "type": "command", "command": "overwatch hook gemini BeforeAgent" }] }],
+    "BeforeTool": [{ "matcher": "write_file|replace", "hooks": [{ "type": "command", "command": "overwatch hook gemini BeforeTool" }] }],
+    "AfterAgent": [{ "hooks": [{ "type": "command", "command": "overwatch hook gemini AfterAgent", "timeout": 180000 }] }]
+  }
+}

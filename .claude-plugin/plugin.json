@@ -1,13 +1,12 @@
 {
   "name": "overwatch",
   "version": "0.1.0",
-  "description": "Context and tuning in one plugin: compaction (minifies tool results, folds old history into indexes, reads any of it back by id), one followline above the prompt with gauges other plugins publish, the tool-surface ledger with verification checks, /loadout (active plugins per layer) and /hygiene (skill ledger for a repo).",
+  "description": "Overwatches the agent in one plugin: tasks and guards that hold every stop until the work is done and reviewed, compaction (minifies tool results, folds old history into indexes, reads any of it back by id), one followline above the prompt with gauges other plugins publish, the tool-surface ledger with verification checks, /loadout (active plugins per layer) and /hygiene (skill ledger for a repo).",
   "author": {
     "name": "Stefan Hoevelmanns"
   },
   "license": "MIT",
   "types": "./types/index.d.ts",
-  "hooks": "./hooks/steward.json",
   "userConfig": {
     "enabled": {
       "type": "boolean",

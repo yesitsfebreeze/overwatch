@@ -1,4 +1,4 @@
-# Tool names steward may draw from for a cold-tool evaluation, one per line.
+# Tool names overwatch may draw from for a cold-tool evaluation, one per line.
 # Seeded with this harness's deferred and rare surface — the tools whose value
 # is unobservable until something deliberately points at them. Edit freely.
 Agent
@@ -25,6 +25,3 @@ WebFetch
 WebSearch
 Workflow
 ListAgents
-mcp__kern__kern_asp
-mcp__kern__kern_fs
-mcp__kern__kern_memory

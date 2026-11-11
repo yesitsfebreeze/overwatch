@@ -1,7 +1,7 @@
 ---
 name: hygiene
 description: Lint and rank the skills in one repository's skills/ folder: writes LEDGER.md (ranking, duplicates, dependencies, findings) and syncs one GitHub issue per finding. Use when the user asks to rate, review or clean up the skills in a repo, wants a skill ledger, asks which skills duplicate or depend on each other, or says "/hygiene". Not for writing a new skill, reviewing application code, or ranking installed plugins (that is gemify).
-allowed-tools: Read, Glob, Grep, Bash(python3 *), Bash(gh *)
+allowed-tools: Read, Glob, Grep, mcp__overwatch__hygiene_ledger, Bash(*/bin/overwatch *), Bash(gh *)
 ---
 
 # hygiene
@@ -10,20 +10,23 @@ One job: every skill in `skills/` carries its own weight and can be swapped in
 or out without another skill noticing. This skill measures that, writes the
 ledger, and turns what is wrong into issues.
 
-Two halves. The script measures; you judge. Never skip the second half — the
-script points, it does not decide.
+Two halves. The command measures; you judge. Never skip the second half — the
+command points, it does not decide.
 
 ## 1. Measure
 
+`mcp__overwatch__hygiene_ledger {repo?}` writes the ledger and returns the
+summary. The issue sync and the self-test run from the overwatch binary:
+
 ```bash
-python3 ${CLAUDE_SKILL_DIR}/hygiene.py [repo]           # writes <repo>/LEDGER.md
-python3 ${CLAUDE_SKILL_DIR}/hygiene.py [repo] --issues  # also syncs that repo's GitHub issues (needs gh auth)
-python3 ${CLAUDE_SKILL_DIR}/hygiene.py --selftest       # the script's own check
+${CLAUDE_PLUGIN_ROOT}/bin/overwatch hygiene [repo]            # writes <repo>/LEDGER.md
+${CLAUDE_PLUGIN_ROOT}/bin/overwatch hygiene [repo] --issues   # also syncs that repo's GitHub issues (needs gh auth)
+${CLAUDE_PLUGIN_ROOT}/bin/overwatch hygiene --selftest        # its own check
 ```
 
 `repo` is the folder that holds `skills/`. It defaults to the current
-directory when that has a `skills/` folder, else to the repo this skill lives
-in. Run it from inside the repo to review, and the default is right.
+directory when that has a `skills/` folder, else to the overwatch plugin
+itself. Run it from inside the repo to review, and the default is right.
 
 `LEDGER.md` has four tables:
 
@@ -36,7 +39,7 @@ in. Run it from inside the repo to review, and the default is right.
 
 Score starts at 100. A high finding costs 25, medium 10, low 5. `used` counts
 Skill-tool invocations in the local Claude transcripts under
-`~/.claude/projects` and is blank on CI — usage is a local signal only.
+`~/.claude/projects`; usage is a local signal only.
 
 ### The rules
 
@@ -63,7 +66,7 @@ into another skill's folder. A bare word is not a dependency.
 
 ## 2. Judge
 
-Read `LEDGER.md`, then decide these three things — they are what the script
+Read `LEDGER.md`, then decide these three things — they are what the command
 cannot:
 
 1. **Why it exists.** The ranking column is the first sentence of the
@@ -78,7 +81,7 @@ cannot:
    in the issue. "Pairs well with X" without needing X is not a dependency —
    write it that way.
 
-Judgement findings the script did not raise become issues by hand, titled
+Judgement findings the command did not raise become issues by hand, titled
 `[hygiene] <skill>: <what>` and labelled `hygiene`, so the next run treats
 them like its own.
 
@@ -89,17 +92,12 @@ them like its own.
 never duplicate; a finding that disappears closes its issue with a comment.
 Low findings live in the ledger only.
 
-## On CI
+## Local only
 
-`hygiene.yml` next to this file is the workflow. Copy it to
-`.github/workflows/hygiene.yml` in the repo to review; it checks out this
-skill's repo beside the target and runs the script against `.`. On every push
-to `main`, weekly, and on demand it runs the selftest, then the script with
-`--issues`, then commits `LEDGER.md` if it changed. Pull requests get the
-selftest and a fresh ledger in the job log, no issues and no commit. If the
-repo runs Prettier over markdown, add `LEDGER.md` to its `.prettierignore` —
-the ledger is generated, not formatted. The judged half is not on CI — run
-`/hygiene` locally after a red run, or when the ledger says a skill dropped.
+Hygiene runs here, from overwatch: `/hygiene`, `mcp__overwatch__hygiene_ledger`
+or `bin/overwatch hygiene <repo>`. No workflow is shipped and no other
+repository is fetched. If the repo runs Prettier over markdown, add `LEDGER.md`
+to its `.prettierignore`: the ledger is generated, not formatted.
 
 ## Done means
 

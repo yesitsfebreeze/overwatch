@@ -37,7 +37,8 @@ const VERBATIM = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SKIP_KEYS = new Set(['data', 'base64', 'source']);
 const MAX_TOOLS = 8;
 export const FOLD_TAG = '[componion fold';
-const TOOL_PREFIX = 'mcp__overwatch__';
+import { TOOL_PREFIX, type ToolSpec } from './version.ts';
+import { countCall, flushCalls } from './tools.ts';
 
 export const tokens = (chars: number) => Math.ceil(chars / 4);
 
@@ -277,8 +278,27 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
   return heads;
 }
 
+/** componion's own tools, declared through overwatch's catalog (version.ts) when componion is on. */
+export const COMPONION_TOOLS: Record<string, ToolSpec> = {
+  decompress: {
+    description: 'Read back the full original of a message or tool result componion cut or folded. Pass the id from a "decompress id=…" marker or a fold index line (#toolu_… or fN.k).',
+    properties: { id: { type: 'string' } },
+    required: ['id'],
+  },
+  search_context: {
+    description: 'Search every message and tool result componion cut or folded this session. Returns matching lines with their decompress id.',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+  },
+};
+
+/** Off for the A/B baseline: `--settings` pluginConfigs componion@inline enabled=false. */
+export const componionEnabled = (options: Record<string, unknown>) => options.enabled !== false;
+
 export const register: Register = (on, options) => {
-  if (options.enabled === false) return; // A/B baseline: `--settings` pluginConfigs componion@inline enabled=false
+  // Off (the A/B baseline), its tool.call and turn.complete still carry the surface
+  // ledger's counting: the engine takes one unmatched hook per event from the plugin.
+  const enabled = componionEnabled(options);
   const n = (k: string, d: number) => (typeof options[k] === 'number' ? (options[k] as number) : d);
   const limits: Limits = {
     keepRecentTokens: n('keepRecentTokens', 6000),
@@ -311,21 +331,9 @@ export const register: Register = (on, options) => {
   let fails: { tool: string; text: string }[] = [];
   const status = (): Status => ({ saved, folds, lastFold, jev, compacting, failures, nextCompactAt: lastCompactAt + growthTokens });
 
-  on('session.start', async ($, e, next) => {
-    await $.tool.register({
-      name: 'decompress',
-      description: 'Read back the full original of a message or tool result componion cut or folded. Pass the id from a "decompress id=…" marker or a fold index line (#toolu_… or fN.k).',
-      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-    });
-    await $.tool.register({
-      name: 'search_context',
-      description: 'Search every message and tool result componion cut or folded this session. Returns matching lines with their decompress id.',
-      inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-    });
-    return next(e);
-  });
-
   on('tool.call', async ($, e, next) => {
+    countCall(e as any);
+    if (!enabled) return next(e);
     if (e.tool === `${TOOL_PREFIX}decompress`) {
       const id = String((e as { id?: unknown }).id ?? '').replace(/^#/, '');
       // Exact id: a suffix match would read f11.1 back for f1.1.
@@ -348,7 +356,8 @@ export const register: Register = (on, options) => {
     const r = await next(e);
     if (r.deny !== undefined) return r;
     if (r.isError && !e.agentId) fails.push({ tool: e.tool, text: String(r.text ?? JSON.stringify(r.result)) });
-    if (VERBATIM.has(e.tool) || r.isError || r.result === undefined) return r;
+    // overwatch's own script tools print tables meant to be read as-is (loadout, report).
+    if (VERBATIM.has(e.tool) || e.tool.startsWith(TOOL_PREFIX) || r.isError || r.result === undefined) return r;
     try {
       const id = e.tool_use_id;
       const result = minifyDeep(r.result, liveMax, id);
@@ -365,6 +374,7 @@ export const register: Register = (on, options) => {
   });
 
   on('session.compact', async ($, e, next) => {
+    if (!enabled) return next(e);
     const main = !e.agentId;
     if (main) foldedRestart = false;
     const n = frozenEnd(e.messages);
@@ -404,6 +414,7 @@ export const register: Register = (on, options) => {
   // rides beside the result, so dropping `additionalContext` is not enough):
   // skip it. After the built-in summary they run as usual.
   on('classic.SessionStart', async ($, e, next) => {
+    if (!enabled) return next(e);
     if (e.source !== 'compact' || !foldedRestart) return next(e);
     foldedRestart = false;
     return {};
@@ -411,6 +422,8 @@ export const register: Register = (on, options) => {
 
   // After a turn: compact when it pays (growth or cold cache); a failed turn leaves one line on disk.
   on('turn.complete', async ($, e, next) => {
+    void flushCalls($, e);
+    if (!enabled) return next(e);
     if (!e.agentId && fails.length) {
       const line = `${new Date().toISOString()} ${failureLine(fails, limits.outcomeMaxChars)}\n`;
       fails = [];

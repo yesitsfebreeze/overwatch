@@ -1,0 +1,141 @@
+import type { Register } from "claude-code"
+import { fromEngine, type Io } from "./io.ts"
+import { hygiene } from "./hygiene.ts"
+import { loadout } from "./loadout.ts"
+import { checklist, evaluation, firedBy, index, load, mistake, rate, report, scan, status, tally, VERDICTS } from "./surface.ts"
+import { TOOL_PREFIX, type ToolSpec } from "./version.ts"
+
+/** One flat tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
+export type CommandTool = ToolSpec & { run: (io: Io, e: any) => Promise<string> }
+
+const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")
+
+/**
+ * The commands overwatch exposes as `mcp__overwatch__<name>`. bin/overwatch runs
+ * the same functions from a terminal; the skills stay for the judgement around them.
+ */
+export const COMMAND_TOOLS: Record<string, CommandTool> = {
+  checks: {
+    description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. Run from the repo root. Read-only. Empty until scan froze the checks.",
+    run: checklist,
+  },
+  scan: {
+    description: "Discover this repo's test/lint/build commands (package.json scripts, Cargo.toml, go.mod, Makefile, justfile, pyproject.toml) and freeze them into .claude/overwatch/checks.json for checks. A discovery pass, not law: a wrong guess is fixed by editing checks.json.",
+    run: scan,
+  },
+  status: {
+    description: "Git state, the frozen checks, search-guard blocks and language servers over 500MB (orphaned rust-analyzer, tsserver …). Use when the machine feels loaded or before a long run. Read-only.",
+    run: status,
+  },
+  report: {
+    description: "Tool-surface ledger for this machine: how often each tool and shell binary fired, the verdicts given, the learned trigger lines, and which tool is up for rating. Read-only.",
+    run: report,
+  },
+  rate: {
+    description: "Record a verdict on the tool the tool-surface block asked about, judged against the work actually done in this session. useful: it should have been reached here and was not (trigger required: that line ships into every later session). situational: correct to sit idle. dead: nothing needs it. With no basis to judge, say so as the reason; never invent a trigger.",
+    properties: {
+      name: { type: "string", description: "The tool or binary as the tool-surface block named it, e.g. \"WebFetch\" or \"sh:units\"." },
+      verdict: { type: "string", enum: [...VERDICTS], description: "useful, situational or dead." },
+      reason: { type: "string", description: "One line why, from this session's work." },
+      trigger: { type: "string", description: "Required for useful: the situation that should have fired it, e.g. \"a unit conversion in a shell pipeline\"." },
+    },
+    required: ["name", "verdict", "reason"],
+    run: (io, e) => rate(io, text(e.name), text(e.verdict), text(e.reason), text(e.trigger) || undefined),
+  },
+  mistake: {
+    description: "Record a mistake that cost time twice, with the why, so every later checklist carries it, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .claude/overwatch/mistakes.md in this repo.",
+    properties: { text: { type: "string", description: "The mistake and what to do instead, one line." } },
+    required: ["text"],
+    run: (io, e) => mistake(io, text(e.text)),
+  },
+  loadout: {
+    description: "Which Claude Code plugins are active per layer (global, each account, project, local) as one table. Cells: x enabled there, / inherited from global, * global and listed, . off. Read-only; print the table verbatim.",
+    run: (io) => loadout(io),
+  },
+  hygiene_ledger: {
+    description: "Lint and rank the skills in a repository's skills/ folder and write <repo>/LEDGER.md (ranking, duplicates, dependencies, findings). Returns the summary; read LEDGER.md for the tables. The hygiene skill covers judging the findings and syncing GitHub issues.",
+    properties: { repo: { type: "string", description: "The folder that holds skills/; leave out for the current directory." } },
+    run: async (io, e) => {
+      const r = await hygiene(io, text(e.repo) ? [text(e.repo)] : [])
+      if (r.code) throw new Error(r.text)
+      return r.text
+    },
+  },
+}
+
+const SURFACE = { plugin: "overwatch", key: "surface" } as const
+/** The session's Io; a function declaration, the one form `$` may be handed to. */
+async function io($: any): Promise<Io> {
+  return fromEngine($, await $.session.cwd())
+}
+
+/**
+ * The tool-surface block for this session, built once from the tools it has (the
+ * request's and `$.tool.list()`'s) and kept in $.state: a reload neither redraws
+ * the tool up for rating nor changes the prompt mid-session.
+ */
+export async function surfaceBlock($: any, offered: readonly string[]): Promise<string> {
+  const { value } = await $.state.get(SURFACE)
+  if (typeof value === "string") return value
+  const listed: string[] = await $.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => [])
+  const at = await io($)
+  const block = await index(at, [...new Set([...offered, ...listed])], false).catch(() => undefined)
+  if (block === undefined) return "" // a failed build is retried on the next request, not cached
+  const drawn = (await load(at).catch(() => undefined))?.drawn
+  // The rating question waits in $.state for takeEvaluation; an empty block is cached too: it is the answer for this session.
+  await Promise.all([$.state.set(SURFACE, block), drawn && $.state.set(EVALUATION, evaluation(drawn))])
+  return block
+}
+
+/** Main-thread tool calls (shell binaries not counted twice) before the rating question rides a prompt. */
+export const EVALUATE_AFTER_CALLS = 5
+const EVALUATION = { plugin: "overwatch", key: "evaluation" } as const
+const CALLS = { plugin: "overwatch", key: "calls" } as const
+
+/**
+ * The rating question, once, on the first prompt after the session did real work:
+ * a chat-only session is never asked. tasksitter's prompt.submit hook calls it
+ * (the engine takes one unmatched hook per event from the plugin).
+ */
+export async function takeEvaluation($: any): Promise<string | undefined> {
+  const [{ value: text }, { value: calls }] = await Promise.all([$.state.get(EVALUATION), $.state.get(CALLS)])
+  if (!text || (calls ?? 0) < EVALUATE_AFTER_CALLS) return undefined
+  await $.state.set(EVALUATION, "")
+  return text
+}
+
+// The ledger counts the main thread's calls as they run and folds them in once per turn.
+let fired: Record<string, number> = {}
+
+/** Counts one tool call; componion's tool.call hook calls it (the engine takes one unmatched hook per event). */
+export function countCall(e: { tool: string; agentId?: string; command?: unknown }): void {
+  if (!e.agentId) for (const n of firedBy(e.tool, e)) fired[n] = (fired[n] ?? 0) + 1
+}
+
+/** Folds the turn's counts into the ledger; componion's turn.complete hook calls it. */
+export async function flushCalls($: any, e: { agentId?: string }): Promise<void> {
+  if (e.agentId || !Object.keys(fired).length) return
+  const batch = fired
+  fired = {}
+  const calls = Object.entries(batch).reduce((n, [k, c]) => (k.startsWith("sh:") ? n : n + c), 0)
+  try { const { value } = await $.state.get(CALLS); await $.state.set(CALLS, (value ?? 0) + calls) } catch {}
+  // Best-effort and fire-and-forget: a session that ended under it loses this turn's counts, never the hook.
+  try { await tally(await io($), batch) } catch { /* counting never breaks a turn */ }
+}
+
+export const register: Register = (on) => {
+  // The surface block rides the system prompt, after the cache boundary, naming only active tools.
+  on("prompt.compose", async ($, e, next) => {
+    const [r, block] = await Promise.all([next(e), surfaceBlock($, e.tools)])
+    return block ? { ...r, sections: [...r.sections, { id: "overwatch:surface", text: block, scope: "session" as const }] } : r
+  })
+
+  for (const [name, t] of Object.entries(COMMAND_TOOLS))
+    on("tool.call", { tool: TOOL_PREFIX + name }, async ($, e: any) => {
+      try {
+        return { result: (await t.run(await io($), e)) || "(no output)" }
+      } catch (err: any) {
+        return { result: String(err?.message ?? err), isError: true as const }
+      }
+    })
+}

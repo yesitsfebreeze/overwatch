@@ -1,0 +1,171 @@
+overwatch: installation instructions for any coding agent
+
+You are a coding agent asked to install overwatch for yourself (or for another
+agent the user names). Read this whole file first, then follow the common steps
+and exactly one HOST section. Do not edit files outside the paths named here.
+Before you change a config file, read it, keep everything already in it, and
+merge; never replace a user's config wholesale. Report every command you ran
+and its outcome; if a step fails, stop and report it instead of working around it.
+
+WHAT IT DOES
+
+overwatch keeps an agent honest about finishing work:
+
+- Plan: tasks (task_add, task_progress, task_complete, ...) and guards
+  (guard_add: one yes/no question per deliverable, ideally with a shell `check`
+  whose exit code 0 means upheld).
+- Edit gate: file writes and edits are refused until the plan has at least one
+  task and one guard.
+- Stop hold: ending the turn is refused while a task is open or a guard's check
+  fails; the reason is sent back so the agent keeps working. Three refusals with
+  nothing changed, or eight since the user last spoke, let the stop through.
+- Repo checks and memory: scan / checks (frozen test, lint and build commands),
+  mistake (a ledger folded into every later checklist), status.
+
+Every host runs the same TypeScript core (host/core.ts) through one of: native
+plugin code (Claude Code, pi, opencode, Hermes), command hooks calling
+`overwatch hook <host> <event>`, and the MCP server `overwatch mcp`. Plan state
+lives in ${XDG_STATE_HOME:-~/.local/state}/overwatch/plans/, one file per
+project (git toplevel), so hooks and tools agree without a session id.
+
+COMMON STEPS (every host)
+
+1. Prerequisites: git and bun (https://bun.sh) on PATH. Check:
+     git --version && bun --version
+   Missing bun: `curl -fsSL https://bun.sh/install | bash`, then open a new shell.
+
+2. Get the source. Pick a stable directory; this file calls it $OW.
+     OW="$HOME/dev/overwatch"
+     git clone https://github.com/yesitsfebreeze/overwatch "$OW"
+   If the user already has a checkout (for example
+   ~/dev/claude-plugins/essentials/overwatch), set OW to it and skip the clone.
+
+3. Put the binary on PATH (every hook and MCP config calls `overwatch`):
+     mkdir -p "$HOME/.local/bin"
+     ln -sf "$OW/bin/overwatch" "$HOME/.local/bin/overwatch"
+   Make sure ~/.local/bin is on PATH for the agent's processes, then verify:
+     overwatch help
+     echo '{}' | overwatch hook codex Stop; echo "exit $?"     # expect exit 0
+
+4. Verify the core:
+     cd "$OW" && bun test ./host/host.check.ts                 # expect 0 fail
+
+5. Do the HOST section for the agent being set up, then run its VERIFY line.
+   Restart the agent afterwards: hooks, plugins and MCP servers load at start.
+
+HOST: Claude Code
+
+  Native plugin (function hooks module, compaction, followline, all tools).
+    claude plugin marketplace add "$OW"
+    claude plugin install overwatch@overwatch --scope user
+  The hooks module needs CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 in the environment
+  Claude Code starts with. For live edits: `claude --plugin-dir "$OW"`.
+  VERIFY: cd "$OW" && claude plugin validate . && claude plugin test .
+
+HOST: OpenAI Codex CLI
+
+  Plugin: .codex-plugin/plugin.json, hooks adapters/codex/hooks.json, MCP
+  adapters/codex/mcp.json.
+    codex plugin marketplace add "$OW"
+    codex plugin add overwatch@overwatch
+  Plugin hooks run only after the user approves them: tell the user to open
+  `/hooks` in Codex and trust the four overwatch hooks (SessionStart,
+  UserPromptSubmit, PreToolUse, Stop). You cannot approve them yourself.
+  Hooks need `[features] hooks = true` in ~/.codex/config.toml on versions that
+  still gate them; add it only if absent.
+  VERIFY: new session, ask "call overwatch plan_show"; it answers "No tasks, no guards."
+
+HOST: pi (earendil-works pi-coding-agent)
+
+  Native extension (tools, reminder, edit gate, stop hold) plus skills, from
+  package.json "pi".
+    pi install "$OW"
+  One-off try without installing: pi -e "$OW/adapters/pi/overwatch.ts"
+  VERIFY: in a scratch git repo,
+    pi --no-session -p "Create hello.txt containing hi with the write tool."
+  The first write is refused until the plan exists; the run ends with the task
+  done and hello.txt present.
+
+HOST: opencode (2.x, @opencode/plugin)
+
+  Native plugin (tools, reminder per request, edit permission denied while the
+  plan is empty, re-prompt on session.idle while the plan is open).
+    cd "$OW/adapters/opencode" && bun install
+  Add the directory to the "plugins" array in ~/.config/opencode/opencode.jsonc
+  (user) or .opencode/opencode.json (one project), keeping existing entries:
+    "plugins": [ ..., "<absolute path of $OW>/adapters/opencode" ]
+  The key is "plugins" (plural); local entries must be directories.
+  VERIFY: opencode run "call overwatch_plan_show"  →  "No tasks, no guards."
+
+HOST: Hermes Agent (NousResearch)
+
+  Python plugin for the hooks; tools through MCP.
+    mkdir -p ~/.hermes/plugins
+    ln -sfn "$OW/adapters/hermes/overwatch" ~/.hermes/plugins/overwatch
+    hermes plugins enable overwatch
+  Merge into ~/.hermes/config.yaml (keep existing servers):
+    mcp_servers:
+      overwatch:
+        command: overwatch
+        args: ["mcp"]
+  Limit: Hermes has no general stop hook; pre_verify fires only on turns that
+  edited code, so the stop hold covers those turns only.
+  VERIFY: hermes plugins list shows overwatch enabled; a new session can call plan_show.
+
+HOST: Google Gemini CLI
+
+  Extension in adapters/gemini (manifest, MCP server, hooks/hooks.json).
+    gemini extensions link "$OW/adapters/gemini"
+  Gemini warns that the extension has hooks and asks for consent: the user
+  confirms it.
+  VERIFY: gemini extensions list shows overwatch; /mcp lists the overwatch tools.
+
+HOST: GitHub Copilot CLI
+
+  Plugin: .github/plugin/plugin.json, hooks adapters/copilot/hooks.json, MCP
+  adapters/copilot/mcp.json.
+    copilot plugin install "$OW"
+  Limit: Copilot drops command-hook output on prompt submit, so the plan
+  reminder rides sessionStart only; the edit gate (preToolUse edit|create) and
+  the stop hold (agentStop) work. The repository folder must be trusted.
+  VERIFY: copilot plugin list shows overwatch; a session can call plan_show.
+
+HOST: Cursor (IDE and cursor-agent)
+
+  Plugin: .cursor-plugin/plugin.json, hooks adapters/cursor/hooks.json, MCP
+  adapters/cursor/mcp.json.
+    mkdir -p ~/.cursor/plugins/local
+    ln -sfn "$OW" ~/.cursor/plugins/local/overwatch
+  Then the user runs "Developer: Reload Window" in Cursor.
+  Limits: beforeSubmitPrompt cannot add context, so the reminder rides
+  sessionStart; preToolUse matches Cursor's "Write" tool; the stop hold sends a
+  followup_message (loop_limit 8). cursor-agent fires only part of the hooks.
+  VERIFY: Cursor Settings → Hooks and MCP list overwatch.
+
+HOST: Factory Droid
+
+  Droid reads a plugin's hooks from hooks/hooks.json, which in this repository
+  is Claude Code's hooks module, so install by config instead:
+    droid mcp add overwatch overwatch mcp
+  Merge every event of $OW/adapters/droid/hooks.json into ~/.factory/hooks.json
+  (append to existing event arrays; create the file with that content if absent).
+  VERIFY: a new droid session can call plan_show; an Edit before task_add is refused.
+
+HOST: anything else
+
+  If the agent has an MCP client: register a stdio server named overwatch,
+  command `overwatch`, args ["mcp"], started in the project directory (or set
+  OVERWATCH_PROJECT to the project path in its env). That gives the tools.
+  If it runs command hooks in Claude Code's format (stdin JSON with cwd and
+  tool_name; hookSpecificOutput.additionalContext; permissionDecision deny;
+  decision block on stop), point them at `overwatch hook claude <Event>` for
+  SessionStart, UserPromptSubmit, PreToolUse (file write/edit tools) and Stop.
+  Otherwise install the MCP server only, and tell the user that the edit gate
+  and stop hold are not active on this host.
+
+AFTER INSTALL
+
+Tell the user: what you installed, for which agent, the VERIFY output, any
+approval they still have to give (Codex /hooks, Gemini consent, Cursor reload),
+and the limits listed for that host. Uninstall reverses the same steps; plan
+state can be removed with: rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/overwatch/plans"

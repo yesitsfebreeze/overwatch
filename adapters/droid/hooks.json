@@ -1,0 +1,6 @@
+{
+  "SessionStart": [{ "hooks": [{ "type": "command", "command": "overwatch hook droid SessionStart" }] }],
+  "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "overwatch hook droid UserPromptSubmit" }] }],
+  "PreToolUse": [{ "matcher": "Create|Edit|ApplyPatch", "hooks": [{ "type": "command", "command": "overwatch hook droid PreToolUse" }] }],
+  "Stop": [{ "hooks": [{ "type": "command", "command": "overwatch hook droid Stop", "timeout": 180 }] }]
+}

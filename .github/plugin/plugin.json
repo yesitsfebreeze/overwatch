@@ -1,0 +1,7 @@
+{
+  "name": "overwatch",
+  "version": "0.2.0",
+  "description": "Tasks and guards that hold every stop until the work is done, an edit gate until the plan exists, repo checks and a mistakes ledger.",
+  "hooks": "adapters/copilot/hooks.json",
+  "mcpServers": "adapters/copilot/mcp.json"
+}

@@ -1,0 +1,6 @@
+name: overwatch
+version: "0.2.0"
+description: Tasks and guards that hold the stop until the work is done; the edit gate; repo checks and the mistakes ledger. Tools come from the overwatch MCP server (mcp_servers.overwatch in config.yaml).
+author: Stefan Hoevelmanns
+license: MIT
+provides_hooks: [pre_llm_call, pre_tool_call, pre_verify]
