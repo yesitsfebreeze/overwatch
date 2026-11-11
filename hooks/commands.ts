@@ -2,8 +2,8 @@ import type { Register } from "claude-code"
 import { fromEngine, type Io } from "./io.ts"
 import { hygiene } from "./hygiene.ts"
 import { loadout } from "./loadout.ts"
-import { checklist, evaluation, firedBy, index, load, mistake, rate, report, scan, status, tally, VERDICTS } from "./surface.ts"
-import { TOOL_PREFIX, type ToolSpec } from "./version.ts"
+import { checklist, evaluation, firedBy, index, learned, load, mistake, rate, report, scan, status, tally, VERDICTS } from "./surface.ts"
+import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
 /** One flat tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
 export type CommandTool = ToolSpec & { run: (io: Io, e: any) => Promise<string> }
@@ -24,11 +24,11 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: scan,
   },
   status: {
-    description: "Git state, the frozen checks, search-guard blocks and language servers over 500MB (orphaned rust-analyzer, tsserver …). Use when the machine feels loaded or before a long run. Read-only.",
+    description: "Git state, the frozen checks, what overwatch caught in the last 30 days, search-guard blocks and language servers over 500MB (orphaned rust-analyzer, tsserver …). Use when the machine feels loaded or before a long run. Read-only.",
     run: status,
   },
   report: {
-    description: "Tool-surface ledger for this machine: how often each tool and shell binary fired, the verdicts given, the learned trigger lines, and which tool is up for rating. Read-only.",
+    description: "What overwatch recorded on this machine: how often each tool and shell binary fired, the verdicts given, the learned trigger lines, and the misbehaviour caught in the last 30 days (edits before a plan, stops with work open, invalid calls, failed turns) with the newest catches. Read-only.",
     run: report,
   },
   rate: {
@@ -43,7 +43,7 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: (io, e) => rate(io, text(e.name), text(e.verdict), text(e.reason), text(e.trigger) || undefined),
   },
   mistake: {
-    description: "Record a mistake that cost time twice, with the why, so every later checklist carries it, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .claude/overwatch/mistakes.md in this repo.",
+    description: "Record a mistake that cost time twice, with the why, so every later session in this repo starts with it and every checklist carries it, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .claude/overwatch/mistakes.md in this repo.",
     properties: { text: { type: "string", description: "The mistake and what to do instead, one line." } },
     required: ["text"],
     run: (io, e) => mistake(io, text(e.text)),
@@ -70,17 +70,20 @@ async function io($: any): Promise<Io> {
 }
 
 /**
- * The tool-surface block for this session, built once from the tools it has (the
- * request's and `$.tool.list()`'s) and kept in $.state: a reload neither redraws
- * the tool up for rating nor changes the prompt mid-session.
+ * The block overwatch adds to this session's system prompt: the tool surface (what
+ * gets used, learned triggers) and the lessons of earlier sessions (habits caught
+ * repeatedly, this repo's recorded mistakes). Built once from the tools the session
+ * has (the request's and `$.tool.list()`'s) and kept in $.state: a reload neither
+ * redraws the tool up for rating nor changes the prompt mid-session.
  */
 export async function surfaceBlock($: any, offered: readonly string[]): Promise<string> {
   const { value } = await $.state.get(SURFACE)
   if (typeof value === "string") return value
   const listed: string[] = await $.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => [])
   const at = await io($)
-  const block = await index(at, [...new Set([...offered, ...listed])], false).catch(() => undefined)
-  if (block === undefined) return "" // a failed build is retried on the next request, not cached
+  const parts = await Promise.all([index(at, [...new Set([...offered, ...listed])], false), learned(at)]).catch(() => undefined)
+  if (parts === undefined) return "" // a failed build is retried on the next request, not cached
+  const block = parts.filter(Boolean).join("\n\n")
   const drawn = (await load(at).catch(() => undefined))?.drawn
   // The rating question waits in $.state for takeEvaluation; an empty block is cached too: it is the answer for this session.
   await Promise.all([$.state.set(SURFACE, block), drawn && $.state.set(EVALUATION, evaluation(drawn))])
@@ -94,8 +97,7 @@ const CALLS = { plugin: "overwatch", key: "calls" } as const
 
 /**
  * The rating question, once, on the first prompt after the session did real work:
- * a chat-only session is never asked. tasksitter's prompt.submit hook calls it
- * (the engine takes one unmatched hook per event from the plugin).
+ * a chat-only session is never asked. overwatch.ts's prompt.submit hook calls it.
  */
 export async function takeEvaluation($: any): Promise<string | undefined> {
   const [{ value: text }, { value: calls }] = await Promise.all([$.state.get(EVALUATION), $.state.get(CALLS)])
@@ -107,12 +109,12 @@ export async function takeEvaluation($: any): Promise<string | undefined> {
 // The ledger counts the main thread's calls as they run and folds them in once per turn.
 let fired: Record<string, number> = {}
 
-/** Counts one tool call; componion's tool.call hook calls it (the engine takes one unmatched hook per event). */
+/** Counts one tool call; overwatch.ts's tool.call hook calls it. */
 export function countCall(e: { tool: string; agentId?: string; command?: unknown }): void {
   if (!e.agentId) for (const n of firedBy(e.tool, e)) fired[n] = (fired[n] ?? 0) + 1
 }
 
-/** Folds the turn's counts into the ledger; componion's turn.complete hook calls it. */
+/** Folds the turn's counts into the ledger; overwatch.ts's turn.complete hook calls it. */
 export async function flushCalls($: any, e: { agentId?: string }): Promise<void> {
   if (e.agentId || !Object.keys(fired).length) return
   const batch = fired

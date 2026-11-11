@@ -12,7 +12,7 @@ export type Seg = { text: string; color?: string; backgroundColor?: string; dimC
 // tmux-sys's gauge: `w` cells, filled on base16 slot 8 and trough on slot 18
 // (base01), the percent centred across all. With `saved`, the fill covers
 // `used` percent of the cells and the next `saved` percent take base16 slot 3
-// (yellow): componion's context kept, folded away, and free. Slots, never hex:
+// (yellow): compaction's context kept, folded away, and free. Slots, never hex:
 // the terminal's base16 theme paints them.
 export function gauge(pct: number, w = 10, used?: number, saved?: number): Seg[] {
   const c = (x: number) => Math.max(0, Math.min(100, Math.round(x)))
@@ -40,8 +40,14 @@ export function line(slots: Record<string, FollowlineSlot>, order: readonly stri
   return out
 }
 
+/** Slot ids from before the parts were merged, as a `slots` setting may still name them. */
+const RENAMED: Record<string, string> = { tasksitter: "plan" }
+
+/** The `slots` setting as slot ids in draw order. */
+export const slotOrder = (setting: unknown): string[] => [...new Set(String(setting ?? "").split(",").map(s => s.trim()).filter(Boolean).map(id => RENAMED[id] ?? id))]
+
 export const register: Register = (on, options) => {
-  const order = String(options.slots ?? "").split(",").map(s => s.trim()).filter(Boolean)
+  const order = slotOrder(options.slots)
 
   // $.followline.put is an event: the noun's core answers nothing, this
   // plugin's own hook stores the slot, so a producer's call redraws the line.

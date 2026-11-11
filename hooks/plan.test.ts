@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing"
-import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, reminder, reviewLine, slot, stopVerdict, tool } from "./tasksitter.ts"
+import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, reminder, reviewLine, slot, stopVerdict, tool } from "./plan.ts"
 import { fitResults, guardId, lastTurn, makeGuard, openGuards, selectResults } from "./guards.ts"
 import type { Guard, Plan } from "../types/index.d.ts"
 
@@ -198,7 +198,7 @@ test("review fixes: progress needs a number, stalls ignore output noise, harness
 })
 
 test("slot: one followline gauge, red while a guard fails, green when all holds", () => {
-  expect(slot(EMPTY)).toMatchObject({ id: "tasksitter", pct: 0, detail: "no plan" })
+  expect(slot(EMPTY)).toMatchObject({ id: "plan", pct: 0, detail: "no plan" })
   const failing = slot(P([OPEN], [G("tests", { met: true }), G("docs", { last: { exit: 1 } })]))
   expect(failing).toMatchObject({ pct: 45, color: "red", detail: "0/1 done · guards 1/2 · ▶ #1 fix the parser" })
   expect(slot(P([DONE], [G("tests", { met: true })]))).toMatchObject({ pct: 100, color: "green" })
@@ -257,7 +257,7 @@ test("session: gate, plan, large edit, stop refused until checks pass and code-r
   let r = await stop()
   expect(r).toContain('task #1 \\"the work\\"')
   expect(r).toContain("exit 1")
-  expect(slots.at(-1)?.tasksitter).toMatchObject({ id: "tasksitter", color: "red" })
+  expect(slots.at(-1)?.plan).toMatchObject({ id: "plan", color: "red" })
   // guard_check runs the checks now, before any stop.
   expect(JSON.stringify(await $.tool.call({ tool: tool("guard_check") } as any))).toContain("tests-pass-bun: failing (exit 1)")
   await $.tool.call({ tool: tool("task_complete"), task_id: 1 } as any)

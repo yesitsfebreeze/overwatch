@@ -1,7 +1,7 @@
 {
   "name": "overwatch",
-  "version": "0.1.0",
-  "description": "Overwatches the agent in one plugin: tasks and guards that hold every stop until the work is done and reviewed, compaction (minifies tool results, folds old history into indexes, reads any of it back by id), one followline above the prompt with gauges other plugins publish, the tool-surface ledger with verification checks, /loadout (active plugins per layer) and /hygiene (skill ledger for a repo).",
+  "version": "0.2.0",
+  "description": "Catches a coding agent misbehaving, records it and makes the next session better: tasks and guards hold every stop until the work is done and reviewed, every catch (an edit before a plan, a stop with work open, an invalid call, a failed turn) lands in a ledger, and repeated habits plus recorded mistakes ride the next session's prompt. Also in the plugin: compaction (minified tool results, old history folded into indexes, any of it read back by id), one gauge line above the prompt, the tool-surface ledger with a repo's verification checks, /loadout and /hygiene.",
   "author": {
     "name": "Stefan Hoevelmanns"
   },
@@ -11,7 +11,7 @@
     "enabled": {
       "type": "boolean",
       "title": "Enabled",
-      "description": "Off leaves every hook unregistered (baseline for measuring savings).",
+      "description": "Off turns compaction off (the baseline for measuring its savings). Tasks, guards and the ledgers stay on.",
       "default": true
     },
     "toolResultMaxChars": {
@@ -34,26 +34,26 @@
     },
     "keepThreshold": {
       "type": "number",
-      "title": "Jev keep threshold",
-      "description": "Jev keep threshold.",
+      "title": "Fold: keep threshold",
+      "description": "Jev grades each folded tool call 0 to 1. At or above this, the fold index keeps the head of its result; below, only a short head or the id.",
       "default": 0.6
     },
     "truncateHeadChars": {
       "type": "number",
-      "title": "Jev: chars kept of a dropped result",
-      "description": "Jev: chars kept of a dropped result.",
+      "title": "Fold: chars kept of a dropped result",
+      "description": "Characters Jev keeps of a result it drops when it rebuilds the conversation. The fold index sets its own heads from the grade, so this changes nothing visible today.",
       "default": 150
     },
     "maxStateTokens": {
       "type": "number",
-      "title": "Jev: max state tokens",
-      "description": "Jev: max state tokens.",
+      "title": "Fold: history sent to the grader (tokens)",
+      "description": "Upper bound on the conversation history sent to Jev as background for one fold.",
       "default": 15000
     },
     "maxRequestTokens": {
       "type": "number",
-      "title": "Jev: max request tokens",
-      "description": "Jev: max request tokens.",
+      "title": "Fold: grader request size (tokens)",
+      "description": "Upper bound on one Jev request; a larger fold is graded in several requests.",
       "default": 18000
     },
     "keepRecentTokens": {
@@ -71,7 +71,7 @@
     "cacheTtlMinutes": {
       "type": "number",
       "title": "Prompt cache TTL (minutes)",
-      "description": "Idle this long, the cache is cold; componion compacts then at no cache cost.",
+      "description": "Idle this long, the prompt cache is cold; a fold then costs no cache rewrite, so one runs.",
       "default": 60
     },
     "foldFromTokens": {
@@ -82,9 +82,9 @@
     },
     "slots": {
       "type": "string",
-      "title": "Slots",
-      "description": "Comma-separated slot ids in draw order; a published slot not listed is not drawn.",
-      "default": "componion,tasksitter,kern"
+      "title": "Gauges above the prompt",
+      "description": "Comma-separated slot ids in draw order; a published slot not listed is not drawn. `plan` is the tasks-and-guards gauge (`tasksitter` still works).",
+      "default": "componion,plan,kern"
     }
   }
 }

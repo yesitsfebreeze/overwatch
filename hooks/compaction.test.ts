@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing';
-import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './componion.ts';
+import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './compaction.ts';
 
 // The fs engine resolves a path before a hook sees it: win32 delivers 'C:\h\x' for '/h/x'.
 // Normalize back so the POSIX keys the mocks pre-seed match on every host.

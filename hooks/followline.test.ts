@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing"
-import { face, gauge, line } from "./followline.ts"
+import { face, gauge, line, slotOrder } from "./followline.ts"
 
 test("gauge: percent centred across fill and trough, base16 slots only", () => {
   expect(gauge(40)).toEqual([
@@ -29,7 +29,7 @@ const producer = {
   register(on: any) {
     on("turn.complete", async ($: any, e: any, next: any) => {
       await $.followline.put({ id: "kern", pct: 60 })
-      await $.followline.put({ id: "tasksitter", pct: 100 })
+      await $.followline.put({ id: "plan", pct: 100 })
       await $.followline.put({ id: "kern", pct: 80 })
       return next(e)
     })
@@ -43,6 +43,11 @@ test("a producer's put draws the line above the prompt", { plugins: [producer] }
   on("ui.render", async () => null as any)
   await $.turn.complete({ turnId: "t1", answer: "", reason: "end_turn" } as any)
   const tree = JSON.stringify(await $.ui.render({ surface: "terminal", component: "AbovePrompt", props: { hasSurvey: false, bodyColumns: 80 } } as any))
-  for (const t of [":D", " kern ", " tasksitter ", "80%", "100%"]) expect(tree).toContain(t)
+  for (const t of [":D", " kern ", " plan ", "80%", "100%"]) expect(tree).toContain(t)
   expect(tree).not.toContain("60%")
+})
+
+test("slots: a setting that still names tasksitter draws the plan gauge, once", () => {
+  expect(slotOrder("componion, tasksitter,kern,plan")).toEqual(["componion", "plan", "kern"])
+  expect(slotOrder(undefined)).toEqual([])
 })

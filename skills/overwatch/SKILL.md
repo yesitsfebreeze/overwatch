@@ -1,10 +1,10 @@
 ---
 name: overwatch
-description: Tool-surface ledger (reflex) and a repo's verification checks. Use when rating the tool the tool-surface block asked about, asking which tools get used here ("overwatch report"), before declaring a change done ("what should I run?"), to record a mistake worth not repeating, or when the machine feels loaded.
+description: What overwatch recorded and a repo's verification checks. Use when asking what the agent was caught doing or which tools get used here ("overwatch report"), rating the tool the tool-surface block asked about, before declaring a change done ("what should I run?"), to record a mistake worth not repeating, or when the machine feels loaded.
 argument-hint: "[status | scan | checks | mistake <text> | report | index | rate ...]"
 ---
 
-# Overwatch: tool surface and checks
+# Overwatch: catches, tool surface and checks
 
 Call the tools directly: each `mcp__overwatch__<action>` runs in-process from
 the session's directory and returns its text. The same commands run from a
@@ -14,18 +14,29 @@ terminal as `"${CLAUDE_PLUGIN_ROOT}/bin/overwatch" <action>` (bun). Invoked as `
 | need | tool |
 |---|---|
 | rate the tool the tool-surface block asked about | `rate {name, verdict, reason, trigger?}` |
-| what gets used on this machine, verdicts, triggers | `report` |
+| what was caught in the last 30 days, what gets used on this machine, verdicts, triggers | `report` |
 | the tool-surface block, on demand | script only: `overwatch index` |
 | freeze this repo's test/lint/build commands | `scan` |
 | the checklist to run before saying a change is done | `checks` |
 | record a mistake so later checklists carry it | `mistake {text}` |
-| git state, frozen checks, guard blocks, memory hogs | `status` |
+| git state, frozen checks, catch counts, guard blocks, memory hogs | `status` |
 
 State: `.claude/overwatch/{checks.json,mistakes.md}` per repo,
-`$XDG_STATE_HOME/overwatch/surface.json` per machine. Plain files — read or edit
+`$XDG_STATE_HOME/overwatch/{surface.json,incidents.json}` per machine. Plain files — read or edit
 them directly when that is shorter.
 
-## reflex — the measured half of the tool surface
+## Catches — what the agent was caught doing
+
+- **Recording is automatic.** A refused edit (no plan yet), a refused stop (work open), a
+  stop let through after repeated refusals, a call that did not fit a tool's schema and a
+  turn with failed tool calls each add one entry: kind, project, what was open.
+- **A habit becomes a lesson.** A kind caught 3 times in 30 days adds its one-line lesson,
+  with the count, to every later session's prompt. Stop doing it and the line drops out as
+  the days leave the window. There is nothing to rate and nothing to clear.
+- **`mistake` is the manual half**: a lesson the counts cannot know. The newest five of a
+  repo ride the prompt beside the habits.
+
+## Tool surface — the measured half
 
 The harness withholds schema from deferred tools, and that policy is static:
 `rare` confirms itself, because a tool never reached is a tool never observed.
@@ -54,7 +65,7 @@ The ledger closes the loop.
 - Never-fired names live in `data/surface-seed.txt` in the plugin. A `dead`
   verdict is the signal to drop a line from it.
 
-## rigor — checks and mistakes
+## Checks and mistakes
 
 - **Before claiming done**, `checks` prints the frozen checks *and* the mistakes
   ledger. Run them; quote the failing line if one fails.

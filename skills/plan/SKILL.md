@@ -1,11 +1,11 @@
 ---
-name: tasksitter
-description: Plan and finish work under tasksitter. Turn the user's request into tasks and guards (yes/no questions, a shell check where one decides), work until every task is done and every guard upheld, then run /simplify on the change, preceded by /code-review when the change is large. Use when the user asks for work, types "/tasksitter", or a stop was refused by tasksitter.
+name: plan
+description: Plan and finish work under overwatch's tasks and guards. Turn the user's request into tasks and guards (yes/no questions, a shell check where one decides), work until every task is done and every guard upheld, then run /simplify on the change, preceded by /code-review when the change is large. Use when the user asks for work, types "/overwatch:plan", or a stop was refused by overwatch.
 ---
 
 The user wrote: **$ARGUMENTS** (when nothing follows, use their last message).
 
-Everything goes through the tasksitter tools (`mcp__overwatch__task_add`, `guard_add`, `task_progress`, `task_complete`, `guard_check`, `plan_show`, …): one tool per change.
+Everything goes through the plan tools (`mcp__overwatch__task_add`, `guard_add`, `task_progress`, `task_complete`, `guard_check`, `plan_show`, …): one tool per change.
 
 ## Before the work starts
 
@@ -22,7 +22,7 @@ File edits are refused until the plan has both tasks and guards. A question or c
 
 ## While working
 
-`progress` (id, 0-100), `active`, `complete` as steps finish. New work from a follow-up: new tasks and guards.
+`task_start {task_id}`, `task_progress {task_id, progress}` (0-100) and `task_complete {task_id}` as steps finish. New work from a follow-up: new tasks and guards.
 
 ## Finishing
 
@@ -34,3 +34,4 @@ clear; edits they make count as part of that pass.
 - Need the user's input: ask with AskUserQuestion, then continue.
 - A guard that cannot be met: say so and why. Only the user drops a guard (`guard_drop {guard_id:"<id>"}`). Run `guard_check` after a fix to confirm a guard holds before stopping.
 - Never reword or drop a guard to get past a refusal.
+- A refused edit or stop is recorded. Caught three times in 30 days, it becomes a lesson line in every later session.

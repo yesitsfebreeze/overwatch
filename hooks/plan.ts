@@ -1,9 +1,9 @@
 import type { Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
-import { TOOL_PREFIX } from "./version.ts"
+import { TOOL_PREFIX } from "./catalog.ts"
 import { guardMark, makeGuard } from "./guards.ts"
 
 // The plan's pure logic: tools, reminder, gate and stop verdict. No engine import, so the
-// Claude Code hooks (tasksitter.ts) and every other host (host/) run the same code.
+// Claude Code hooks (plan-hooks.ts) and every other host (host/core.ts) run the same code.
 
 /** A registered tool's full name: `mcp__<plugin>__<name>`. */
 export const tool = (name: string) => TOOL_PREFIX + name
@@ -69,6 +69,29 @@ const taskState = (t: Task) => (t.status === "done" ? "done" : `${t.progress}%${
 export const ran = (g: Guard) => (g.last?.exit === null ? "did not finish" : `exit ${g.last?.exit}`)
 export const tail = (g: Guard) => (g.last?.out ? `\n    ${g.last.out.trim().split("\n").slice(-4).join("\n    ")}` : "")
 
+/** A guard after its check ran: exit 0 upholds it, null means it did not finish. The last 600 chars of output are kept. */
+export const checked = (g: Guard, exit: number | null, out: string): Guard => ({ ...g, met: exit === 0, last: { exit, out: out.trim().slice(-600) } })
+
+/** The plan with the decided guards written back by id, onto whatever it holds now. */
+export const withDecided = (s: Plan, decided: Guard[]): Plan => {
+  const byId = new Map(decided.map((g) => [g.id, g]))
+  return { ...s, guards: s.guards.map((g) => byId.get(g.id) ?? g) }
+}
+
+/** guard_check's pick: the guards with a check (only `guard_id` when given), or the refusal when there are none. */
+export const pickChecks = (s: Plan, guard_id: unknown): Guard[] | string => {
+  const id = typeof guard_id === "string" && guard_id ? guard_id : undefined
+  const pick = s.guards.filter((g) => g.check && (!id || g.id === id))
+  if (pick.length) return pick
+  return id ? `no guard "${id}" with a check; plan_show lists the guard ids` : "no guard has a check; judged guards are decided at the stop"
+}
+
+/** guard_check's answer: each guard upheld or failing, with its exit and output tail. */
+export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n")
+
+/** The open items of a refused stop in one line, for the incident ledger. */
+export const openLine = (reason: string): string => reason.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2)).join("; ")
+
 /** Where the review pass stands: what plan_show reports beside the plan. */
 export const reviewLine = (v: Verify): string => {
   if (!v.dirty) return "Review: no file changes since the last passed stop."
@@ -105,16 +128,16 @@ export const overall = (s: Plan): number =>
 
 /**
  * The plan as one followline gauge: overall progress, red while a guard fails,
- * green once everything holds. Followline owns the drawing; tasksitter draws nothing itself.
+ * green once everything holds. Followline owns the drawing; a `slots` setting that still names `tasksitter` draws it too (followline.ts).
  */
 export function slot(s: Plan): Slot {
-  if (!s.tasks.length && !s.guards.length) return { id: "tasksitter", label: "tasks", pct: 0, detail: "no plan" }
+  if (!s.tasks.length && !s.guards.length) return { id: "plan", label: "tasks", pct: 0, detail: "no plan" }
   const open = openTasks(s).length
   const held = s.guards.filter((g) => g.met).length
   const failing = s.guards.some((g) => guardMark(g) === "failing")
   const active = s.tasks.find((t) => t.status === "active")
   return {
-    id: "tasksitter",
+    id: "plan",
     label: "tasks",
     pct: overall(s),
     ...(failing ? { color: "red" as const } : !open && held === s.guards.length ? { color: "green" as const } : {}),
@@ -127,17 +150,17 @@ export const CONTRACT = `Every stop is refused until all tasks are done, every g
 /** What the model reads beside every prompt: the full rules until `told`, then one line. */
 export function reminder(s: Plan, told = false, contract = CONTRACT): string {
   const empty = !s.tasks.length && !s.guards.length
-  if (told) return empty ? `[tasksitter] No plan. Before changing files: ${tool("task_add")} + ${tool("guard_add")} (rules given earlier this session).` : `[tasksitter] ${summary(s)}.`
+  if (told) return empty ? `[overwatch] No plan. Before changing files: ${tool("task_add")} + ${tool("guard_add")} (rules given earlier this session).` : `[overwatch] ${summary(s)}.`
   if (empty)
-    return `[tasksitter] No plan yet. If this request involves creating, changing or fixing anything, you MUST first, BEFORE starting the work, (1) break it into tasks with ${tool("task_add")} {titles:[…]} and (2) add one guard per thing the work must deliver with ${tool("guard_add")} {question:"<one yes/no question about the finished work>", check:"<shell command, exit 0 = upheld>"} (leave out check only when no command decides it; files:[…] lets the judge read them). File edits are refused until both exist. Report progress with task_progress {task_id, progress} and finish with task_complete {task_id} as you go. For a question or chat that changes nothing, skip all of this. ${contract}`
-  return `[tasksitter] ${summary(s)}. Keep this current with the tasksitter tools (task_add, task_progress, task_start, task_complete, task_replace, task_remove, guard_add, guard_check, plan_show); add tasks and guards for new work. ${contract}`
+    return `[overwatch] No plan yet. If this request involves creating, changing or fixing anything, you MUST first, BEFORE starting the work, (1) break it into tasks with ${tool("task_add")} {titles:[…]} and (2) add one guard per thing the work must deliver with ${tool("guard_add")} {question:"<one yes/no question about the finished work>", check:"<shell command, exit 0 = upheld>"} (leave out check only when no command decides it; files:[…] lets the judge read them). File edits are refused until both exist. Report progress with task_progress {task_id, progress} and finish with task_complete {task_id} as you go. For a question or chat that changes nothing, skip all of this. ${contract}`
+  return `[overwatch] ${summary(s)}. Keep this current with the plan tools (task_add, task_progress, task_start, task_complete, task_replace, task_remove, guard_add, guard_check, plan_show); add tasks and guards for new work. ${contract}`
 }
 
 /** Why an edit is refused: the plan is missing tasks or guards. */
 export const gateReason = (s: Plan): string | undefined =>
   s.tasks.length && s.guards.length
     ? undefined
-    : `tasksitter: ${s.tasks.length ? "no guards" : s.guards.length ? "no tasks" : "no tasks and no guards"} yet. Before changing files, put the work in the plan: tasks with ${tool("task_add")} {titles} and one guard per deliverable with ${tool("guard_add")} {question, check}. Then retry this call.`
+    : `overwatch: ${s.tasks.length ? "no guards" : s.guards.length ? "no tasks" : "no tasks and no guards"} yet. Before changing files, put the work in the plan: tasks with ${tool("task_add")} {titles} and one guard per deliverable with ${tool("guard_add")} {question, check}. Then retry this call.`
 
 export type StopVerdict = { kind: "pass" } | { kind: "block"; reason: string } | { kind: "stalled"; reason: string }
 
@@ -163,10 +186,10 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
   const sig = JSON.stringify([open.map((t) => [t.id, t.progress]), unmet.map((g) => [g.id, g.last?.exit, Math.round((g.last?.p ?? 0) * 10)]), verify && left])
   const stalls = sig === book.sig ? book.stalls + 1 : 0
   const next = { ...book, sig, stalls, rounds: book.rounds + 1 }
-  const head = `tasksitter: not done — ${lines.length} item(s) open:\n${lines.join("\n")}`
+  const head = `overwatch: not done — ${lines.length} item(s) open:\n${lines.join("\n")}`
   if (stalls >= MAX_STALLS || next.rounds > MAX_ROUNDS)
     return { verdict: { kind: "stalled", reason: `${head}\n${stalls >= MAX_STALLS ? `unchanged over ${MAX_STALLS} refused stops` : `${MAX_ROUNDS} refused stops this prompt`} — letting the stop through for the user to decide.` }, next }
-  return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the tasksitter tools (task_progress, task_complete, guard_check), then stop again. ${CONTRACT}` }, next }
+  return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the plan tools (task_progress, task_complete, guard_check), then stop again. ${CONTRACT}` }, next }
 }
 
 /**

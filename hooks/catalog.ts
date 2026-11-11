@@ -14,6 +14,7 @@
  *   and a call to a tool the catalog dropped is refused with what is left.
  */
 import { cmp } from "./io.ts"
+import { incident } from "./incidents.ts"
 
 export const TOOL_PREFIX = "mcp__overwatch__"
 
@@ -31,7 +32,7 @@ export function hash(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0")
 }
 
-const schemaOf = (t: ToolSpec) => ({ type: "object", properties: t.properties ?? {}, ...(t.required?.length ? { required: [...t.required] } : {}) })
+export const schemaOf = (t: ToolSpec) => ({ type: "object", properties: t.properties ?? {}, ...(t.required?.length ? { required: [...t.required] } : {}) })
 
 /** One tool's fingerprint; the order of keys in its source does not count. */
 const fingerprint = (t: ToolSpec) => hash(JSON.stringify([t.description, schemaOf(t)], (_, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => cmp(a, b))) : v)))
@@ -103,7 +104,10 @@ export function catalog(specs: Record<string, ToolSpec>) {
  */
 export async function guardCall(c: Catalog, $: any, e: any, next: (e: any) => Promise<any>) {
   const deny = c.refusal(e)
-  if (deny) return { deny }
+  if (deny) {
+    await incident($, "invalid_call", deny)
+    return { deny }
+  }
   const r = await next(e)
   // A refused call leaves the notice pending: it is taken only when it can ride a result.
   if (r?.deny !== undefined) return r

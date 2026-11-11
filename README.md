@@ -1,15 +1,35 @@
 # overwatch
 
-Context and tuning for Claude Code in one plugin, in one language (TypeScript) with one binary
-(`bin/overwatch`). It replaces six plugins: componion, followline, tasksitter,
-the tool-surface ledger (once its own plugin), loadout and skill-hygiene (goodesign's `hygiene` skill was a second copy of the same skill).
+overwatch catches a coding agent misbehaving, records it, and makes the next session better.
+One plugin, one language (TypeScript), one binary (`bin/overwatch`), one core for every agent.
+
+```
+/plugin install overwatch --marketplace yesitsfebreeze/overwatch
+```
+
+## Catch, record, improve
+
+| step | what happens | where |
+|---|---|---|
+| catch | a file edit before the plan has tasks and guards is refused; a stop with a task open, a guard failing or the review pass due is refused; a call that does not fit a tool's schema is refused; a turn's failed tool calls are noticed | `plan-hooks.ts`, `catalog.ts`, `compaction.ts`, `host/core.ts` |
+| record | every catch is one entry in the incident ledger: kind, project, what was open. Counts per day for 30 days, the newest 40 entries. `mistake` adds a lesson by hand, per repo | `incidents.ts`, `<XDG_STATE_HOME>/overwatch/incidents.json`, `.claude/overwatch/mistakes.md` |
+| improve | a kind caught 3 times in 30 days is a habit: its one-line lesson rides every later session's system prompt with the count, beside the repo's newest 5 recorded mistakes and the learned tool triggers. A habit that stops drops out by itself as its days leave the window | `learned` in `surface.ts`, added by `commands.ts` |
+
+`status` shows the counts in one line, `report` the counts and the newest catches. Other agents
+record through the same core and get the lessons at session start.
+
+## Parts
+
+It replaces six plugins. Their names remain only where something outside reads them: the
+`~/.claude/componion/` state folder, the `componion` gauge id and the Jev dataset's client name.
 
 | part | was | what it does |
 |---|---|---|
+| plan | tasksitter | the request becomes tasks and yes/no guards; edits wait for a plan, every stop is refused until tasks are done, guards hold and the change went through `/simplify` (and `/code-review` when large) |
+| incidents | new | the ledger above: every catch recorded, repeated habits fed back into the prompt |
 | compaction | componion | minifies every tool result, folds old history into append-only indexes (Jev grades each call), reads any folded message back with `mcp__overwatch__decompress` / `mcp__overwatch__search_context` |
-| tasks | tasksitter | the request becomes tasks and yes/no guards; edits wait for a plan, every stop is refused until tasks are done, guards hold and the change went through `/simplify` (and `/code-review` when large) |
 | followline | followline | one line above the prompt: a mood face, then one gauge per slot that plugins publish through `$.followline.put` |
-| surface | (legacy: steward) | tool-surface ledger, learned triggers, frozen verification checks, mistakes ledger (`/overwatch`) |
+| surface | steward | tool-surface ledger, learned triggers, frozen verification checks, mistakes ledger (`/overwatch`) |
 | loadout | loadout | one table of the active plugins per layer: global, account, project, local (`/loadout`) |
 | hygiene | skill-hygiene | rates the skills in a repository's `skills/` folder, writes LEDGER.md, syncs one GitHub issue per finding (`/hygiene`) |
 
@@ -24,21 +44,21 @@ skill and Bash. The skills stay for the judgement around them.
 | `search_context` | `query` | searches every cut or folded message this session |
 | `checks` | | frozen checks plus recorded mistakes, before saying a change is done |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
-| `status` | | git state, frozen checks, guard blocks, language servers over 500MB |
-| `report` | | tool and binary usage, verdicts, learned triggers |
+| `status` | | git state, frozen checks, catches of the last 30 days, guard blocks, language servers over 500MB |
+| `report` | | tool and binary usage, verdicts, learned triggers, catches with the newest entries |
 | `rate` | `name`, `verdict`, `reason`, `trigger?` | rates the tool the tool-surface block asked about; `useful` needs `trigger` |
-| `mistake` | `text` | records a mistake for every later checklist |
+| `mistake` | `text` | records a mistake for every later session in this repo and every checklist |
 | `loadout` | | active plugins per layer as one table |
 | `hygiene_ledger` | `repo?` | lints and ranks a repo's skills, writes LEDGER.md |
 
-Every tool runs in-process (`hooks/tools.ts` calls the same functions `bin/overwatch` does);
+Every tool runs in-process (`hooks/commands.ts` calls the same functions `bin/overwatch` does);
 a refusal (a `useful` rating without a trigger) is an error result.
 
 ### Hot reload and tool versions
 
 Loaded from a watched folder, a saved change goes live in the running session: the engine
 reloads the hooks module and runs `session.start` again, which re-declares every tool
-(`hooks/version.ts`). An installed plugin, a directory marketplace's included, runs from a
+(`hooks/catalog.ts`). An installed plugin, a directory marketplace's included, runs from a
 copy and is never watched; for live changes start the session with the folder instead:
 
 ```sh
@@ -56,10 +76,10 @@ Every tool goes through one catalog, so no agent keeps calling a schema that cha
 - a call whose input does not fit the current schema (missing or unknown argument, wrong type,
   value outside the enum) is refused with the current schema before any part runs.
 
-## Tasks and guards (tasksitter)
+## Tasks and guards
 
-The plan part, once its own plugin (itself merged from taskview and orly). Its tools are
-`mcp__overwatch__<name>` like every other part's.
+The plan part (once tasksitter, itself merged from taskview and orly). Its tools are
+`mcp__overwatch__<name>` like every other part's. What the agent reads is signed `[overwatch]`.
 
 ### How it behaves
 
@@ -69,10 +89,10 @@ The plan part, once its own plugin (itself merged from taskview and orly). Its t
   judged by Jev from the recorded turn. `Write`, `Edit`, `MultiEdit`,
   `NotebookEdit` and the git-fs `write`/`edit` tools are refused while the plan
   has no tasks or no guards. Questions and chat need no plan.
-- **The view.** tasksitter draws nothing itself. It publishes one gauge,
+- **The view.** The plan draws nothing itself. It publishes one gauge,
   `tasks`, through followline (`$.followline.put`): overall progress, done
   count, upheld guards and the active task; red while a guard fails, green once
-  everything holds. Followline is the part above; its default `slots` include `tasksitter`.
+  everything holds. Its slot id is `plan`; a `slots` setting that still says `tasksitter` draws it too.
 - **The stop.** Every stop runs the guard checks and the judge, then is
   refused (the turn continues) while any of these holds:
   1. a task is open;
@@ -85,7 +105,8 @@ The plan part, once its own plugin (itself merged from taskview and orly). Its t
      work. Edits made during that pass do not reopen it; a task action that
      starts new work does.
 - **No loops.** Three refusals with nothing changed, or eight refusals since
-  the user last spoke, let the stop through with a toast. Background work or a
+  the user last spoke, let the stop through with a toast (recorded as `gave up with work
+  open`; a refused stop as `stop with work open`). Background work or a
   scheduled cron pauses the check. Everything fails open: a missing judge key
   or an unreachable judge never holds the stop.
 
@@ -137,35 +158,43 @@ guards with a `check` hold the stop; a toast says so once.
 
 ## Layout
 
-- `hooks/overwatch.ts` is the plugin's one hooks module. It builds the tool catalog
-  (`version.ts`) and hooks each catalog tool first, then registers `followline.ts`,
-  `componion.ts`, `tools.ts` and `tasksitter.ts`, so `$.followline.put` exists before anything
-  publishes. It owns the plugin's one `session.start`, which declares the catalog.
-- The engine takes one unmatched hook per event from a plugin, checked when the module loads:
-  componion's `tool.call` and `turn.complete` also count calls for the surface ledger
-  (`countCall`, `flushCalls` in `tools.ts`, kept when compaction is off), tasksitter's
-  `prompt.submit` also carries a reload notice. `$` is only handed to function declarations,
-  and `$.env.get` takes literal names (`io.ts` lists the ones read).
-- `hooks/io.ts` is the one door to the machine: the logic (`surface.ts`, `loadout.ts`,
-  `hygiene.ts`) takes an `Io`, which is `$` in a hook and node in `bin/node-io.ts`.
+- `hooks/overwatch.ts` is the plugin's one hooks module and the only place parts meet. The
+  engine takes one unmatched hook per event from a plugin (checked when the module loads), so
+  the four events several parts share are hooked there, once, and call each part's handler:
+  `tool.call` (count for the surface ledger, then minify), `turn.complete` (flush the counts,
+  then fold when it pays), `prompt.submit` (reload notice, rating question, plan reminder) and
+  `session.start` (declare the catalog, set up the plan). No part imports another part's hooks.
+- Each part is one file that registers only its own matched hooks: `followline.ts`,
+  `compaction.ts`, `commands.ts` (the command tools, the session block, call counting),
+  `plan-hooks.ts`. `catalog.ts` holds the tool catalog every tool is declared through.
+  `$` is only handed to function declarations, and `$.env.get` takes literal names (`io.ts`
+  lists the ones read).
+- `hooks/io.ts` is the one door to the machine: the logic (`surface.ts`, `incidents.ts`,
+  `loadout.ts`, `hygiene.ts`) takes an `Io`, which is `$` in a hook and node in `bin/node-io.ts`.
+- `hooks/plan.ts` is the plan's pure logic (tools, reminder, gate, stop verdict, check helpers);
+  `plan-hooks.ts` runs it in Claude Code's engine, `host/core.ts` in every other agent.
+- `hooks/incidents.ts` is the incident ledger: `incident($, kind, detail)` from a hook,
+  `note(io, kind, detail)` from the core.
 - `bin/overwatch` (bun) runs every command from a terminal: `status`, `scan`, `checks`,
   `mistake`, `report`, `index`, `rate`, `loadout`, `hygiene`. `data/` holds the surface seed.
-- The tool-surface block is added by `tools.ts` through `prompt.compose`, built once per
-  session from the tools the session has, so a removed plugin's tools never show.
-- `skills/` holds `overwatch`, `loadout`, `hygiene`, `tasksitter` and `verification-before-completion`.
+- The session block (tool surface plus lessons) is added by `commands.ts` through `prompt.compose`,
+  built once per session from the tools the session has, so a removed plugin's tools never show
+  and the prompt cache stays warm.
+- `skills/` holds `overwatch`, `plan`, `loadout`, `hygiene` and `verification-before-completion`.
 
 ## Settings
 
-`slots` (followline) sets the gauges and their order. The default is `componion,tasksitter,kern`.
+`slots` (followline) sets the gauges and their order. The default is `componion,plan,kern` (`componion` is the context gauge kern publishes).
 The compaction settings (`toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, …) keep
-componion's names and defaults. Compaction state still lives in `~/.claude/componion/`, so folds
-from earlier sessions stay readable.
+their old names and defaults. Compaction state still lives in `~/.claude/componion/`, so folds
+from earlier sessions stay readable and kern's turn deck keeps finding `status/<session>.json`.
+`failures.log` is no longer written: a failed turn is an entry in the incident ledger.
 
 ## Check
 
 ```sh
 claude plugin validate .
-claude plugin test .          # every part: compaction, followline, surface, tools, versions, tasks, hygiene
+claude plugin test .          # every part: compaction, followline, surface, incidents, tools, versions, tasks, hygiene
 bin/overwatch hygiene --selftest
 claude --plugin-dir . -p hi --debug-file /tmp/ow.log; grep "did not load" /tmp/ow.log   # the engine's load rules
 ```
@@ -174,7 +203,7 @@ claude --plugin-dir . -p hi --debug-file /tmp/ow.log; grep "did not load" /tmp/o
 
 The plan part (tasks, guards, edit gate, stop hold) and the command tools run in every major agent
 from one core, `host/core.ts`, which reuses `hooks/plan.ts` (the pure plan logic split out of
-`tasksitter.ts`) and `hooks/tools.ts`. State is a file per project under
+`plan-hooks.ts`) and `hooks/commands.ts`. State is a file per project under
 `<XDG_STATE_HOME>/overwatch/plans/`. Install for any agent: point it at [install.txt](install.txt).
 
 | agent | how | tools | reminder | edit gate | stop hold |
@@ -193,4 +222,5 @@ from one core, `host/core.ts`, which reuses `hooks/plan.ts` (the pure plan logic
   (`host/hooks.ts` maps each host's payload and answer shape).
 - Outside Claude Code there is no compaction, followline, tool-surface block or review pass, and
   judged guards (no `check`) do not hold the stop. Plan state is per project, not per session.
+  Catches are recorded the same way; the lessons ride the session start.
 - Check: `bun test ./host/host.check.ts`.

@@ -1,4 +1,4 @@
-// The one compaction plugin. Every mechanism of ~/dev/ranking.csv the
+// Compaction (once the componion plugin). Every mechanism of ~/dev/ranking.csv the
 // function-hook API reaches:
 //   live     minify every tool result before the model reads it; the original
 //            stays on disk for decompress (persistence, compact serialization)
@@ -36,9 +36,11 @@ const FILE_TOOLS: Record<string, 'read' | 'modified'> = {
 const VERBATIM = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const SKIP_KEYS = new Set(['data', 'base64', 'source']);
 const MAX_TOOLS = 8;
-export const FOLD_TAG = '[componion fold';
-import { TOOL_PREFIX, type ToolSpec } from './version.ts';
-import { countCall, flushCalls } from './tools.ts';
+export const FOLD_TAG = '[overwatch fold';
+// Folds written before the rename, still in a running session's history.
+const OLD_FOLD_TAG = '[componion fold';
+import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
+import { incident } from './incidents.ts';
 
 export const tokens = (chars: number) => Math.ceil(chars / 4);
 
@@ -46,7 +48,7 @@ export function cut(text: string, max: number, id?: string): string {
   if (text.length <= max) return text;
   const half = Math.max(0, Math.floor((max - 80) / 2));
   const tail = id ? `; decompress id=${id}` : '';
-  return `${text.slice(0, half)}\n[… componion cut ${text.length - 2 * half} chars${tail} …]\n${text.slice(-half)}`;
+  return `${text.slice(0, half)}\n[… overwatch cut ${text.length - 2 * half} chars${tail} …]\n${text.slice(-half)}`;
 }
 
 // Loss-free for reading: ANSI colour, progress-bar overwrites, trailing blanks,
@@ -159,7 +161,7 @@ const oneLine = (t: string, n: number) => t.replace(/\s+/g, ' ').trim().slice(0,
 // first prompt (its context blocks ride on it) and every earlier fold.
 export function frozenEnd(messages: readonly SessionMessage[]): number {
   let i = messages.length ? 1 : 0;
-  while (i < messages.length && messages[i].text.startsWith(FOLD_TAG)) i++;
+  while (i < messages.length && (messages[i].text.startsWith(FOLD_TAG) || messages[i].text.startsWith(OLD_FOLD_TAG))) i++;
   return i;
 }
 
@@ -272,139 +274,186 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
     out.jev = 'jev';
   } catch (err) {
     const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim();
-    $.ui.log(`componion: jev failed: ${reason}`, { to: 'debug' });
+    $.ui.log(`overwatch compaction: jev failed: ${reason}`, { to: 'debug' });
     out.jev = `jev failed: ${reason.slice(0, 80)}`;
   }
   return heads;
 }
 
-/** componion's own tools, declared through overwatch's catalog (version.ts) when componion is on. */
-export const COMPONION_TOOLS: Record<string, ToolSpec> = {
+/** Compaction's tools, declared through overwatch's catalog (catalog.ts) when compaction is on. */
+export const COMPACTION_TOOLS: Record<string, ToolSpec> = {
   decompress: {
-    description: 'Read back the full original of a message or tool result componion cut or folded. Pass the id from a "decompress id=…" marker or a fold index line (#toolu_… or fN.k).',
+    description: 'Read back the full original of a message or tool result that was cut or folded out of the context. Pass the id from a "decompress id=…" marker or a fold index line (#toolu_… or fN.k).',
     properties: { id: { type: 'string' } },
     required: ['id'],
   },
   search_context: {
-    description: 'Search every message and tool result componion cut or folded this session. Returns matching lines with their decompress id.',
+    description: 'Search every message and tool result cut or folded out of the context this session. Returns matching lines with their decompress id (up to 50).',
     properties: { query: { type: 'string' } },
     required: ['query'],
   },
 };
 
-/** Off for the A/B baseline: `--settings` pluginConfigs componion@inline enabled=false. */
-export const componionEnabled = (options: Record<string, unknown>) => options.enabled !== false;
+/** Off for the A/B baseline: `--settings` pluginConfigs overwatch enabled=false. */
+export const compactionEnabled = (options: Record<string, unknown>) => options.enabled !== false;
 
-export const register: Register = (on, options) => {
-  // Off (the A/B baseline), its tool.call and turn.complete still carry the surface
-  // ledger's counting: the engine takes one unmatched hook per event from the plugin.
-  const enabled = componionEnabled(options);
+/**
+ * This session's compaction: the settings and what it has done so far. Module state,
+ * set by `register` (a reload starts it over), so the handlers below are plain function
+ * declarations overwatch.ts can call from the plugin's one hook per event.
+ */
+type Session = {
+  limits: Limits; liveMax: number; foldFrom: number; growthTokens: number; cacheTtlMs: number; jevOptions: object;
+  saved: number; folds: number; failures: number; lastFold: number; jev: string; compacting: boolean; lastCompactAt: number; foldedRestart: boolean;
+  idle?: { cancel: () => void }; state: State; grade: { jev: string }; fails: { tool: string; text: string }[];
+};
+
+function session(options: Record<string, unknown>): Session {
   const n = (k: string, d: number) => (typeof options[k] === 'number' ? (options[k] as number) : d);
-  const limits: Limits = {
-    keepRecentTokens: n('keepRecentTokens', 6000),
-    toolResultMaxChars: n('toolResultMaxChars', 2000),
-    outcomeMaxChars: n('outcomeMaxChars', 120),
+  return {
+    limits: { keepRecentTokens: n('keepRecentTokens', 6000), toolResultMaxChars: n('toolResultMaxChars', 2000), outcomeMaxChars: n('outcomeMaxChars', 120) },
+    liveMax: n('liveResultMaxChars', 8000),
+    // Measured on logged request bodies: after a fold tools and system stay
+    // cached, but every message is written to the cache again (Claude Code
+    // merges the fold block into the first user message). A fold pays for that
+    // only once the context is big, so it waits for `foldFromTokens`, then runs
+    // every `compactEveryTokens` (bench/replay.ts sweep: 50k/20k saved most and
+    // on every replayed session). A cold cache folds for free.
+    // Whatever Jev answers is installed; a paid call is never thrown away.
+    foldFrom: n('foldFromTokens', 50000),
+    growthTokens: n('compactEveryTokens', 20000),
+    cacheTtlMs: n('cacheTtlMinutes', 60) * 60000,
+    jevOptions: {
+      preserveRecentMessages: 0,
+      keepThreshold: n('keepThreshold', 0.6),
+      maxStateTokens: n('maxStateTokens', 15000),
+      maxRequestTokens: n('maxRequestTokens', 18000),
+      truncateHeadChars: n('truncateHeadChars', 150),
+    },
+    saved: 0, folds: 0, failures: 0, lastFold: 0, jev: '', compacting: false, lastCompactAt: 0, foldedRestart: false,
+    state: { home: '' }, grade: { jev: '' }, fails: [],
   };
-  const liveMax = n('liveResultMaxChars', 8000);
-  const keepThreshold = n('keepThreshold', 0.6);
-  // Measured on logged request bodies: after a fold tools and system stay
-  // cached, but every message is written to the cache again (Claude Code
-  // merges the fold block into the first user message). A fold pays for that
-  // only once the context is big, so it waits for `foldFromTokens`, then runs
-  // every `compactEveryTokens` (bench/replay.ts sweep: 50k/20k saved most and
-  // on every replayed session). A cold cache folds for free.
-  // Whatever Jev answers is installed; a paid call is never thrown away.
-  const foldFrom = n('foldFromTokens', 50000);
-  const growthTokens = n('compactEveryTokens', 20000);
-  const cacheTtlMs = n('cacheTtlMinutes', 60) * 60000;
-  const jevOptions = {
-    preserveRecentMessages: 0,
-    keepThreshold,
-    maxStateTokens: n('maxStateTokens', 15000),
-    maxRequestTokens: n('maxRequestTokens', 18000),
-    truncateHeadChars: n('truncateHeadChars', 150),
+}
+
+let c: Session = session({});
+const status = (): Status => ({ saved: c.saved, folds: c.folds, lastFold: c.lastFold, jev: c.jev, compacting: c.compacting, failures: c.failures, nextCompactAt: c.lastCompactAt + c.growthTokens });
+
+/** Every tool result, minified before the model reads it; the original stays on disk for decompress. overwatch.ts calls it from the plugin's one unmatched tool.call hook. */
+export async function compactToolCall($: EngineInterface, e: any, next: (e: any) => Promise<any>): Promise<any> {
+  const r = await next(e);
+  if (r.deny !== undefined) return r;
+  if (r.isError && !e.agentId) c.fails.push({ tool: e.tool, text: String(r.text ?? JSON.stringify(r.result)) });
+  // overwatch's own tools print tables and originals meant to be read as-is (loadout, report, decompress).
+  if (VERBATIM.has(e.tool) || e.tool.startsWith(TOOL_PREFIX) || r.isError || r.result === undefined) return r;
+  try {
+    const id = e.tool_use_id;
+    const result = minifyDeep(r.result, c.liveMax, id);
+    const before = JSON.stringify(r.result);
+    const k = before.length - JSON.stringify(result).length;
+    if (k <= 0) return r;
+    c.saved += tokens(k);
+    if (id) await keepOriginal($, c.state, id, typeof r.result === 'string' ? r.result : before);
+    // The context hooks below attached must ride on: the engine skips a hook that drops it.
+    return { result, ...(r.context ? { context: r.context } : {}) };
+  } catch {
+    return r;
+  }
+}
+
+/** After a turn: a failed turn leaves one line in the incident ledger, and a fold runs when it pays (growth or cold cache). overwatch.ts calls it from the plugin's one turn.complete hook. */
+export async function compactTurnEnd($: EngineInterface, e: { agentId?: string }): Promise<void> {
+  if (e.agentId) return;
+  if (c.fails.length) {
+    const line = failureLine(c.fails, c.limits.outcomeMaxChars);
+    c.fails = [];
+    c.failures++;
+    void incident($, 'failed_turn', line);
+  }
+  const tokensNow = (await $.session.usage()).context.tokens ?? 0;
+  const run = async () => {
+    if (c.compacting) return;
+    c.compacting = true;
+    c.lastFold = 0;
+    try { await $.session.compact(); } catch { /* headless sessions cannot compact */ } finally {
+      c.compacting = false;
+      c.lastCompactAt = tokensNow - c.lastFold;
+      void publish($, status());
+    }
   };
+  // Grown enough since the last compaction to be worth a Jev pass now.
+  if (tokensNow >= c.foldFrom && tokensNow - c.lastCompactAt >= c.growthTokens) void run();
+  // Idle past the cache TTL: the next request rewrites the cache anyway,
+  // so compact then at no cache cost, whatever the reduction.
+  c.idle?.cancel();
+  c.idle = $.clock.after(c.cacheTtlMs + 30000, () => { void run(); });
+  await publish($, status());
+}
 
-  let saved = 0, folds = 0, failures = 0, lastFold = 0, jev = '', compacting = false, lastCompactAt = 0, foldedRestart = false, idle: { cancel: () => void } | undefined;
-  const state: State = { home: '' };
-  const grade = { jev: '' };
-  let fails: { tool: string; text: string }[] = [];
-  const status = (): Status => ({ saved, folds, lastFold, jev, compacting, failures, nextCompactAt: lastCompactAt + growthTokens });
+/** decompress: the exact original by id. */
+async function decompress($: EngineInterface, e: { id?: unknown }) {
+  const id = String(e.id ?? '').replace(/^#/, '');
+  const home = await dir($, c.state);
+  // Exact id: a suffix match would read f11.1 back for f1.1.
+  const read = async (x: string, ext: string) => (/^[\w.-]+$/.test(x) ? $.fs.read(`${home}/${x}.${ext}`).catch(() => undefined) : undefined);
+  // A fold's short id for a call is a .ref naming its toolu original.
+  const ref = await read(id, 'ref');
+  const text = await read(ref?.trim() ?? id, 'txt');
+  return text !== undefined ? { result: plainShell(text) } : { result: `no original stored for ${id}`, isError: true as const };
+}
 
-  on('tool.call', async ($, e, next) => {
-    countCall(e as any);
-    if (!enabled) return next(e);
-    if (e.tool === `${TOOL_PREFIX}decompress`) {
-      const id = String((e as { id?: unknown }).id ?? '').replace(/^#/, '');
-      // Exact id: a suffix match would read f11.1 back for f1.1.
-      const read = async (x: string, ext: string) => (/^[\w.-]+$/.test(x) ? $.fs.read(`${await dir($, state)}/${x}.${ext}`).catch(() => undefined) : undefined);
-      // A fold's short id for a call is a .ref naming its toolu original.
-      const ref = await read(id, 'ref');
-      const text = await read(ref?.trim() ?? id, 'txt');
-      return text !== undefined ? { result: plainShell(text) } : { result: `no original stored for ${id}`, isError: true };
-    }
-    if (e.tool === `${TOOL_PREFIX}search_context`) {
-      const q = String((e as { query?: unknown }).query ?? '').toLowerCase();
-      const hits: string[] = [];
-      for (const f of await $.fs.list(await dir($, state)).catch(() => [])) {
-        if (!f.name.endsWith('.txt')) continue;
-        const text = await $.fs.read(`${state.home}/${f.name}`).catch(() => '');
-        for (const line of text.split('\n')) if (line.toLowerCase().includes(q) && hits.length < 50) hits.push(`${f.name.replace(/\.txt$/, '')}: ${line.slice(0, 200)}`);
-      }
-      return { result: hits.join('\n') || `nothing matches ${q}` };
-    }
-    const r = await next(e);
-    if (r.deny !== undefined) return r;
-    if (r.isError && !e.agentId) fails.push({ tool: e.tool, text: String(r.text ?? JSON.stringify(r.result)) });
-    // overwatch's own script tools print tables meant to be read as-is (loadout, report).
-    if (VERBATIM.has(e.tool) || e.tool.startsWith(TOOL_PREFIX) || r.isError || r.result === undefined) return r;
-    try {
-      const id = e.tool_use_id;
-      const result = minifyDeep(r.result, liveMax, id);
-      const before = JSON.stringify(r.result);
-      const k = before.length - JSON.stringify(result).length;
-      if (k <= 0) return r;
-      saved += tokens(k);
-      if (id) await keepOriginal($, state, id, typeof r.result === 'string' ? r.result : before);
-      // The context hooks below attached must ride on: the engine skips a hook that drops it.
-      return { result, ...(r.context ? { context: r.context } : {}) };
-    } catch {
-      return r;
-    }
+/** search_context: matching lines over every stored original, each with its decompress id. */
+async function searchContext($: EngineInterface, e: { query?: unknown }) {
+  const q = String(e.query ?? '').toLowerCase();
+  const hits: string[] = [];
+  const home = await dir($, c.state);
+  const names = (await $.fs.list(home).catch(() => [])).map((f) => f.name).filter((name) => name.endsWith('.txt'));
+  // Read together, matched in listing order: a long session holds hundreds of originals.
+  const texts = await Promise.all(names.map((name) => $.fs.read(`${home}/${name}`).catch(() => '')));
+  names.forEach((name, i) => {
+    for (const line of texts[i].split('\n')) if (hits.length < 50 && line.toLowerCase().includes(q)) hits.push(`${name.replace(/\.txt$/, '')}: ${line.slice(0, 200)}`);
   });
+  return { result: hits.join('\n') || `nothing matches ${q}` };
+}
+
+/** Compaction's own hooks. Off (the A/B baseline) it registers nothing; overwatch.ts then skips the two handlers above. */
+export const register: Register = (on, options) => {
+  c = session(options);
+  if (!compactionEnabled(options)) return;
+
+  on('tool.call', { tool: `${TOOL_PREFIX}decompress` }, async ($, e) => decompress($, e as any));
+  on('tool.call', { tool: `${TOOL_PREFIX}search_context` }, async ($, e) => searchContext($, e as any));
 
   on('session.compact', async ($, e, next) => {
-    if (!enabled) return next(e);
     const main = !e.agentId;
-    if (main) foldedRestart = false;
+    if (main) c.foldedRestart = false;
     const n = frozenEnd(e.messages);
-    const probe = fold(e.messages, limits.keepRecentTokens, new Map(), n);
+    const probe = fold(e.messages, c.limits.keepRecentTokens, new Map(), n);
     const region = probe ? e.messages.slice(n, e.messages.length - (probe.length - n - 1)) : [];
     // Originals first: every folded message stays readable by its id.
     const ids = lineIds(region, n);
     for (const m of region) {
-      if (m.text.length > 240) void keepOriginal($, state, ids.get(m)!, m.text);
+      if (m.text.length > 240) void keepOriginal($, c.state, ids.get(m)!, m.text);
       for (const u of m.toolUses) if (u.text) {
-        void keepOriginal($, state, u.tool_use_id, u.text);
-        void keepOriginal($, state, ids.get(u)!, u.tool_use_id, 'ref');
+        void keepOriginal($, c.state, u.tool_use_id, u.text);
+        void keepOriginal($, c.state, ids.get(u)!, u.tool_use_id, 'ref');
       }
-      for (const r of m.toolResults ?? []) void keepOriginal($, state, r.tool_use_id, r.text);
+      for (const r of m.toolResults ?? []) void keepOriginal($, c.state, r.tool_use_id, r.text);
     }
-    const folded = fold(e.messages, limits.keepRecentTokens, await jevHeads($, region, jevOptions, grade), n);
+    const folded = fold(e.messages, c.limits.keepRecentTokens, await jevHeads($, region, c.jevOptions, c.grade), n);
     if (folded) {
       const k = Math.max(0, tokens(chars(e.messages) - chars(folded)));
-      if (main) { saved += k; lastFold = k; folds++; foldedRestart = true; jev = `F${n}: ${region.length} msgs folded · ${grade.jev}`; void publish($, status()); }
+      if (main) { c.saved += k; c.lastFold = k; c.folds++; c.foldedRestart = true; c.jev = `F${n}: ${region.length} msgs folded · ${c.grade.jev}`; void publish($, status()); }
       return { messages: folded };
     }
     if (e.trigger === 'plugin') {
-      $.ui.log(`componion: no fold: frozen ${n}, of ${e.messages.length}: ${e.messages.map((m) => `${m.role[0]}${m.toolUses.length ? 't' : ''}${m.toolResults?.length ? 'r' : ''}${Math.round(chars([m]) / 400)}`).join(' ')}`, { to: 'debug' });
+      $.ui.log(`overwatch compaction: no fold: frozen ${n}, of ${e.messages.length}: ${e.messages.map((m) => `${m.role[0]}${m.toolUses.length ? 't' : ''}${m.toolResults?.length ? 'r' : ''}${Math.round(chars([m]) / 400)}`).join(' ')}`, { to: 'debug' });
       return { skip: 'nothing to fold yet' };
     }
     // `/compact` or the engine's threshold with nothing foldable: the built-in
     // summary, over a slimmed transcript.
     const instructions = [e.instructions, SUMMARY_TEMPLATE, fileLists(e.messages)].filter(Boolean).join('\n\n');
-    const r = await next({ ...e, messages: slim(e.messages, limits), instructions });
-    if (r.messages && main) saved += Math.max(0, tokens(chars(e.messages) - chars(r.messages)));
+    const r = await next({ ...e, messages: slim(e.messages, c.limits), instructions });
+    if (r.messages && main) c.saved += Math.max(0, tokens(chars(e.messages) - chars(r.messages)));
     return r;
   });
 
@@ -414,43 +463,8 @@ export const register: Register = (on, options) => {
   // rides beside the result, so dropping `additionalContext` is not enough):
   // skip it. After the built-in summary they run as usual.
   on('classic.SessionStart', async ($, e, next) => {
-    if (!enabled) return next(e);
-    if (e.source !== 'compact' || !foldedRestart) return next(e);
-    foldedRestart = false;
+    if (e.source !== 'compact' || !c.foldedRestart) return next(e);
+    c.foldedRestart = false;
     return {};
-  });
-
-  // After a turn: compact when it pays (growth or cold cache); a failed turn leaves one line on disk.
-  on('turn.complete', async ($, e, next) => {
-    void flushCalls($, e);
-    if (!enabled) return next(e);
-    if (!e.agentId && fails.length) {
-      const line = `${new Date().toISOString()} ${failureLine(fails, limits.outcomeMaxChars)}\n`;
-      fails = [];
-      failures++;
-      const path = `${await $.env.get('HOME')}/.claude/componion/failures.log`;
-      void $.fs.read(path).catch(() => '').then((old) => $.fs.write(path, String(old) + line)).catch(() => {});
-    }
-    if (!e.agentId) {
-      const tokensNow = (await $.session.usage()).context.tokens ?? 0;
-      const run = async () => {
-        if (compacting) return;
-        compacting = true;
-        lastFold = 0;
-        try { await $.session.compact(); } catch { /* headless sessions cannot compact */ } finally {
-          compacting = false;
-          lastCompactAt = tokensNow - lastFold;
-          void publish($, status());
-        }
-      };
-      // Grown enough since the last compaction to be worth a Jev pass now.
-      if (tokensNow >= foldFrom && tokensNow - lastCompactAt >= growthTokens) void run();
-      // Idle past the cache TTL: the next request rewrites the cache anyway,
-      // so compact then at no cache cost, whatever the reduction.
-      idle?.cancel();
-      idle = $.clock.after(cacheTtlMs + 30000, () => { void run(); });
-      await publish($, status());
-    }
-    return next(e);
   });
 };
