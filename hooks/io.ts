@@ -38,6 +38,30 @@ export async function readJson<T>(io: Io, path: string, fallback: T): Promise<T>
 
 export const abs = (io: Io, p: string) => (p.startsWith("/") ? p : join(io.cwd, p))
 
+/** Runs argv like `Io.run`: never rejects; a failure to start is 127, a timeout 124. */
+export type Runner = (argv: readonly string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number; env?: Record<string, string> }) => Promise<Run>
+
+/** The sh replacements probed on native Windows, where the engine's PATH has no `sh`: the Git installs' own shells, which find their msys runtime through their install prefix. */
+const WINDOWS_SH = ["C:\\Program Files\\Git\\bin\\sh.exe", "C:\\Program Files (x86)\\Git\\bin\\sh.exe"] as const
+let shellProbed: Promise<readonly string[]> | undefined
+
+/** Tests only: forget the probe so the next `shellArgv` re-probes. */
+export const resetShellArgv = () => { shellProbed = undefined }
+
+/**
+ * The argv prefix that runs a POSIX `-c` script: `sh`, or on native Windows the
+ * first Git `sh` the host can actually start. Probed once per process, then
+ * cached; `sh` stays the last resort so a machine with no shell at all keeps
+ * reporting the same failure it does today.
+ */
+export function shellArgv(run: Runner): Promise<readonly string[]> {
+  shellProbed ??= (async () => {
+    for (const sh of ["sh", ...WINDOWS_SH]) if ((await run([sh, "-c", "true"], { timeoutMs: 5_000 })).code === 0) return [sh]
+    return ["sh"]
+  })()
+  return shellProbed
+}
+
 /** The one folder overwatch keeps its working data in, inside the working directory: nothing of its own goes to the home folder. */
 export const STATE_DIR = ".overwatch"
 export const state = (io: Io, ...parts: string[]) => join(io.cwd, STATE_DIR, ...parts)
@@ -105,7 +129,7 @@ async function engineEnv($: any, name: EnvName): Promise<string | undefined> {
 export async function onPath(io: Io, names: readonly string[]): Promise<Set<string>> {
   const safe = names.filter((n) => /^[\w.+-]+$/.test(n))
   if (!safe.length) return new Set()
-  const r = await io.run(["sh", "-c", 'for b; do command -v "$b" >/dev/null 2>&1 && echo "$b"; done', "sh", ...safe])
+  const r = await io.run([...await shellArgv(io.run), "-c", 'for b; do command -v "$b" >/dev/null 2>&1 && echo "$b"; done', "sh", ...safe])
   return new Set(r.stdout.split("\n").filter(Boolean))
 }
 

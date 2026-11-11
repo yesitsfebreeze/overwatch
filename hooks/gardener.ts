@@ -1,5 +1,5 @@
 import { TOOL_PREFIX } from "./catalog.ts"
-import { cmp, join, readJson, state, type Io } from "./io.ts"
+import { cmp, join, readJson, shellArgv, state, type Io } from "./io.ts"
 
 /**
  * The disk gardener: knows when the disk a project sits on is nearly full, finds what
@@ -169,11 +169,11 @@ wait`,
 
 const rows = (out: string) => out.split("\n").filter(Boolean).map((l) => l.split("\t"))
 /** A script that did not run to its end (timeout, no shell, a syntax error) is an error, never an empty finding. */
-const sh = (io: Io, script: string, args: readonly string[]) =>
-  io.run(["sh", "-c", script, "sh", ...args], { timeoutMs: SCAN_TIMEOUT_MS }).then((r) => {
-    if (r.code === 124 || r.code === 127 || r.code === 2) throw new Error(`disk gardener: a shell step ${r.code === 124 ? "timed out" : `failed (${r.stderr.trim().split("\n")[0] || r.code})`}`)
-    return rows(r.stdout)
-  })
+const sh = async (io: Io, script: string, args: readonly string[]): Promise<string[][]> => {
+  const r = await io.run([...await shellArgv(io.run), "-c", script, "sh", ...args], { timeoutMs: SCAN_TIMEOUT_MS })
+  if (r.code === 124 || r.code === 127 || r.code === 2) throw new Error(`disk gardener: a shell step ${r.code === 124 ? "timed out" : `failed (${r.stderr.trim().split("\n")[0] || r.code})`}`)
+  return rows(r.stdout)
+}
 /** The scripts' `kib<TAB>path` lines as [path, kib]; a path listed twice counts once. */
 const sized = async (io: Io, script: string, args: readonly string[]): Promise<Sized[]> =>
   [...new Map((await sh(io, script, args)).filter((r) => r.length >= 2).map(([kib, ...path]) => [path.join("\t"), Number(kib)] as const))]

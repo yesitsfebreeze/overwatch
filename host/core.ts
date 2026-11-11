@@ -17,7 +17,7 @@ import { learned } from "../hooks/surface.ts"
 import { fullNotice } from "../hooks/gardener.ts"
 import { COMMAND_TOOLS } from "../hooks/commands.ts"
 import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
-import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
+import { ignoreHint, join, shellArgv, STATE_DIR, type Io } from "../hooks/io.ts"
 
 export { schemaOf }
 
@@ -64,7 +64,7 @@ export async function withState<T>(io: Io, root: string, f: (s: State) => Promis
 }
 
 const runCheck = async (io: Io, g: Guard, cwd: string): Promise<Guard> => {
-  const r = await io.run(["sh", "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+  const r = await io.run([...await shellArgv(io.run), "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
   return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
 }
 

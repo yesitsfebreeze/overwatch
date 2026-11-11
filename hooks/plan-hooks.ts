@@ -3,6 +3,7 @@ import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, checkScript, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
 import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { shellArgv, type Runner } from "./io.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
@@ -22,11 +23,18 @@ async function show($: any, s: Plan): Promise<void> {
   } catch {}
 }
 
+/** `$.process.run` as a `Runner`: never rejects; a failure to start is 127, a timeout 124. */
+const engineRun = ($: any): Runner => (argv, init = {}) =>
+  $.process.run(argv, init).then(
+    (r: any) => ({ code: r.exitCode ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }),
+    (err: any) => ({ code: /timed? ?out/i.test(String(err?.message)) ? 124 : 127, stdout: "", stderr: String(err?.message ?? err) }),
+  )
+
 /** Runs one guard's check from the session root; a check past CHECK_TIMEOUT_MS counts as not upheld. */
 const runCheck = async ($: any, g: Guard, cwd?: string): Promise<Guard> => {
   try {
-    const r = await $.process.run(["sh", "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-    return checked(g, r.exitCode, r.stdout + r.stderr)
+    const r = await engineRun($)([...await shellArgv(engineRun($)), "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+    return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
   } catch (err: any) {
     return checked(g, null, `[check did not finish: ${err?.message ?? err}]`)
   }
