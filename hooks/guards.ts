@@ -82,7 +82,7 @@ export function fitResults(results: string[], budget = MAX_RESULTS * 600): strin
 }
 
 /** User-role text the harness wrote: stop-hook feedback, skill expansions, reminders. */
-const MACHINE = /^(Stop hook feedback|tasksitter: not done|Base directory for this skill|<command-(name|message)>|<system-reminder>|<task-notification>)/
+const MACHINE = /^(Stop hook feedback|(?:overwatch|tasksitter): not done|Base directory for this skill|<command-(name|message)>|<system-reminder>|<task-notification>)/
 
 const human = (m: Msg) => {
   if (m.role !== "user" || hasToolResult(m.content)) return false

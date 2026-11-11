@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing';
-import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './componion.ts';
+import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './compaction.ts';
 
 const big = 'x'.repeat(10_000);
 const transcript = [

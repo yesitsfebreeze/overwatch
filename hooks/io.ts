@@ -38,6 +38,12 @@ export async function readJson<T>(io: Io, path: string, fallback: T): Promise<T>
 
 export const abs = (io: Io, p: string) => (p.startsWith("/") ? p : join(io.cwd, p))
 
+/** The machine state folder every part writes under: <XDG_STATE_HOME>/overwatch (search-guard's guard.log sits there too). */
+export async function stateHome(io: Io): Promise<string> {
+  const base = (await io.env("XDG_STATE_HOME")) || join((await io.env("HOME")) ?? "", ".local/state")
+  return join(base, "overwatch")
+}
+
 /** The `Io` over the engine's `$`, for hooks. */
 export function fromEngine($: any, cwd: string): Io {
   return {

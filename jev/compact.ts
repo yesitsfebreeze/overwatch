@@ -135,7 +135,7 @@ async function askBatch(
 function truncatedResultText(text: string, isError: boolean, headChars: number, id: string): string {
   if (text.length <= headChars + 120) return text;
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : '';
-  return `${head}[componion cut ${text.length - headChars} chars${isError ? ' (error)' : ''}; decompress id=${id}]`;
+  return `${head}[overwatch cut ${text.length - headChars} chars${isError ? ' (error)' : ''}; decompress id=${id}]`;
 }
 
 /**

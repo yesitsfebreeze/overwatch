@@ -1,7 +1,7 @@
 import { test, expect } from "claude-code/testing"
 import { memIo, type Io } from "./io.ts"
 import { discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, tally } from "./surface.ts"
-import { EVALUATE_AFTER_CALLS } from "./tools.ts"
+import { EVALUATE_AFTER_CALLS } from "./commands.ts"
 
 /** A memory Io with a state home and a PATH holding only `onPath`. */
 function io(files: Record<string, string> = {}, onPath = ["ls"]): Io & { files: Record<string, string> } {
@@ -20,6 +20,9 @@ test("scan: parameterised just recipes are seen, and verify supersedes raw cargo
 })
 
 test("shellBinary: the command a Bash call ran, past cd, env and flags", () => {
+  // A fragment the split cut out of a quoted string or `$(…)` is not a binary.
+  expect(shellBinary('git log --format="$(real() { :; })"')).toBe("sh:git")
+  expect(shellBinary("commits.txt) | wc -l")).toBe("sh:wc")
   expect(shellBinary("cd /tmp && rg foo")).toBe("sh:rg")
   expect(shellBinary("FOO=1 /usr/bin/git status | head")).toBe("sh:git")
   expect(shellBinary(42)).toBeUndefined()

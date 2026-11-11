@@ -9,7 +9,7 @@
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./adapters/pi/overwatch.ts"],
-    "skills": ["./skills/tasksitter", "./skills/overwatch", "./skills/verification-before-completion"]
+    "skills": ["./skills/plan", "./skills/overwatch", "./skills/verification-before-completion"]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

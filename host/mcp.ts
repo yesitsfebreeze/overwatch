@@ -5,8 +5,7 @@
  */
 import type { Io } from "../hooks/io.ts"
 import { callTool, schemaOf, TOOLS } from "./core.ts"
-
-const VERSION = "0.2.0"
+import pkg from "../package.json" with { type: "json" }
 
 type Req = { jsonrpc: "2.0"; id?: number | string | null; method: string; params?: any }
 
@@ -18,7 +17,7 @@ export async function answer(io: Io, req: Req): Promise<object | undefined> {
       return ok({
         protocolVersion: req.params?.protocolVersion ?? "2025-06-18",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "overwatch", version: VERSION },
+        serverInfo: { name: "overwatch", version: pkg.version },
       })
     case "ping":
       return ok({})

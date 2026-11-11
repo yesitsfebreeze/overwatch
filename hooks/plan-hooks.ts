@@ -1,11 +1,8 @@
 import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
-import { takeNotice } from "./version.ts"
-import { takeEvaluation } from "./tools.ts"
 import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
-import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, detail, gateReason, ran, reminder, slot, stopVerdict, tail, tool, type Result } from "./plan.ts"
-
-export * from "./plan.ts"
+import { incident } from "./incidents.ts"
+import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
@@ -27,22 +24,17 @@ async function show($: any, s: Plan): Promise<void> {
 
 /** Runs one guard's check from the session root; a check past CHECK_TIMEOUT_MS counts as not upheld. */
 const runCheck = async ($: any, g: Guard, cwd?: string): Promise<Guard> => {
-  let exit: number | null = null
-  let out = ""
   try {
     const r = await $.process.run(["sh", "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-    exit = r.exitCode
-    out = (r.stdout + r.stderr).trim().slice(-600)
+    return checked(g, r.exitCode, r.stdout + r.stderr)
   } catch (err: any) {
-    out = `[check did not finish: ${err?.message ?? err}]`
+    return checked(g, null, `[check did not finish: ${err?.message ?? err}]`)
   }
-  return { ...g, met: exit === 0, last: { exit, out } }
 }
 
 /** Writes decided guards back onto whatever the plan holds now and redraws the gauge. */
 const record = async ($: any, decided: Guard[]): Promise<Plan> => {
-  const byId = new Map(decided.map((g) => [g.id, g]))
-  const plan = await update($, PLAN, (p) => ({ ...p, guards: p.guards.map((g) => byId.get(g.id) ?? g) }))
+  const plan = await update($, PLAN, (p) => withDecided(p, decided))
   await show($, plan)
   return plan
 }
@@ -50,12 +42,11 @@ const record = async ($: any, decided: Guard[]): Promise<Plan> => {
 /** guard_check: runs the picked guards' checks now and records the outcome. */
 async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: string }> {
   const [s, root] = await Promise.all([read($, PLAN), read($, ROOT)])
-  const id = typeof e.guard_id === "string" && e.guard_id ? e.guard_id : undefined
-  const pick = s.guards.filter((g) => g.check && (!id || g.id === id))
-  if (!pick.length) return { deny: id ? `no guard "${id}" with a check; plan_show lists the guard ids` : "no guard has a check; judged guards are decided at the stop" }
+  const pick = pickChecks(s, e.guard_id)
+  if (typeof pick === "string") return { deny: pick }
   const decided = await Promise.all(pick.map((g) => runCheck($, g, root || undefined)))
   await record($, decided)
-  return { result: decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n") }
+  return { result: checkReport(decided) }
 }
 
 /** plan_show: the plan in full beside the review state. */
@@ -64,8 +55,23 @@ async function planShow($: any): Promise<{ result: string }> {
   return { result: detail(s, v) }
 }
 
+/**
+ * The plan beside a prompt: the full rules once per session, then one line. Only the
+ * person (terminal, Remote Control, SDK) resets the stop rounds; task notifications
+ * and peers do not. Called from overwatch.ts's one prompt.submit.
+ */
+export async function planReminder($: any, e: any): Promise<string> {
+  const [plan, told] = await Promise.all([
+    read($, PLAN),
+    read($, TOLD),
+    PERSON.has(e.origin?.kind ?? "composer") && update($, STOPS, (b) => ({ ...FRESH, nokeyTold: b.nokeyTold })),
+  ])
+  if (!told) await update($, TOLD, () => true)
+  return reminder(plan, told)
+}
+
 /** Session start for the plan: remember the start directory, draw the gauge. Called from overwatch.ts's one session.start; the catalog declares the tools. */
-export async function startTasksitter($: any, e: any): Promise<void> {
+export async function startPlan($: any, e: any): Promise<void> {
   await Promise.all([
     e.cwd && update($, ROOT, (r) => r || e.cwd),
     read($, PLAN).then((s) => show($, s)),
@@ -73,7 +79,6 @@ export async function startTasksitter($: any, e: any): Promise<void> {
 }
 
 export const register: Register = (on) => {
-
   on("tool.call", { tool: tool("guard_check") }, async ($, e: any) => guardCheck($, e))
   on("tool.call", { tool: tool("plan_show") }, async ($) => planShow($))
   for (const [name, { run }] of Object.entries(PLAN_TOOLS)) {
@@ -94,7 +99,10 @@ export const register: Register = (on) => {
   for (const tool of EDIT_TOOLS)
     on("tool.call", { tool }, async ($, e, next) => {
       const why = gateReason(await read($, PLAN))
-      if (why) return { deny: why }
+      if (why) {
+        await incident($, "unplanned_edit", String(e.tool))
+        return { deny: why }
+      }
       const n = changedLines(e)
       await update($, VERIFY, (v) => (v.dirty ? { ...v, lines: (v.lines || 0) + n } : { ...CLEAN, dirty: true, lines: n }))
       return next(e)
@@ -105,22 +113,6 @@ export const register: Register = (on) => {
     const key = REVIEW_SKILLS.has(e.skill) ? "review" : e.skill === "simplify" ? "simplify" : undefined
     if (key) await update($, VERIFY, (v) => ({ ...v, [key]: true }))
     return next(e)
-  })
-
-  // Every prompt carries the plan. Only the person (terminal, Remote Control, SDK)
-  // resets the round count; task notifications and peers do not.
-  on("prompt.submit", async ($, e: any, next) => {
-    const [plan, notice, told, evaluation] = await Promise.all([
-      read($, PLAN),
-      takeNotice($),
-      read($, TOLD),
-      takeEvaluation($),
-      PERSON.has(e.origin?.kind ?? "composer") && update($, STOPS, (b) => ({ ...FRESH, nokeyTold: b.nokeyTold })),
-    ])
-    if (!told) await update($, TOLD, () => true)
-    // A hot reload that changed overwatch's tools rides the next prompt once (version.ts).
-    // The surface ledger's rating question rides once, after the session did real work (tools.ts).
-    return next({ ...e, context: [...(e.context ?? []), ...(notice ? [notice] : []), ...(evaluation ? [evaluation] : []), reminder(plan, told)] })
   })
 
   on("classic.Stop", async ($, e: any, next) => {
@@ -137,7 +129,7 @@ export const register: Register = (on) => {
       if (!judged.length) return []
       const key = await $.env.get("TYPESAFE_API_KEY")
       if (!key) {
-        if (!nokeyTold) $.ui.toast("tasksitter: judged guards need TYPESAFE_API_KEY; only guards with a check hold the stop")
+        if (!nokeyTold) $.ui.toast("overwatch: judged guards need TYPESAFE_API_KEY; only guards with a check hold the stop")
         nokeyTold = true
         return []
       }
@@ -156,7 +148,7 @@ export const register: Register = (on) => {
         const ps = judgeProbs(JSON.parse(res.text ?? "{}")?.answers, judged)
         return judged.map((g) => ({ ...g, met: ps[g.id]! >= GUARD_MET, last: { p: ps[g.id]! || 0 } }))
       } catch (err: any) {
-        $.ui.toast(`tasksitter: judge unavailable (${err?.message ?? err}); judged guards not decided this stop`)
+        $.ui.toast(`overwatch: judge unavailable (${err?.message ?? err}); judged guards not decided this stop`)
         return []
       }
     }
@@ -168,8 +160,9 @@ export const register: Register = (on) => {
     const { verdict, next: nb } = stopVerdict(plan, decided, v, { ...book, nokeyTold })
     await Promise.all([update($, STOPS, () => nb), verdict.kind === "pass" && update($, VERIFY, () => CLEAN)])
     if (verdict.kind === "pass") return result
+    await incident($, verdict.kind === "stalled" ? "stalled" : "early_stop", openLine(verdict.reason))
     if (verdict.kind === "stalled") {
-      $.ui.toast("tasksitter: work still open, stopped asking — needs your input")
+      $.ui.toast("overwatch: work still open, stopped asking — needs your input")
       return { ...result, additionalContext: [verdict.reason] }
     }
     return { block: verdict.reason }

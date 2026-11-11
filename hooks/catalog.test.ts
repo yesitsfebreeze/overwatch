@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing"
-import { catalog, declareCatalog, guardCall, hash, misfit, TOOL_PREFIX } from "./version.ts"
+import { catalog, declareCatalog, guardCall, hash, misfit, TOOL_PREFIX } from "./catalog.ts"
 
 const V1 = { rate: { description: "Rate a tool.", properties: { name: { type: "string" }, verdict: { type: "string", enum: ["useful", "dead"] } }, required: ["name", "verdict"] } }
 

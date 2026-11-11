@@ -31,6 +31,14 @@ test("plan: edits wait for tasks and guards; the stop holds until the check pass
   await io.run(["touch", "done"], { cwd: dir })
   expect(await onEvent(io, { kind: "stop", cwd: dir })).toEqual({})
   expect((await onEvent(io, { kind: "prompt", cwd: dir })).context).toContain("1 task(s), 100% overall")
+  // Every catch above was recorded: one refused edit, two refused stops.
+  const report = (await callTool(io, "report")).text
+  expect(report).toContain("stop with work open 2")
+  expect(report).toContain("edit before a plan 1")
+  // A third refused stop makes it a habit: the next session starts with the lesson.
+  await callTool(io, "task_add", { titles: ["more"] })
+  await onEvent(io, { kind: "stop", cwd: dir })
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).toContain("Before ending a turn")
 })
 
 test("hook formats: Codex Stop blocks with a reason, PreToolUse denies", async () => {

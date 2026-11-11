@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing"
-import { COMMAND_TOOLS } from "./tools.ts"
+import { COMMAND_TOOLS } from "./commands.ts"
 
 test("tools: flat, no action switch, required fields named in the schema", () => {
   expect(Object.keys(COMMAND_TOOLS)).toEqual(["checks", "scan", "status", "report", "rate", "mistake", "loadout", "hygiene_ledger"])

@@ -1,8 +1,8 @@
 // Deterministic replay: real transcripts, every request re-played plain and
-// through componion's own minify + fold. No model, no network, no luck.
+// through overwatch compaction.s own minify + fold. No model, no network, no luck.
 // Cost model (Anthropic, 1h cache): uncached input 1x, cache write 2x, cache read 0.1x.
 import { readFileSync } from 'fs';
-import { minify, fold, chars } from '../hooks/componion.ts';
+import { minify, fold, chars } from '../hooks/compaction.ts';
 
 type Msg = { role: 'user' | 'assistant'; text: string; toolUses: any[]; toolResults?: any[] };
 const SYSTEM = 66000;                 // tools + system prefix, measured, always cached after request 1
@@ -58,7 +58,7 @@ function replay(requests: number[], viewAt: (i: number) => Msg[], resets = new S
 const MIN = Number(process.env.MIN ?? 50000), GROWTH = Number(process.env.GROWTH ?? 20000), KEEP = Number(process.env.KEEP ?? 6000), LIVE = 8000;
 function bench(path: string) {
   const { msgs, requests } = load(path);
-  // componion: results minified on arrival; folds land once history grew GROWTH since the last one.
+  // compaction: results minified on arrival; folds land once history grew GROWTH since the last one.
   const live = msgs.map((m) => m.toolResults ? { ...m, toolResults: m.toolResults.map((r) => ({ ...r, text: minify(r.text, LIVE, r.tool_use_id) })) } : m);
   for (const m of live) for (const u of m.toolUses) { const r = live.flatMap((x) => x.toolResults ?? []).find((r) => r.tool_use_id === u.tool_use_id); if (r) u.text = r.text; }
   let view: Msg[] = [], seen = 0, lastFold = 0, n = 0, indexChars = 0;
@@ -80,8 +80,8 @@ function bench(path: string) {
   const comp = replay(requests, (i) => views.get(i)!, resets);
   const pct = (a: number, b: number) => `${(100 * (1 - a / b)).toFixed(1)}%`;
   console.log(`${path.split('/').pop()}: ${requests.length} requests, ${n} folds, fold index ${indexChars} chars`);
-  console.log(`  last context   plain ${plain.last}  minify ${onlyMin.last} (${pct(onlyMin.last, plain.last)})  componion ${comp.last} (${pct(comp.last, plain.last)})`);
-  console.log(`  tokens sent    plain ${plain.sent}  minify ${pct(onlyMin.sent, plain.sent)}  componion ${pct(comp.sent, plain.sent)}`);
-  console.log(`  cache cost     plain ${plain.cost.toFixed(0)}  minify ${pct(onlyMin.cost, plain.cost)}  componion ${pct(comp.cost, plain.cost)}`);
+  console.log(`  last context   plain ${plain.last}  minify ${onlyMin.last} (${pct(onlyMin.last, plain.last)})  overwatch ${comp.last} (${pct(comp.last, plain.last)})`);
+  console.log(`  tokens sent    plain ${plain.sent}  minify ${pct(onlyMin.sent, plain.sent)}  overwatch ${pct(comp.sent, plain.sent)}`);
+  console.log(`  cache cost     plain ${plain.cost.toFixed(0)}  minify ${pct(onlyMin.cost, plain.cost)}  overwatch ${pct(comp.cost, plain.cost)}`);
 }
 for (const p of process.argv.slice(2)) bench(p);

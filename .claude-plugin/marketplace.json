@@ -1,5 +1,6 @@
 {
   "name": "overwatch",
+  "description": "overwatch: catches a coding agent misbehaving, records it and feeds the lesson into the next session.",
   "owner": {
     "name": "Stefan Hoevelmanns"
   },

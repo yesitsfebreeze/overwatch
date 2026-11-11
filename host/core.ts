@@ -1,6 +1,6 @@
 /**
  * overwatch outside Claude Code's hooks engine: the same plan tools, gate and stop
- * verdict (hooks/plan.ts) and the same commands (hooks/tools.ts), over a state file
+ * verdict (hooks/plan.ts) and the same commands (hooks/commands.ts), over a state file
  * instead of `$.state`. Every host adapter (MCP server, command hooks, pi, opencode,
  * Hermes) goes through `callTool` and `onEvent`.
  *
@@ -10,11 +10,15 @@
  * every host passes a session id to its MCP servers.
  */
 import type { Guard, Plan, StopBook } from "../types/index.d.ts"
-import { CHECK_TIMEOUT_MS, CLEAN, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, ran, reminder, stopVerdict, tail } from "../hooks/plan.ts"
+import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
-import { COMMAND_TOOLS } from "../hooks/tools.ts"
-import { hash, TOOL_PREFIX, type ToolSpec } from "../hooks/version.ts"
-import { join, type Io } from "../hooks/io.ts"
+import { note } from "../hooks/incidents.ts"
+import { learned } from "../hooks/surface.ts"
+import { COMMAND_TOOLS } from "../hooks/commands.ts"
+import { hash, schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
+import { join, stateHome, type Io } from "../hooks/io.ts"
+
+export { schemaOf }
 
 export type State = { plan: Plan; stops: StopBook; told: boolean }
 const FRESH_STATE: State = { plan: EMPTY, stops: FRESH, told: false }
@@ -25,10 +29,10 @@ export const HOST_CONTRACT =
 
 /** Tool names hosts use for file writes and edits, lower-cased: gated until the plan has tasks and guards. */
 export const EDIT_TOOLS = new Set([
-  "write", "edit", "multiedit", "notebookedit", // Claude Code, pi, opencode
+  ...CLAUDE_EDIT_TOOLS.map((t) => t.toLowerCase()), // Claude Code (pi and opencode share write, edit)
   "apply_patch", "applypatch", "patch", // Codex, Droid, opencode, Hermes
   "write_file", "replace", "edit_file", "create", "str_replace", "str_replace_editor", "create_file", // Gemini, Copilot, Cursor, Droid, Hermes
-  "mcp__plugin_git-fs_git-fs__write", "mcp__plugin_git-fs_git-fs__edit", "mcp__git-fs__write", "mcp__git-fs__edit",
+  "mcp__git-fs__write", "mcp__git-fs__edit",
 ])
 export const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
 
@@ -36,7 +40,6 @@ export const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
 export const TOOLS: Record<string, ToolSpec> = Object.fromEntries(
   [...Object.entries(COMMAND_TOOLS), ...Object.entries(PLAN_TOOLS)].map(([n, t]) => [n, { description: t.description, properties: t.properties, required: t.required }]),
 )
-export const schemaOf = (t: ToolSpec) => ({ type: "object", properties: t.properties ?? {}, ...(t.required?.length ? { required: [...t.required] } : {}) })
 
 /** Text meant for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
 export const plain = (s: string) => s.replaceAll(TOOL_PREFIX, "")
@@ -50,8 +53,7 @@ export async function projectRoot(io: Io, dir = io.cwd): Promise<string> {
 }
 
 async function stateFile(io: Io, root: string): Promise<string> {
-  const base = (await io.env("XDG_STATE_HOME")) || join((await io.env("HOME")) ?? "", ".local/state")
-  return join(base, "overwatch/plans", `${hash(root)}.json`)
+  return join(await stateHome(io), "plans", `${hash(root)}.json`)
 }
 
 /** Read-modify-write of the project's state. Ceiling: no lock, so a hook and a tool call landing in the same millisecond can lose one write; add a lock file if that shows up. */
@@ -66,13 +68,7 @@ export async function withState<T>(io: Io, root: string, f: (s: State) => Promis
 
 const runCheck = async (io: Io, g: Guard, cwd: string): Promise<Guard> => {
   const r = await io.run(["sh", "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-  const exit = r.code === 124 ? null : r.code
-  return { ...g, met: exit === 0, last: { exit, out: (r.stdout + r.stderr).trim().slice(-600) } }
-}
-
-const decide = (plan: Plan, decided: Guard[]): Plan => {
-  const byId = new Map(decided.map((g) => [g.id, g]))
-  return { ...plan, guards: plan.guards.map((g) => byId.get(g.id) ?? g) }
+  return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
 }
 
 export type ToolResult = { text: string; error?: boolean }
@@ -86,12 +82,11 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
     if (cmd) return { text: await cmd.run(at, args) }
     if (name === "plan_show") return withState(io, root, (s) => [s, { text: plain(detail(s.plan, CLEAN)) }])
     if (name === "guard_check") {
-      const id = typeof args.guard_id === "string" && args.guard_id ? args.guard_id : undefined
       return withState(io, root, async (s) => {
-        const pick = s.plan.guards.filter((g) => g.check && (!id || g.id === id))
-        if (!pick.length) return [s, { text: id ? `no guard "${id}" with a check; plan_show lists the guard ids` : "no guard has a check; judged guards are decided at the stop", error: true }]
+        const pick = pickChecks(s.plan, args.guard_id)
+        if (typeof pick === "string") return [s, { text: pick, error: true }]
         const decided = await Promise.all(pick.map((g) => runCheck(io, g, root)))
-        return [{ ...s, plan: decide(s.plan, decided) }, { text: decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n") }]
+        return [{ ...s, plan: withDecided(s.plan, decided) }, { text: checkReport(decided) }]
       })
     }
     const run = PLAN_TOOLS[name]?.run
@@ -117,9 +112,13 @@ export type Outcome = { context?: string; deny?: string; block?: string; notify?
 
 export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   const root = await projectRoot(io, e.cwd || io.cwd)
+  const at: Io = { ...io, cwd: root }
   switch (e.kind) {
-    case "start":
-      return withState(io, root, (s) => [{ ...s, told: false }, { context: plain(reminder(s.plan, false, HOST_CONTRACT)) }])
+    case "start": {
+      // The lessons of earlier sessions ride the start, once: caught habits and this repo's recorded mistakes.
+      const lessons = await learned(at).catch(() => "")
+      return withState(io, root, (s) => [{ ...s, told: false }, { context: [plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
+    }
     case "prompt":
       return withState(io, root, (s) => [
         { ...s, told: true, stops: e.person === false ? s.stops : { ...FRESH, nokeyTold: s.stops.nokeyTold } },
@@ -128,16 +127,22 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
     case "pre_tool": {
       if (!isEdit(e.tool)) return {}
       const why = await withState(io, root, (s) => [s, gateReason(s.plan)])
-      return why ? { deny: plain(why) } : {}
+      if (!why) return {}
+      await note(at, "unplanned_edit", e.tool)
+      return { deny: plain(why) }
     }
-    case "stop":
-      return withState(io, root, async (s) => {
+    case "stop": {
+      const out = await withState(io, root, async (s): Promise<[State, Outcome]> => {
         // Judged guards need the turn's transcript, which hosts hand over in different shapes; they fail open here (ceiling: read transcript_path where a host gives one).
         const decided = await Promise.all(openGuards(s.plan.guards).filter((g) => g.check).map((g) => runCheck(io, g, root)))
-        const plan = decide(s.plan, decided)
+        const plan = withDecided(s.plan, decided)
         const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops)
         const out: Outcome = verdict.kind === "pass" ? {} : verdict.kind === "block" ? { block: plain(verdict.reason) } : { notify: plain(verdict.reason) }
         return [{ ...s, plan, stops: next }, out]
       })
+      const refused = out.block ?? out.notify
+      if (refused) await note(at, out.block ? "early_stop" : "stalled", openLine(refused))
+      return out
+    }
   }
 }

@@ -86,14 +86,14 @@ declare module "claude-code" {
       evaluation: string
       /** Main-thread tool calls this session, folded in once per turn. */
       calls: number
-      /** tasksitter: the plan, the review state, the stop bookkeeping and the session's start directory. */
+      /** The plan part: the plan, the review state, the stop bookkeeping and the session's start directory. */
       plan: Plan
       verify: Verify
       stop: StopBook
       root: string
-      /** tasksitter: the full reminder went out this session; later prompts carry one line. */
+      /** The plan part: the full reminder went out this session; later prompts carry one line. */
       told: boolean
-      /** The tool catalog this session last declared (version.ts): its version, each tool's fingerprint, and a reload notice not yet delivered. */
+      /** The tool catalog this session last declared (catalog.ts): its version, each tool's fingerprint, and a reload notice not yet delivered. */
       tools: { version: string; tools: Record<string, string>; notice?: string }
     }
   }

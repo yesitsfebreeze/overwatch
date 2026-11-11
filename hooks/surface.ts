@@ -14,7 +14,8 @@
  *
  * Machine state: <XDG_STATE_HOME>/overwatch/surface.json. Repo state: .claude/overwatch/.
  */
-import { cmp, type Io, join, onPath, readJson } from "./io.ts"
+import { cmp, type Io, join, onPath, readJson, stateHome } from "./io.ts"
+import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./incidents.ts"
 
 const PROMOTE_AT = 3 // a "rare" tool that fires this often is mislabelled
 const VERDICT_TTL_DAYS = 30 // a verdict this old is stale: the surface moved
@@ -31,16 +32,13 @@ export type Ledger = {
 
 const today = () => new Date().toISOString().slice(0, 10)
 
-/** The machine state folder: <XDG_STATE_HOME>/overwatch, shared with search-guard's guard.log. */
-async function stateHome(io: Io): Promise<string> {
-  const base = (await io.env("XDG_STATE_HOME")) || join((await io.env("HOME")) ?? "", ".local/state")
-  return join(base, "overwatch")
-}
 const statePath = async (io: Io) => join(await stateHome(io), "surface.json")
 
 export async function load(io: Io): Promise<Ledger> {
   const raw = await readJson<any>(io, await statePath(io), {}) // a missing or broken ledger starts over
-  return { counts: raw.counts ?? {}, verdicts: raw.verdicts ?? {}, triggers: raw.triggers ?? {}, drawn: raw.drawn ?? null }
+  // Shell names counted before BINARY_RE existed (`sh:real()`) are dropped as the ledger is read.
+  const real = (o: Record<string, any> = {}) => Object.fromEntries(Object.entries(o).filter(([n]) => !n.startsWith("sh:") || BINARY_RE.test(n.slice(3))))
+  return { counts: real(raw.counts), verdicts: real(raw.verdicts), triggers: real(raw.triggers), drawn: raw.drawn && real({ [raw.drawn.name]: 1 })[raw.drawn.name] ? raw.drawn : null }
 }
 
 /** Counting is best-effort: a failed save never breaks a session. */
@@ -55,6 +53,8 @@ async function seedNames(io: Io): Promise<string[]> {
   return text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
 }
 
+/** A command name as it can stand on PATH. Ceiling: a plain word inside a heredoc or quoted script still counts; parse the shell grammar if that shows up in the report. */
+const BINARY_RE = /^[A-Za-z0-9_][\w.+-]*$/
 const SKIP_WORDS = new Set(["cd", "export", "env", "sudo", "time", "nohup", "source", "."])
 
 /**
@@ -67,7 +67,10 @@ export function shellBinary(command: unknown): string | undefined {
     for (const word of segment.trim().split(/\s+/).filter(Boolean)) {
       if (word.includes("=") || /^[-({#]/.test(word)) continue
       if (SKIP_WORDS.has(word)) break // `cd /tmp && rg foo` is an rg call
-      return "sh:" + word.split("/").pop()
+      const name = word.split("/").pop()!
+      // Not a command name: a fragment of a quoted string, a heredoc or `$(…)` the split cut open (`real()`, `commits.txt)`).
+      if (!BINARY_RE.test(name)) break
+      return "sh:" + name
     }
   }
   return undefined
@@ -147,10 +150,10 @@ export const evaluation = (due: NonNullable<Ledger["drawn"]>): string =>
 
 /** Records a verdict; a refusal is thrown as an Error carrying the reason. */
 export async function rate(io: Io, name: string, verdict: string, reason: string, trigger?: string): Promise<string> {
-  if (!(VERDICTS as readonly string[]).includes(verdict)) throw new Error(`reflex: verdict must be one of ${VERDICTS.join(" | ")}`)
-  if (!name.trim() || !reason.trim()) throw new Error("reflex: rate needs a name and a reason")
+  if (!(VERDICTS as readonly string[]).includes(verdict)) throw new Error(`overwatch: verdict must be one of ${VERDICTS.join(" | ")}`)
+  if (!name.trim() || !reason.trim()) throw new Error("overwatch: rate needs a name and a reason")
   if (verdict === "useful" && !trigger?.trim())
-    throw new Error("reflex: a `useful` verdict needs a trigger — the situation line that should have fired it, e.g. 'unfamiliar repo, need the big picture: graft map'")
+    throw new Error("overwatch: a `useful` verdict needs a trigger — the situation line that should have fired it, e.g. 'unfamiliar repo, need the big picture: graft map'")
   const st = await load(io)
   st.verdicts[name] = { verdict: verdict as Verdict, reason, at: today() }
   if (verdict === "useful") st.triggers[name] = trigger!.trim()
@@ -158,11 +161,11 @@ export async function rate(io: Io, name: string, verdict: string, reason: string
   if (st.drawn?.name === name) st.drawn = null
   await save(io, st)
   const tail = { useful: "trigger recorded — it ships in the surface block from the next session", dead: "candidate for removal from the seed list", situational: "correct to sit idle" }[verdict as Verdict]
-  return `reflex: ${name} rated ${verdict} — ${tail}`
+  return `overwatch: ${name} rated ${verdict} — ${tail}`
 }
 
 export async function report(io: Io): Promise<string> {
-  const st = await load(io)
+  const [st, caught] = await Promise.all([load(io), loadIncidents(io)])
   const all = Object.entries(st.counts).sort((a, b) => b[1] - a[1])
   const counts = [...all.filter(([n]) => !n.startsWith("sh:")), ...all.filter(([n]) => n.startsWith("sh:"))]
   const lines = [`tools fired: ${counts.length}, total fires: ${counts.reduce((a, [, c]) => a + c, 0)}`, ...counts.slice(0, 15).map(([n, c]) => `  ${n}: ${c}`)]
@@ -172,6 +175,7 @@ export async function report(io: Io): Promise<string> {
   if (verdicts.length) lines.push("verdicts:", ...verdicts.map(([n, v]) => `  ${n}: ${v.verdict} (${v.at}) ${v.reason}`))
   const triggers = Object.values(st.triggers)
   if (triggers.length) lines.push("triggers:", ...triggers.map((t) => `  ${t}`))
+  lines.push(incidentReport(caught))
   return lines.join("\n")
 }
 
@@ -214,6 +218,23 @@ const frozen = async (io: Io): Promise<string[]> => (await readJson<any>(io, joi
 
 /** The recorded mistakes, or undefined when there are none. */
 const mistakes = async (io: Io) => (await io.read(join(repoState(io), "mistakes.md")))?.trim() || undefined
+
+const LEARNED_MISTAKES = 5
+
+/**
+ * What earlier sessions taught, for the prompt: one lesson per kind of misbehaviour
+ * caught repeatedly on this machine (incidents.ts) and this repo's newest recorded
+ * mistakes. Empty when there is nothing to carry.
+ */
+export async function learned(io: Io): Promise<string> {
+  const [caught, mist] = await Promise.all([loadIncidents(io), mistakes(io)])
+  const habits = lessons(caught)
+  const recorded = (mist ?? "").split("\n").filter((l) => l.startsWith("- ")).slice(-LEARNED_MISTAKES)
+  const out: string[] = []
+  if (habits.length) out.push("## Caught repeatedly in earlier sessions — do not repeat", ...habits)
+  if (recorded.length) out.push("## Mistakes recorded in this repo", ...recorded)
+  return out.length ? ["# Lessons (overwatch)", ...out].join("\n") : ""
+}
 
 export async function scan(io: Io): Promise<string> {
   const checks = await discover(io)
@@ -258,13 +279,14 @@ async function memory(io: Io): Promise<string> {
 }
 
 export async function status(io: Io): Promise<string> {
-  const [git, checks, mist, guard, mem, st] = await Promise.all([
+  const [git, checks, mist, guard, mem, st, caught] = await Promise.all([
     io.run(["git", "status", "--porcelain"]).then((r) => (r.code === 0 ? r.stdout.trimEnd().split("\n").filter(Boolean) : [])),
     frozen(io),
     mistakes(io),
     guardBlocks(io),
     memory(io),
     load(io),
+    loadIncidents(io),
   ])
   const fires = Object.values(st.counts)
   return [
@@ -273,6 +295,7 @@ export async function status(io: Io): Promise<string> {
     checks.length ? `checks: ${checks.join(", ")}` : "checks: none frozen (run scan)",
     mist ? `mistakes: ${mist.split("\n").length - 1} recorded` : "mistakes: none recorded",
     guard,
+    tallyLine(caught),
     mem,
     `tools fired: ${fires.length}, total fires: ${fires.reduce((a, c) => a + c, 0)}`,
   ].join("\n")
