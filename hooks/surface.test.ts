@@ -3,6 +3,10 @@ import { memIo, type Io } from "./io.ts"
 import { discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, tally } from "./surface.ts"
 import { EVALUATE_AFTER_CALLS } from "./tools.ts"
 
+// The fs engine resolves a path before a hook sees it: win32 delivers 'C:\state\x' for '/state/x'.
+// Normalize back so the POSIX keys the mocks pre-seed match on every host.
+const norm = (p: unknown) => String(p).replace(/\\/g, "/").replace(/^[A-Za-z]:/, "")
+
 /** A memory Io with a state home and a PATH holding only `onPath`. */
 function io(files: Record<string, string> = {}, onPath = ["ls"]): Io & { files: Record<string, string> } {
   const m = memIo(files, "/repo")
@@ -89,9 +93,9 @@ test("session: rating held back while the session is unused, asked once after re
   const files: Record<string, string> = { "/state/overwatch/surface.json": JSON.stringify({ counts: { Bash: 9, Read: 3 } }) }
   on("session.cwd", async () => ({ value: "/repo" }) as any)
   on("env.get", async (_: any, e: any) => ({ value: (e?.name ?? e) === "XDG_STATE_HOME" ? "/state" : undefined }) as any)
-  on("fs.read", async (_: any, e: any) => (String(e?.path ?? e) in files ? { value: files[String(e?.path ?? e)] } : { deny: "ENOENT" }) as any)
-  on("fs.write", async (_: any, e: any) => ((files[e.path] = e.text), { value: undefined }) as any)
-  on("fs.exists", async (_: any, e: any) => ({ value: String(e?.path ?? e) in files }) as any)
+  on("fs.read", async (_: any, e: any) => (norm(e?.path ?? e) in files ? { value: files[norm(e?.path ?? e)] } : { deny: "ENOENT" }) as any)
+  on("fs.write", async (_: any, e: any) => ((files[norm(e.path)] = e.text), { value: undefined }) as any)
+  on("fs.exists", async (_: any, e: any) => ({ value: norm(e?.path ?? e) in files }) as any)
   on("process.run", async () => ({ value: { exitCode: 0, stdout: "", stderr: "" } }) as any)
   on("tool.call", async () => ({ result: "ok" }) as any)
   on("turn.complete", async () => ({ text: "" }) as any)

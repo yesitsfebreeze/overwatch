@@ -1,6 +1,10 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './componion.ts';
 
+// The fs engine resolves a path before a hook sees it: win32 delivers 'C:\h\x' for '/h/x'.
+// Normalize back so the POSIX keys the mocks pre-seed match on every host.
+const norm = (p: unknown) => String(p).replace(/\\/g, '/').replace(/^[A-Za-z]:/, '');
+
 const big = 'x'.repeat(10_000);
 const transcript = [
   { role: 'user', text: 'fix the test', toolUses: [] },
@@ -109,7 +113,7 @@ test('decompress reads the exact id back, never a longer one ending the same', a
   on('session.id' as never, (async () => ({ value: 'sid' })) as never);
   const files: Record<string, string> = { '/h/.claude/componion/sid/f11.1.txt': 'eleventh', '/h/.claude/componion/sid/f1.1.txt': 'first' };
   on('fs.read' as never, (async (_$: unknown, e: { path: string }) => {
-    return e.path in files ? { value: files[e.path] } : { deny: 'ENOENT' };
+    return norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' };
   }) as never);
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f1.1' } as any)).result).toBe('first');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: '#f11.1' } as any)).result).toBe('eleventh');
@@ -120,7 +124,7 @@ test('decompress resolves a fold short id through its alias, and still an old to
   mock.env(on, { HOME: '/h' });
   on('session.id' as never, (async () => ({ value: 'sid' })) as never);
   const files: Record<string, string> = { '/h/.claude/componion/sid/toolu_x.txt': 'out', '/h/.claude/componion/sid/f2.3.ref': 'toolu_x' };
-  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (e.path in files ? { value: files[e.path] } : { deny: 'ENOENT' })) as never);
+  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' })) as never);
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f2.3' } as any)).result).toBe('out');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: '#toolu_x' } as any)).result).toBe('out');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f2.4' } as any)).isError).toBe(true);
@@ -131,7 +135,7 @@ test('decompress of a stored Bash result returns its plain output, not escaped J
   on('session.id' as never, (async () => ({ value: 'sid' })) as never);
   const bash = JSON.stringify({ stdout: 'a "q"\nb', stderr: 'warn', interrupted: false, isImage: false, noOutputExpected: false });
   const files: Record<string, string> = { '/h/.claude/componion/sid/t1.txt': bash, '/h/.claude/componion/sid/t2.txt': '{"k":1}', '/h/.claude/componion/sid/t3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) };
-  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (e.path in files ? { value: files[e.path] } : { deny: 'ENOENT' })) as never);
+  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' })) as never);
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't1' } as any)).result).toBe('a "q"\nb\nwarn');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't2' } as any)).result).toBe('{"k":1}');
   expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't3' } as any)).result).toBe('x\n[interrupted]');
