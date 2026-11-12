@@ -3,6 +3,7 @@ import { sessionIo as io, type Io } from "./io.ts"
 import { clean, disk, MIN_MIB } from "./gardener.ts"
 import { hygiene } from "./hygiene.ts"
 import { unitNew, vaultInit, vaultPlan, CATEGORIES } from "./vault.ts"
+import { GATE_ROUNDS, GATE_SCORE, prdAdd, prdBrief, prdCollect, prdNext, prdRefine, prdReview, prdScan, prdSet, SET_STATES } from "./prd.ts"
 import { loadout } from "./loadout.ts"
 import { launch, launched } from "./launch.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
@@ -36,6 +37,76 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     },
     required: ["title", "category", "tasks"],
     run: unitNew,
+  },
+  prd_scan: {
+    description: "Every PRD in the vault (.overwatch/vault/02 PRDs), one line each: state, acceptance boxes, linked units, review round, and why it is held. Read-only.",
+    run: (io) => prdScan(io),
+  },
+  prd_next: {
+    description: "The PRDs ready to work now, most important first: open or specced, not claimed, every need done. Read-only.",
+    properties: { limit: { type: "integer", minimum: 1, maximum: 50, description: "How many to list (default 10)." } },
+    run: (io, e) => prdNext(io, Number(e.limit) || 10),
+  },
+  prd_brief: {
+    description: "One PRD's whole context: acceptance boxes, needs with their states, linked units with open Plan items and checks, footprint, the review gate's state and the next step. Read-only.",
+    properties: { prd: { type: "string", description: "The PRD note's name." } },
+    required: ["prd"],
+    run: (io, e) => prdBrief(io, text(e.prd)),
+  },
+  prd_add: {
+    description: "Add a PRD: one observable outcome with acceptance boxes, its needs (other PRDs), footprint and check commands. Creates the vault and its template first when missing. Refused when the note exists.",
+    properties: {
+      title: { type: "string", description: "The note's name, e.g. \"Vault Freshness\"." },
+      summary: { type: "string", description: "The problem and the bounded outcome, one paragraph." },
+      acceptance: { type: "array", items: { type: "string" }, description: "Observable outcomes, one per box." },
+      needs: { type: "array", items: { type: "string" }, description: "Names of PRDs that must be done first." },
+      footprint: { type: "array", items: { type: "string" }, description: "Files or folders the PRD changes." },
+      checks: { type: "array", items: { type: "string" }, description: "Shell commands prd_collect must find passing, e.g. [\"bun test\"]." },
+      parent: { type: "string", description: "The PRD this one refines, when it is a child." },
+      priority: { type: "number", description: "Higher starts first; default 50." },
+    },
+    required: ["title"],
+    run: (io, e) => prdAdd(io, e),
+  },
+  prd_refine: {
+    description: "Split an open or question PRD into child PRDs, one per independent outcome; the parent becomes refine and stays the index. Refused when a child name exists.",
+    properties: {
+      prd: { type: "string", description: "The parent PRD's note name." },
+      children: { type: "array", items: { type: "string" }, minItems: 1, description: "One note name per child outcome." },
+      summary: { type: "string", description: "One paragraph shared by the children's Summary sections." },
+    },
+    required: ["prd", "children"],
+    run: (io, e) => prdRefine(io, e),
+  },
+  prd_set: {
+    description: "Set a PRD's state: open, question, refine, specced, blocked (needs a reason) or failed. specced needs at least one linked unit; done is written only by prd_collect.",
+    properties: {
+      prd: { type: "string", description: "The PRD note's name." },
+      state: { type: "string", enum: SET_STATES, description: "The new state." },
+      reason: { type: "string", description: "Required for blocked: what holds it and what would unblock it." },
+    },
+    required: ["prd", "state"],
+    run: (io, e) => prdSet(io, e),
+  },
+  prd_review: {
+    description: `Record one attributed review round against the PRD's current contract (its acceptance boxes plus every linked unit's Plan items and checks). A later edit makes the round stale. ${GATE_SCORE}/100 passes; at most ${GATE_ROUNDS} rounds per PRD.`,
+    properties: {
+      prd: { type: "string", description: "The PRD note's name." },
+      score: { type: "number", minimum: 0, maximum: 100, description: "The reviewer's score." },
+      reviewer: { type: "string", description: "Who scored it: an agent id or named reviewer, never invented." },
+      findings: { type: "string", description: "The blocking findings this round rests on, if any." },
+    },
+    required: ["prd", "score", "reviewer"],
+    run: (io, e) => prdReview(io, e),
+  },
+  prd_collect: {
+    description: `Collect a PRD as done against evidence: needs done, every acceptance box ticked, every linked unit implemented with its Plan items ticked, a fresh review round >= ${GATE_SCORE}, a clean tree outside .overwatch and every check passing at HEAD. Writes the proof and the collection receipt; nothing is written before every gate holds.`,
+    properties: {
+      prd: { type: "string", description: "The PRD note's name." },
+      summary: { type: "string", description: "What the PRD does now, for its Status section." },
+    },
+    required: ["prd"],
+    run: (io, e) => prdCollect(io, e),
   },
   checks: {
     description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. Run from the repo root. Read-only. Empty until scan froze the checks.",

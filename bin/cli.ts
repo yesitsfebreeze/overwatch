@@ -2,6 +2,7 @@
 import { clean, disk } from "../hooks/gardener.ts"
 import { hygiene } from "../hooks/hygiene.ts"
 import { vaultInit, vaultPlan } from "../hooks/vault.ts"
+import { prdBrief, prdCollect, prdNext, prdReview, prdScan, prdSet } from "../hooks/prd.ts"
 import { loadout } from "../hooks/loadout.ts"
 import { launch, launched } from "../hooks/launch.ts"
 import { checklist, index, mistake, rate, report, scan, status } from "../hooks/surface.ts"
@@ -25,6 +26,11 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch launch [--wait] <cmd>  run a command in the background; --wait blocks instead
   overwatch launched [id]          background runs, or one run with its log tail
   overwatch vault init|plan        create the spec vault (.overwatch/vault) / compute and write the wave plan
+  overwatch prd scan|next [n]      PRDs and why each is held / the ready ones
+  overwatch prd brief <prd>        one PRD's contract, units, review gate and next step
+  overwatch prd state <prd> <state> [reason]      open|question|refine|specced|blocked|failed
+  overwatch prd review <prd> <score> <reviewer> [findings]   record a review round
+  overwatch prd collect <prd> [summary]           verify every gate and mark it done
   overwatch mcp                    stdio MCP server with every overwatch tool (other agents)
   overwatch hook <host> <event>    command hook for another agent: host event JSON on stdin
 
@@ -42,6 +48,16 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
       if (args[0] === "init") return ok(await vaultInit(io))
       if (args[0] === "plan") return ok(await vaultPlan(io))
       return { text: "usage: overwatch vault init|plan", code: 2 }
+    case "prd": {
+      const [op = "scan", ...a] = args
+      if (op === "scan") return ok(await prdScan(io))
+      if (op === "next") return ok(await prdNext(io, Number(a[0]) || 10))
+      if (op === "brief" && a[0]) return ok(await prdBrief(io, a[0]))
+      if (op === "state" && a[0] && a[1]) return ok(await prdSet(io, { prd: a[0], state: a[1], reason: a.slice(2).join(" ") }))
+      if (op === "review" && a[0] && a[1] && a[2]) return ok(await prdReview(io, { prd: a[0], score: Number(a[1]), reviewer: a[2], findings: a.slice(3).join(" ") }))
+      if (op === "collect" && a[0]) return ok(await prdCollect(io, { prd: a[0], summary: a.slice(1).join(" ") }))
+      return { text: "usage: overwatch prd scan|next [n]|brief <prd>|state <prd> <state> [reason]|review <prd> <score> <reviewer> [findings]|collect <prd> [summary]", code: 2 }
+    }
     case "checks": return ok(await checklist(io))
     case "mistake": return ok(await mistake(io, rest))
     case "report": return ok(await report(io))

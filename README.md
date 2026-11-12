@@ -53,6 +53,14 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 | `unit_new` | `title`, `category`, `tasks[]`, `summary?`, `depends?`, `checks?`, `paths?` | adds a spec note |
 | `unit_load` | `unit` | the unit's open Plan items become tasks, its `checks` guards |
 | `unit_record` | `summary`, `limitations`, `partial?` | closes the loaded unit: tasks done, checks re-run, tree committed; writes proof to the note |
+| `prd_scan` | | every PRD in `02 PRDs`: state, acceptance boxes, units, review gate, why it is held |
+| `prd_next` | `limit?` | the PRDs ready now, most important first |
+| `prd_brief` | `prd` | one PRD's contract, needs, units, review gate and next step |
+| `prd_add` | `title`, `summary?`, `acceptance[]?`, `needs[]?`, `footprint[]?`, `checks[]?`, `parent?`, `priority?` | adds a PRD note |
+| `prd_refine` | `prd`, `children[]`, `summary?` | splits an open PRD into child PRDs; the parent becomes refine |
+| `prd_set` | `prd`, `state`, `reason?` | open, question, refine, specced (needs a unit), blocked (needs a reason), failed |
+| `prd_review` | `prd`, `score`, `reviewer`, `findings?` | records a review round bound to the current contract digest |
+| `prd_collect` | `prd`, `summary?` | verifies every gate, then writes done, proof and the Collection receipt |
 | `decompress` | `id` | reads back a cut or folded message |
 | `search_context` | `query` | searches every cut or folded message this session |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
@@ -81,6 +89,15 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 - **Plan.** A unit's wave is one more than its latest unfinished prerequisite's. Cycles, missing or excluded prerequisites, `blocked`, `deferred` and claims (`owner`) hold a unit. The Plan View plugin (shipped in the vault) renders `Plan Data.json`: effort on x, overlap is parallel work.
 - **Closeout.** `unit_record` refuses while unit tasks are open, a unit check fails or the tree outside `.overwatch/` is dirty; the proof line names the commit and each guard's outcome.
 - **Limits.** Dependencies are explicit `depends` only (the workflow kit also inferred them). Claims are read, not taken: two sessions can load the same unit.
+
+## PRDs
+
+- **Outcomes above units.** `.overwatch/vault/02 PRDs` holds one note per planned outcome: acceptance boxes, `needs` (other PRDs), `footprint`, `checks`, and a `## Specs` section of wiki links to the units that implement it. `00 Meta/PRD Template.md` is the scaffold; `prd_add` writes it.
+- **Order.** `prd_next` lists PRDs whose needs are all `done` and that no one has claimed; `prd_scan` says why each other one is held. `prd_brief` reads one PRD whole without touching the vault by hand.
+- **Refine.** `prd_refine` splits an open PRD into child PRDs one level down; the parent turns `refine` and stays the index.
+- **Review gate.** An independent reviewer scores the contract 0–100 and `prd_review` records the round. The round is bound to a digest of the acceptance boxes plus every linked unit's Plan items and checks, so a later edit makes it stale. 90 passes, five rounds per PRD, then the allowance is exhausted.
+- **Collect.** `prd_collect` refuses until needs are done, every acceptance box is ticked, every linked unit is `implemented` with its Plan items ticked, the last review round is fresh and ≥90, the tree outside `.overwatch/` is clean and every `checks` command exits 0 at HEAD. It then writes `status: done`, the proof line and the Collection receipt. It never marks work done on a worker's exit alone.
+- **Limits.** No worker dispatch (`run`/`status`/`stop`), lanes or named-test `pass:` blocks from pearde; checks are whole-command exit codes. Claims are read, not taken.
 
 ## Disk gardener
 

@@ -22,13 +22,13 @@ const PRIO_MARK: Record<string, string> = { highest: "🔺", high: "⏫", medium
 /** Friction units per status (kit Plan.md): proposed 3, partial 2, target or deferred 1. */
 const STATUS_EFFORT: Record<string, number> = { proposed: 3, partial: 2, target: 1, deferred: 1 }
 
-const vaultPath = (io: Io, ...parts: string[]) => state(io, VAULT_DIR, ...parts)
+export const vaultPath = (io: Io, ...parts: string[]) => state(io, VAULT_DIR, ...parts)
 
 // --- frontmatter: the YAML subset the vault uses (scalars, inline and block lists) ---
 
 const FRONT = /^﻿?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
 type Value = string | number | boolean | null | Value[]
-type Fields = Record<string, Value>
+export type Fields = Record<string, Value>
 
 function splitList(inner: string): string[] {
   const items: string[] = []
@@ -197,14 +197,14 @@ async function markdown(io: Io, dir: string, prefix = ""): Promise<string[]> {
 }
 
 /** Every note of the vault by path relative to it, read once per call. */
-async function readVault(io: Io): Promise<Map<string, string>> {
+export async function readVault(io: Io): Promise<Map<string, string>> {
   const root = vaultPath(io)
   const paths = await markdown(io, root)
   const texts = await Promise.all(paths.map((p) => io.read(join(root, p))))
   return new Map(paths.flatMap((p, i) => (texts[i] === undefined ? [] : [[p, texts[i]!] as [string, string]])))
 }
 
-function specsOf(notes: Map<string, string>): Spec[] {
+export function specsOf(notes: Map<string, string>): Spec[] {
   return [...notes].filter(([p]) => p.startsWith(SPECS + "/")).map(([p, t]) => parseSpec(p, t)).filter((s) => UNIT_STATUSES.has(s.status))
 }
 
@@ -343,7 +343,7 @@ function renderTasks(d: PlanData): string {
   return lines.join("\n") + "\n"
 }
 
-async function sha256(text: string): Promise<string> {
+export async function sha256(text: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }
@@ -507,7 +507,7 @@ export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<
 }
 
 /** Git's view of the work: HEAD and the changed paths outside .overwatch. */
-async function gitState(io: Io): Promise<{ commit: string; dirty: string[] } | string> {
+export async function gitState(io: Io): Promise<{ commit: string; dirty: string[] } | string> {
   const head = await io.run(["git", "rev-parse", "HEAD"], { cwd: io.cwd, timeoutMs: 10_000 })
   if (head.code !== 0) return `unit_record needs a git repository with a commit: ${head.stderr.trim() || "git rev-parse HEAD failed"}`
   // Porcelain paths are relative to the repo root, the pathspec to cwd: let git exclude the state dir.

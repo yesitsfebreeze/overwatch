@@ -1,0 +1,132 @@
+import { expect, test } from "claude-code/testing"
+import { memIo, type Runner } from "./io.ts"
+import { contractDigest, GATE_ROUNDS, parsePrd, prdAdd, prdBrief, prdCollect, prdNext, prdRefine, prdReview, prdScan, prdSet } from "./prd.ts"
+
+const V = "/p/.overwatch/vault"
+const SPEC_TEMPLATE = "---\ntitle: {{title}}\ncategory:\nstatus: target\nupdated: {{date}}\n---\n\n# {{title}}\n\n## Summary\n\nOne.\n\n## Plan\n\n- [ ] placeholder\n\n## Status\n\nNothing yet.\n"
+const PRD_TEMPLATE = "---\ntitle: {{title}}\nstatus: open\npriority: 50\nparent:\nneeds: []\nfootprint: []\nchecks: []\ncreated: {{date}}\n---\n\n# {{title}}\n\n## Summary\n\nOne.\n\n## Acceptance\n\n- [ ] placeholder\n\n## Specs\n\n## Review\n\n## Status\n\nNothing yet.\n"
+const scaffold = () => ({
+  "/plug/data/vault/00 Meta/Spec Template.md": SPEC_TEMPLATE,
+  "/plug/data/vault/00 Meta/PRD Template.md": PRD_TEMPLATE,
+  "/plug/data/vault/Home.md": "# Home\n",
+})
+const io = (files: Record<string, string> = {}, run?: Runner) => ({ ...memIo({ ...scaffold(), ...files }, "/p"), root: "/plug", ...(run ? { run } : {}) })
+
+const prd = (name: string, fm: string, body = "") => ({
+  [`${V}/02 PRDs/${name}.md`]: `---\nstatus: open\npriority: 50\n${fm}---\n\n# ${name}\n\n## Acceptance\n\n- [x] works\n- [x] refuses bad input\n\n## Specs\n\n${body}\n\n## Review\n\n## Status\n\nNothing yet.\n`,
+})
+const unit = (name: string, status: string, checks = "[]") => ({
+  [`${V}/01 Specs/${name}.md`]: `---\nstatus: ${status}\ncategory: behavior\nchecks: ${checks}\n---\n\n# ${name}\n\n## Plan\n\n- [x] do it\n\n## Status\n\nDone.\n`,
+})
+
+/** git answers HEAD and a clean (or one dirty) tree; `sh -c <cmd>` answers each check from `codes`. */
+const runner = (opts: { dirty?: string[]; codes?: Record<string, number> } = {}): Runner => async (argv) => {
+  const s = argv.join(" ")
+  if (s.includes("git rev-parse HEAD")) return { code: 0, stdout: "abc123def456\n", stderr: "" }
+  if (s.includes("git status --porcelain")) return { code: 0, stdout: (opts.dirty ?? []).map((p) => ` M ${p}`).join("\n"), stderr: "" }
+  if (argv[0] === "sh" && argv[1] === "-c") {
+    const code = argv[2] === "true" ? 0 : (opts.codes?.[argv[2]] ?? 0)
+    return { code, stdout: code ? "boom" : "ok", stderr: "" }
+  }
+  return { code: 127, stdout: "", stderr: "no" }
+}
+
+test("prd_add writes a note from the template; scan and next read states, needs and priority", async () => {
+  const at = io(prd("Base", "priority: 80\n"))
+  const out = await prdAdd(at as any, { title: "Second", acceptance: ["it runs"], needs: ["Base"], priority: 90 })
+  expect(out).toContain("02 PRDs/Second.md")
+  const text = (at as any).files[`${V}/02 PRDs/Second.md`]
+  expect(text).toContain("priority: 90")
+  expect(text).toContain("needs: [Base]")
+  expect(text).toContain("- [ ] it runs")
+  // Base is ready (no needs); Second waits for Base to be done.
+  const next = await prdNext(at as any)
+  expect(next).toContain("Base")
+  expect(next).not.toContain("Second")
+  const scan = await prdScan(at as any)
+  expect(scan).toContain("Second · open")
+  expect(scan).toContain("held: needs: Base")
+  // The template's example link inside its HTML comment is not a linked unit.
+  expect(scan).toContain("0 spec(s)")
+  // A claimed PRD is not ready either.
+  const claimed = io({ ...prd("Base", "priority: 80\n"), [`${V}/02 PRDs/Second.md`]: (at as any).files[`${V}/02 PRDs/Second.md`].replace("priority: 90", "priority: 90\nowner: someone") })
+  expect(await prdNext(claimed as any)).not.toContain("Second")
+})
+
+test("prd_set refuses specced without a unit, blocked without a reason, and done by hand", async () => {
+  const at = io(prd("A", ""))
+  await expect(prdSet(at as any, { prd: "A", state: "specced" })).rejects.toThrow("no linked units")
+  await expect(prdSet(at as any, { prd: "A", state: "blocked" })).rejects.toThrow("blocked needs a reason")
+  await expect(prdSet(at as any, { prd: "A", state: "done" })).rejects.toThrow("state must be one of")
+  expect(await prdSet(at as any, { prd: "A", state: "blocked", reason: "waits on vendor" })).toContain("waits on vendor")
+  expect((at as any).files[`${V}/02 PRDs/A.md`]).toContain("blocked: waits on vendor")
+  expect(await prdSet(at as any, { prd: "A", state: "open" })).toContain("is open")
+  expect((at as any).files[`${V}/02 PRDs/A.md`]).not.toContain("blocked: waits on vendor")
+})
+
+test("review gate: a passing round accepts, editing the contract makes it stale, low scores fail, five rounds end it", async () => {
+  const base = { ...prd("A", "checks: []\n", "[[U]]"), ...unit("U", "implemented") }
+  const at = io(base)
+  const digest = await contractDigest(at as any, parsePrd("02 PRDs/A.md", (at as any).files[`${V}/02 PRDs/A.md`]))
+  await expect(prdCollect(at as any, { prd: "A" })).rejects.toThrow("review: none yet")
+  expect(await prdReview(at as any, { prd: "A", score: 95, reviewer: "agent-r", findings: "none" })).toContain("passes the gate")
+  const reviewed = (at as any).files[`${V}/02 PRDs/A.md`]
+  expect(reviewed).toContain(`digest ${digest}`)
+  expect(reviewed).toContain("round 1 · 95/100")
+  // Editing the contract (a unit's checks) changes the digest: the round is stale.
+  ;(at as any).files[`${V}/01 Specs/U.md`] = (at as any).files[`${V}/01 Specs/U.md`].replace("checks: []", 'checks: ["bun test"]')
+  await expect(prdCollect(at as any, { prd: "A" })).rejects.toThrow("review: stale")
+  // A low round fails the gate; five failed rounds exhaust the allowance.
+  const two = io(base)
+  await prdReview(two as any, { prd: "A", score: 70, reviewer: "agent-r" })
+  await expect(prdCollect(two as any, { prd: "A" })).rejects.toThrow("scored 70")
+  for (let i = 2; i <= GATE_ROUNDS; i++) await prdReview(two as any, { prd: "A", score: 60, reviewer: "agent-r" })
+  await expect(prdReview(two as any, { prd: "A", score: 96, reviewer: "agent-r" })).rejects.toThrow(`all ${GATE_ROUNDS} review rounds`)
+})
+
+test("prd_collect refuses each missing gate, then writes done, proof and the receipt", async () => {
+  const open = io({ ...prd("A", "checks: [\"bun test\"]\n", "[[U]]"), ...unit("U", "implemented") })
+  open.files[`${V}/02 PRDs/A.md`] = open.files[`${V}/02 PRDs/A.md`].replace("- [x] refuses bad input", "- [ ] refuses bad input")
+  await prdReview(open as any, { prd: "A", score: 95, reviewer: "agent-r" })
+  await expect(prdCollect(open as any, { prd: "A" })).rejects.toThrow("open acceptance box")
+
+  const unimplemented = io({ ...prd("A", "", "[[U]]"), ...unit("U", "target") })
+  await prdReview(unimplemented as any, { prd: "A", score: 95, reviewer: "agent-r" })
+  await expect(prdCollect(unimplemented as any, { prd: "A" })).rejects.toThrow("units not implemented")
+
+  const noSpecs = io(prd("A", ""))
+  await prdReview(noSpecs as any, { prd: "A", score: 95, reviewer: "agent-r" })
+  await expect(prdCollect(noSpecs as any, { prd: "A" })).rejects.toThrow("links no units")
+
+  const dirty = io({ ...prd("A", "", "[[U]]"), ...unit("U", "implemented") }, runner({ dirty: ["src/x.ts"] }))
+  await prdReview(dirty as any, { prd: "A", score: 95, reviewer: "agent-r" })
+  await expect(prdCollect(dirty as any, { prd: "A" })).rejects.toThrow("commit the work first")
+
+  const failing = io({ ...prd("A", "checks: [\"bun test\"]\n", "[[U]]"), ...unit("U", "implemented") }, runner({ codes: { "bun test": 1 } }))
+  await prdReview(failing as any, { prd: "A", score: 95, reviewer: "agent-r" })
+  await expect(prdCollect(failing as any, { prd: "A" })).rejects.toThrow("checks failing")
+
+  const good = io({ ...prd("A", "checks: [\"bun test\"]\n", "[[U]]"), ...unit("U", "implemented") }, runner())
+  await prdReview(good as any, { prd: "A", score: 95, reviewer: "agent-r" })
+  const out = await prdCollect(good as any, { prd: "A" })
+  expect(out).toContain("Collected \"A\" as done at abc123def456")
+  const note = good.files[`${V}/02 PRDs/A.md`]
+  expect(note).toContain("status: done")
+  expect(note).toContain("proof: \"abc123def456 · review: round 1 · 95/100 · agent-r · 1 check(s) exit 0\"")
+  expect(note).toContain("## Collection")
+  expect(note).toContain("checks: `bun test` exit 0")
+  // A collected PRD is final: no second collect, no new review, no state change.
+  expect(await prdCollect(good as any, { prd: "A" })).toContain("already collected")
+  await expect(prdReview(good as any, { prd: "A", score: 99, reviewer: "agent-r" })).rejects.toThrow("record is final")
+})
+
+test("prd_refine splits an open PRD into children and turns the parent to refine", async () => {
+  const at = io(prd("Big", ""))
+  const out = await prdRefine(at as any, { prd: "Big", children: ["Part One", "Part Two"], summary: "Split." })
+  expect(out).toContain("Refined \"Big\" into 2 child PRD(s)")
+  expect((at as any).files[`${V}/02 PRDs/Big.md`]).toContain("status: refine")
+  expect((at as any).files[`${V}/02 PRDs/Part One.md`]).toContain("parent: Big")
+  await expect(prdRefine(at as any, { prd: "Big", children: ["Part Three"] })).rejects.toThrow("needs an open or question PRD")
+  const brief = await prdBrief(at as any, "Part One")
+  expect(brief).toContain("parent Big")
+})
