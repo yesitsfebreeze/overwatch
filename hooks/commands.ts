@@ -127,7 +127,7 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: report,
   },
   rate: {
-    description: "Record a verdict on the tool the 'Evaluation due' question named, judged against the work actually done in this session. useful: it should have been reached here and was not (trigger required: that line ships into every later session). situational: correct to sit idle. dead: nothing needs it. With no basis to judge, say so as the reason; never invent a trigger.",
+    description: "Record a verdict on the tool the 'Evaluation due' question named, judged against the work actually done in this session. useful: it should have been reached here and was not (trigger required: eligible in later sessions for 30 days within the prompt budget). situational: correct to sit idle. dead: nothing needs it. With no basis to judge, say so as the reason; never invent a trigger.",
     properties: {
       name: { type: "string", description: "The tool or binary as the 'Evaluation due' question named it, e.g. \"WebFetch\" or \"sh:units\"." },
       verdict: { type: "string", enum: [...VERDICTS], description: "useful, situational or dead." },

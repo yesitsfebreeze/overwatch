@@ -30,7 +30,7 @@ State: plain files in `.overwatch/`; edit them directly when that is shorter.
 
 - **Counting is automatic.** A Bash call counts twice, as `Bash` and as `sh:<binary>`, so "use `rg`, not `grep`" can be checked.
 - **The prompt carries** the learned triggers, the most-fired tools, any deferred tool that fired 3+ times, and one cold tool to rate.
-- **Rating, one call.** `useful`: the tool should have been reached this session and was not; `trigger` is required and ships into every later session. `situational`: correct to sit idle. `dead`: nothing needs it. Verdicts go stale after 30 days.
+- **Rating, one call.** `useful`: the tool should have been reached this session and was not; `trigger` is required. Active tools and binaries on PATH with a useful verdict younger than 30 days qualify for the next session: at most eight whole trigger lines within 2,048 characters, newest first. Oversized or additional entries stay in `.overwatch/surface.json`. `situational` and `dead` suspend a trigger without deleting its stored text. The prompt block stays fixed for the current session.
 - **Judge against the work actually done here.** No basis to judge: say exactly that as the reason. Never guess, never invent a trigger.
 - A verdict cannot un-defer a tool; it buys the trigger line. A `dead` verdict is the signal to drop the tool's line from `data/surface-seed.txt`.
 

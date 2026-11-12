@@ -16,6 +16,8 @@ import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./inc
 
 const PROMOTE_AT = 3 // a "rare" tool that fires this often is mislabelled
 const VERDICT_TTL_DAYS = 30 // a verdict this old is stale: the surface moved
+const TRIGGER_CHARS = 2048
+const TRIGGER_COUNT = 8
 export const VERDICTS = ["useful", "situational", "dead"] as const
 type Verdict = (typeof VERDICTS)[number]
 const TOP_N = 8
@@ -78,7 +80,34 @@ export async function tally(io: Io, fired: Record<string, number>): Promise<void
   await save(io, st)
 }
 
-const fresh = (v: { at?: string } | undefined) => !!v?.at && (Date.parse(today()) - Date.parse(v.at)) / 86_400_000 < VERDICT_TTL_DAYS
+const fresh = (v: { at?: string } | undefined) => {
+  if (!v?.at || !/^\d{4}-\d{2}-\d{2}$/.test(v.at)) return false
+  const stamp = Date.parse(v.at)
+  if (!Number.isFinite(stamp) || today(new Date(stamp)) !== v.at) return false
+  const age = (Date.parse(today()) - stamp) / 86_400_000
+  return age >= 0 && age < VERDICT_TTL_DAYS
+}
+
+/** Whole recent instructions only; retained ledger entries are not a promise of prompt inclusion. */
+function triggerSection(st: Ledger, alive: Set<string>): string[] {
+  const eligible = Object.entries(st.triggers)
+    .filter(([n, t]) => typeof t === "string" && t.trim() && alive.has(n) && st.verdicts[n]?.verdict === "useful" && fresh(st.verdicts[n]))
+    .sort(([a], [b]) => cmp(st.verdicts[b]!.at, st.verdicts[a]!.at) || cmp(a, b))
+  if (!eligible.length) return []
+  const head = "## Learned triggers — recent useful tools (30 days)"
+  const notice = (n: number) => `${n} additional trigger(s) omitted; full text: .overwatch/surface.json.`
+  const selected: string[] = []
+  // Reserve the largest possible omission notice, including its separator.
+  let used = head.length + 1 + notice(eligible.length).length
+  for (const [, trigger] of eligible) {
+    const line = `- ${trigger}`
+    if (selected.length >= TRIGGER_COUNT || /[\r\n]/.test(trigger) || used + 1 + line.length > TRIGGER_CHARS) continue
+    selected.push(line)
+    used += 1 + line.length
+  }
+  const omitted = eligible.length - selected.length
+  return [head, ...selected, ...(omitted ? [notice(omitted)] : [])]
+}
 
 /** One tool from the cold half of the table; a new name has no count, so it sorts coldest. */
 export function draw(st: Ledger, names: string[], rnd = Math.random): Ledger["drawn"] {
@@ -106,9 +135,7 @@ export async function surface(io: Io, active?: readonly string[]): Promise<{ sec
   st.drawn = draw(st, [...alive].filter((n) => n in st.counts || seeds.includes(n)).sort())
   const saved = save(io, st)
 
-  const out: string[] = []
-  const triggers = Object.entries(st.triggers).filter(([n, t]) => t && alive.has(n)).map(([, t]) => t).sort()
-  if (triggers.length) out.push("## Learned triggers — situations that earned a tool", ...triggers.map((t) => `- ${t}`))
+  const out: string[] = triggerSection(st, alive)
   const counts = Object.entries(st.counts).filter(([n]) => alive.has(n))
   const toolCounts = counts.filter(([n]) => !n.startsWith("sh:"))
   const hot = top(toolCounts)
@@ -152,10 +179,9 @@ export async function rate(io: Io, name: string, verdict: string, reason: string
   const st = await load(io)
   st.verdicts[name] = { verdict: verdict as Verdict, reason, at: today() }
   if (verdict === "useful") st.triggers[name] = trigger!.trim()
-  if (verdict === "dead") delete st.triggers[name]
   if (st.drawn?.name === name) st.drawn = null
   await save(io, st)
-  const tail = { useful: "trigger recorded — it ships in the surface block from the next session", dead: "candidate for removal from the seed list", situational: "correct to sit idle" }[verdict as Verdict]
+  const tail = { useful: "trigger recorded — eligible next session for 30 days within the prompt budget", dead: "trigger suspended; candidate for removal from the seed list", situational: "correct to sit idle; trigger suspended" }[verdict as Verdict]
   return `overwatch: ${name} rated ${verdict} — ${tail}`
 }
 
