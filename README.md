@@ -20,13 +20,12 @@ Any other agent: point it at [install.txt](install.txt).
 
 | part | does |
 |---|---|
-| plan | tasks and yes/no guards; edits wait for a plan, stops wait for done tasks, upheld guards and the review pass |
-| incidents | the catch ledger |
+| plan | tasks and yes/no guards, see below |
 | compaction | minifies tool results, folds old history into indexes, reads it back with `decompress` / `search_context` |
 | followline | one line above the prompt: a mood face, then one gauge per slot (`$.followline.put`) |
 | surface | tool-usage ledger, learned triggers, frozen checks, mistakes (`/overwatch`) |
 | loadout | active plugins per layer (`/loadout`) |
-| gardener | notices a nearly full disk, deletes only proven leftovers (`/gardener`) |
+| gardener | frees a nearly full disk, see below (`/gardener`) |
 | hygiene | rates a repo's `skills/`, writes LEDGER.md, one GitHub issue per finding (`/hygiene`) |
 
 Replaces tasksitter, componion, followline, steward, loadout, disk-gardener and skill-hygiene.
@@ -63,31 +62,29 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 
 ## Tasks and guards
 
-- **Plan first.** Every prompt reminds the model to add tasks and one guard per deliverable: a yes/no question, decided by a shell `check` (exit 0 = upheld) or, without one, judged by Jev. `Write`, `Edit`, `MultiEdit`, `NotebookEdit` and git-fs `write`/`edit` are refused until both exist. Questions and chat need no plan.
+- **Plan first.** Every prompt reminds the model to add tasks and one guard per deliverable: a yes/no question, decided by a shell `check` (exit 0 = upheld) or, without one, judged by Jev. The edit tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, git-fs `write`/`edit`) are refused until both exist.
 - **Stop.** Refused while a task is open, a guard is not upheld, or the review pass is due: 10+ changed lines without `/simplify`, 50+ without `/code-review` before it. A whole-file write or replace_all counts as 10+. Edits during the pass do not reopen it; new work does, sized by the lines changed since each skill last ran.
 - **No loops.** Three refusals with nothing changed, or eight since the user last spoke, let the stop through. Background work or a cron pauses the check.
-- **Judge.** Needs `TYPESAFE_API_KEY`. Without it only guards with a `check` hold the stop.
-- **Limits.** Only the edit tools are gated; writes through Bash or kern `fs` are not seen. `plan_clear`, `guard_drop` and `task_remove` are open to the model: "only the user drops a guard" is not enforced. Checks run from the session's start directory.
+- **Limits.** Writes through Bash or kern `fs` are not seen. `plan_clear`, `guard_drop` and `task_remove` are open to the model: "only the user drops a guard" is not enforced. Checks run from the session's start directory.
 
 ## Disk gardener
 
-- **Watch.** One `df` at most every 5 minutes. From `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space, this project first.
+- **Watch.** One `df` at most every 5 minutes. From `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space.
 - **Proof.** `node_modules` needs its `package.json`, `target` its `CACHEDIR.TAG` or manifest, `.venv` its `pyvenv.cfg`; `dist`, `build`, `out`, `coverage` only where git ignores the folder and tracks nothing in it.
 - **Classes.** Leftover: an idle temp entry, or output of a project whose last commit is 30 days old. Rebuildable: proven output of a live project. In use: changed in the last 2 hours, or a process works there. Unverified: everything else. Only the first two are deleted.
-- **Deleting.** `disk_clean` judges each path again, refuses links and open files, then runs `rm -rf --`. Caches go only through their owner's command.
+- **Deleting.** `disk_clean` refuses links and open files, then runs `rm -rf --`. Caches go only through their owner's command.
 - **Limits.** Needs `find`, `du`, `df`, `git`, `lsof`: no Windows. Without `lsof` only the 2-hour rule protects a folder in use.
 
 ## State
 
-Plain files in `.overwatch/` in the working directory; the agent asks once to gitignore it.
+Plain files in `.overwatch/` in the working directory, beside `incidents.json`; the agent asks once to gitignore it.
 
 | file | what |
 |---|---|
-| `incidents.json` | the incident ledger |
 | `surface.json` | tool and binary counts, verdicts, triggers |
 | `checks.json`, `mistakes.md` | frozen checks, recorded mistakes |
 | `disk.json` | last survey per scope, deletions, the user's `keep` and `owners` lists |
-| `plan.json` | tasks and guards outside Claude Code (which keeps them per session) |
+| `plan.json` | tasks and guards outside Claude Code |
 | `context/<session>/` | originals of cut and folded messages |
 | `status/<session>.json` | compaction's status, read by kern's turn deck |
 
@@ -96,7 +93,7 @@ Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `stat
 ## Needs and settings
 
 - `bun`: compaction and `bin/overwatch`.
-- `TYPESAFE_API_KEY` in the shell profile, never in a settings file: compaction and judged guards.
+- `TYPESAFE_API_KEY` in the shell profile, never in a settings file: compaction and judged guards. Without it only guards with a `check` hold the stop.
 - `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`: the hooks module.
 - `slots`: followline gauges and their order, default `componion,plan,kern`.
 - Compaction: `toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, ….
@@ -111,7 +108,6 @@ Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `stat
 | `hooks/plan.ts` | the plan's pure logic, run by `plan-hooks.ts` in Claude Code and `host/core.ts` elsewhere |
 | `hooks/io.ts` | the one door to the machine: logic takes an `Io` (`$` in a hook, node in `bin/node-io.ts`) |
 | `bin/overwatch` | every command from a terminal, plus `overwatch mcp` and `overwatch hook <host> <event>` |
-| `skills/`, `data/` | the six skills; the surface seed |
 
 Hot reload: with `claude --plugin-dir <this folder>` a saved change reloads the module and re-declares the tools; an installed copy is never watched. Each tool description ends in its schema hash, every tool result carries `overwatch tools v<version>`, and a call that does not fit the current schema is refused with it.
 

@@ -92,10 +92,13 @@ export const edited = (v: Verify, n: number): Verify =>
   v.dirty ? { ...v, lines: (v.lines || 0) + n, unreviewed: (v.unreviewed || 0) + n } : { ...CLEAN, dirty: true, lines: n, unreviewed: n }
 
 /**
- * New work ends a review pass. Each skill that ran covered every line so far, so its count starts again from 0
- * and the fix for a finding is judged by its own size, not the reviewed change's; a skill that did not run keeps its count.
+ * A review skill ran: it covered every line so far, so its count starts again from 0. Edits after it (the fixes
+ * it asked for) keep the pass and add to the count, so they are judged by their own size once new work starts.
  */
-export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: false, lines: v.simplify ? 0 : v.lines, unreviewed: v.review ? 0 : v.unreviewed })
+export const skillRan = (v: Verify, skill: "review" | "simplify"): Verify => ({ ...v, [skill]: true, [skill === "review" ? "unreviewed" : "lines"]: 0 })
+
+/** New work ends a review pass: each skill is due again by the lines changed since it last ran. */
+export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: false })
 
 /** A task's state as every view prints it: `done`, or `45%` / `45% active`. */
 const taskState = (t: Task) => (t.status === "done" ? "done" : `${t.progress}%${t.status === "active" ? " active" : ""}`)
@@ -132,8 +135,10 @@ export const reviewLine = (v: Verify): string => {
   if (!v.dirty) return "Review: no file changes since the last passed stop."
   const lines = Math.max(v.lines || 0, v.unreviewed || 0)
   const left = due(v)
+  if (left.length) return `Review: ${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; due once tasks and guards are clear: ${left.join(", then ")}.`
+  if (v.review || v.simplify) return "Review: review pass done."
   if (lines < SMALL_CHANGE_LINES) return `Review: ${lines} changed line(s) (small); no review pass needed.`
-  return `Review: ${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; ${left.length ? `due once tasks and guards are clear: ${left.join(", then ")}` : "review pass done"}.`
+  return `Review: ${lines} changed line(s) since the last pass; none due yet.`
 }
 
 /** The plan in full for plan_show: tasks, each guard with its question and last outcome, the review state. */

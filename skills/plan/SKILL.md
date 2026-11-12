@@ -27,4 +27,3 @@ Every stop is refused while a task is open, a guard is not upheld, or 10+ lines 
 - Need the user's input: AskUserQuestion, then continue.
 - A guard that cannot be met: say so and why. Only the user drops a guard (`guard_drop {guard_id}`). Never reword or drop one to get past a refusal.
 - After a fix, `guard_check` confirms a guard holds.
-- A refused edit or stop is recorded; three in 30 days become a lesson line in every later session.

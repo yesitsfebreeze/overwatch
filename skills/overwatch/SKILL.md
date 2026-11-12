@@ -18,7 +18,7 @@ Call `mcp__overwatch__<action>` directly; from a terminal, `"${CLAUDE_PLUGIN_ROO
 | record a mistake so later checklists carry it | `mistake {text}` |
 | git state, checks, catch counts, guard blocks, memory hogs | `status` |
 
-State: `.overwatch/{checks.json,mistakes.md,surface.json,incidents.json}`, plain files; edit them directly when that is shorter.
+State: plain files in `.overwatch/`; edit them directly when that is shorter.
 
 ## Catches
 
@@ -36,7 +36,7 @@ State: `.overwatch/{checks.json,mistakes.md,surface.json,incidents.json}`, plain
 
 ## Checks and mistakes
 
-- **Before claiming done**, `checks` prints the frozen checks and the mistakes. Run them; quote the failing line if one fails.
+- **Before claiming done**, run what `checks` prints; quote the failing line if one fails.
 - **`scan` is a discovery pass, not law.** It reads `package.json` scripts, `Cargo.toml`, `go.mod`, `Makefile`, `justfile`, `pyproject.toml`. Wrong guess: edit `checks.json`.
 - **`mistake` is for the ones that cost time twice**, with the why: "ran the whole suite while a peer held the cargo lock — use the built test binary". Not for typos.
 - **`status` flags language servers over 500MB**, so an orphaned `rust-analyzer` gets killed before it eats swap.

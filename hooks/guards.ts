@@ -152,12 +152,20 @@ const ENDS_EARLIER = /\bexit\s+[1-9]|\bset\s+(?:-[a-z]*e|-o\s+errexit)/
  * Whether a check's exit code says nothing about the work: a bare always-0 command (true, :, exit 0, echo,
  * printf), anything ending in `|| <always-0>`, a last `; <always-0>` with no earlier `exit N`, `set -e` or
  * `set -o errexit` that could end it first, or a last pipe into tail/head/tee/cat or an always-0 command (sh takes the pipe's status
- * from its last command). Quoted text, comments, parens and trailing `;` are looked through.
+ * from its last command). Quoted text, comments, parens and trailing `;` are looked through; a substitution
+ * (`$(...)`, `<(...)`, backticks) is one word, so a pipe inside it is not the check's own.
  */
 export function cannotFail(check: string): boolean {
-  const c = check
+  let c = check
     .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''") // quoted text can neither end nor join commands
     .replace(/(^|[ \t])#.*$/gm, "$1")
+    .replace(/`[^`]*`/g, "x")
+  // Innermost first, so nested substitutions fold; one holding a bare subshell `$( (a) )` is left as is.
+  for (let prev = ""; prev !== c; ) {
+    prev = c
+    c = c.replace(/[$<>]\([^()]*\)/g, "x")
+  }
+  c = c
     .replace(/[()]/g, " ")
     .replace(/[;\s]+$/, "")
     .trim()

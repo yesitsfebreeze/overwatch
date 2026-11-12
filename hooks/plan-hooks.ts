@@ -2,7 +2,7 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { shellArgv, type Runner } from "./io.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
@@ -103,8 +103,8 @@ export const register: Register = (on) => {
   // The gate: no file change before the plan has tasks and guards. The first edit
   // marks the change dirty and voids a pass run before it; later edits (fixes the
   // pass asks for) keep the pass. Every edit adds its lines to the counts since
-  // /simplify and since /code-review, which decide whether each is due. New work
-  // through the task tool ends the pass and starts the count of each skill that ran from 0.
+  // /simplify and since /code-review, which decide whether each is due. A skill that
+  // runs starts its count from 0; new work through the task tool ends the pass.
   for (const tool of EDIT_TOOLS)
     on("tool.call", { tool }, async ($, e, next) => {
       const why = gateReason(await read($, PLAN))
@@ -120,7 +120,7 @@ export const register: Register = (on) => {
   // /code-review and /simplify, typed or through the Skill tool.
   on("skill.prompt", async ($, e: any, next) => {
     const key = REVIEW_SKILLS.has(e.skill) ? "review" : e.skill === "simplify" ? "simplify" : undefined
-    if (key) await update($, VERIFY, (v) => ({ ...v, [key]: true }))
+    if (key) await update($, VERIFY, (v) => skillRan(v, key))
     return next(e)
   })
 

@@ -1,6 +1,6 @@
 import { test, expect } from "claude-code/testing"
-import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, edited, newWork, reminder, reviewLine, slot, stopVerdict, tool } from "./plan.ts"
-import { fitResults, guardId, lastTurn, makeGuard, openGuards, selectResults } from "./guards.ts"
+import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, edited, newWork, reminder, reviewLine, skillRan as ran, slot, stopVerdict, tool } from "./plan.ts"
+import { cannotFail, fitResults, guardId, lastTurn, makeGuard, openGuards, selectResults } from "./guards.ts"
 import type { Guard, Plan } from "../types/index.d.ts"
 
 const P = (tasks: Plan["tasks"], guards: Guard[] = []): Plan => ({ tasks, nextId: tasks.length + 1, guards })
@@ -189,20 +189,24 @@ test("tools: task_add takes every title or none; by-id tools refuse an unknown n
 
 test("verify: new work counts lines only since each skill last ran", () => {
   const big = edited(CLEAN, 3 * LARGE_CHANGE_LINES)
-  expect(newWork({ ...big, review: true, simplify: true })).toEqual({ ...CLEAN, dirty: true })
+  expect(newWork(ran(ran(big, "review"), "simplify"))).toEqual({ ...CLEAN, dirty: true })
   // A skill that did not run keeps its count: those lines never went through it.
-  expect(newWork({ ...big, review: true })).toEqual({ ...CLEAN, dirty: true, lines: big.lines })
-  expect(newWork({ ...big, simplify: true })).toEqual({ ...CLEAN, dirty: true, unreviewed: big.lines })
+  expect(newWork(ran(big, "review"))).toEqual({ ...CLEAN, dirty: true, lines: big.lines })
+  expect(newWork(ran(big, "simplify"))).toEqual({ ...CLEAN, dirty: true, unreviewed: big.lines })
   expect(newWork(big)).toEqual(big)
+  // Fix edits made after /code-review ran keep the pass, and count once new work starts.
+  const fixed = edited(ran(big, "review"), LARGE_CHANGE_LINES)
+  expect(reasonOf(stopVerdict(P([DONE], [G("t", { check: "bun test" })]), [met(G("t", { check: "bun test" }), true)], fixed, FRESH))).not.toContain("run /code-review")
+  expect(newWork(ran(fixed, "simplify"))).toMatchObject({ unreviewed: LARGE_CHANGE_LINES, lines: 0 })
   // The fix for a /code-review finding, added as a task: /code-review is not asked for again, /simplify still is.
   const g = G("tests", { check: "bun test" })
-  const fix = edited(newWork({ ...big, review: true }), 3)
+  const fix = edited(newWork(ran(big, "review")), 3)
   expect(fix).toMatchObject({ lines: big.lines + 3, unreviewed: 3 })
   const r = reasonOf(stopVerdict(P([DONE], [g]), [met(g, true)], fix, FRESH))
   expect(r).toContain("run /simplify")
   expect(r).not.toContain("run /code-review")
   // After /simplify too, a small fix needs no pass at all; a large one is reviewed again.
-  const after = newWork({ ...fix, simplify: true })
+  const after = newWork(ran(fix, "simplify"))
   expect(stopVerdict(P([DONE], [g]), [met(g, true)], edited(after, 3), FRESH).verdict.kind).toBe("pass")
   expect(reasonOf(stopVerdict(P([DONE], [g]), [met(g, true)], edited(after, LARGE_CHANGE_LINES), FRESH))).toContain("run /code-review, then run /simplify")
   // The first edit after a passed stop voids a pass run before it.
@@ -216,6 +220,20 @@ test("plan_show: tasks, guard questions and the review state", () => {
   expect(text).toContain("due once tasks and guards are clear: /simplify")
   expect(reviewLine(CLEAN)).toContain("no file changes")
   expect(reviewLine({ ...edited(CLEAN, LARGE_CHANGE_LINES), review: true, simplify: true })).toContain("review pass done")
+  // New work after a pass, not yet enough lines for either skill: no pass ran on it, so none is reported done.
+  const fresh = edited(newWork(ran(ran(edited(CLEAN, LARGE_CHANGE_LINES), "review"), "simplify")), SMALL_CHANGE_LINES - 1)
+  expect(reviewLine(fresh)).not.toContain("done")
+  expect(reviewLine({ ...CLEAN, dirty: true, lines: 0, unreviewed: SMALL_CHANGE_LINES })).toContain("none due yet")
+})
+
+test("guards: a pipe inside a substitution is not the check's last pipe", () => {
+  expect(cannotFail("test -n $(git diff | head -1)")).toBe(false)
+  expect(cannotFail("grep -q x <(cmd | cat)")).toBe(false)
+  expect(cannotFail("test -n `git diff | head -1`")).toBe(false)
+  expect(cannotFail("test -n $(echo $(a | tail -1))")).toBe(false)
+  expect(cannotFail("bun test | tail -5")).toBe(true)
+  expect(cannotFail("(bun test | tail -5)")).toBe(true)
+  expect(cannotFail("bun test $(x) | cat")).toBe(true)
   expect(detail(EMPTY, CLEAN)).toContain("No tasks, no guards.")
 })
 
