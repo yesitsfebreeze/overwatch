@@ -22,7 +22,7 @@ const unit = (name: string, status: string, checks = "[]") => ({
 /** git answers HEAD and a clean (or one dirty) tree; `sh -c <cmd>` answers each check from `codes`. */
 const runner = (opts: { dirty?: string[]; codes?: Record<string, number> } = {}): Runner => async (argv) => {
   const s = argv.join(" ")
-  if (s.includes("git rev-parse HEAD")) return { code: 0, stdout: "abc123def456\n", stderr: "" }
+  if (s.includes("git rev-parse")) return { code: 0, stdout: "abc123def456\n", stderr: "" }
   if (s.includes("git status --porcelain")) return { code: 0, stdout: (opts.dirty ?? []).map((p) => ` M ${p}`).join("\n"), stderr: "" }
   if (argv[0] === "sh" && argv[1] === "-c") {
     const code = argv[2] === "true" ? 0 : (opts.codes?.[argv[2]] ?? 0)
@@ -196,4 +196,45 @@ test("prd_add keeps the template's defaults for fields the caller leaves out", a
   expect(text).toContain("priority: 50")
   expect(text).toContain("needs: []")
   expect(text).toContain("checks: []")
+})
+
+test("reopening a failed PRD starts a fresh five-round allowance", async () => {
+  const at = io(prd("A", ""))
+  for (let i = 0; i < GATE_ROUNDS; i++) await prdReview(at as any, { prd: "A", score: 40, reviewer: "r" })
+  expect(at.files[`${V}/02 PRDs/A.md`]).toContain("status: failed")
+  await expect(prdReview(at as any, { prd: "A", score: 95, reviewer: "r" })).rejects.toThrow(`used all ${GATE_ROUNDS}`)
+  expect(await prdSet(at as any, { prd: "A", state: "open" })).toContain("rounds reset")
+  expect(at.files[`${V}/02 PRDs/A.md`]).toContain("- reopened")
+  // The round numbers keep counting; the allowance restarts.
+  expect(await prdReview(at as any, { prd: "A", score: 95, reviewer: "r" })).toContain(`round ${GATE_ROUNDS + 1}/${GATE_ROUNDS}`)
+  expect(await prdScan(at as any)).toContain(`review: round ${GATE_ROUNDS + 1} · 95/100`)
+})
+
+test("a need or a parent written in another case still resolves", async () => {
+  const at = io(prd("Base", ""))
+  await prdAdd(at as any, { title: "Child", needs: ["base"], parent: "BASE" })
+  expect(at.files[`${V}/02 PRDs/Child.md`]).toContain("needs: [Base]")
+  expect(at.files[`${V}/02 PRDs/Child.md`]).toContain("parent: Base")
+  // A hand-written lower-case need is found, so it waits instead of reporting it missing.
+  const hand = io({
+    ...prd("Base", ""),
+    ...prd("Kid", "needs: [base]\n"),
+    [`${V}/02 PRDs/Base.md`]: (at as any).files[`${V}/02 PRDs/Base.md`],
+  })
+  expect(await prdScan(hand as any)).toContain("held: needs: base")
+  expect(await prdScan(hand as any)).not.toContain("missing needs")
+})
+
+test("prd_brief sends a held PRD to its hold instead of to review and collect", async () => {
+  const brief = await prdBrief(io(prd("A", "status: blocked\nblocked: vendor\n")) as any, "A")
+  expect(brief).toContain("held: state: blocked — vendor")
+  expect(brief).toContain("next: state: blocked — vendor")
+  expect(brief).not.toContain("next: work the linked units")
+})
+
+test("every PRD write refreshes the plan snapshot", async () => {
+  const at = io()
+  await prdAdd(at as any, { title: "Plain" })
+  const data = JSON.parse(at.files[`${V}/00 Meta/Plan Data.json`])
+  expect(data.source.files.some((f: { path: string }) => f.path === "02 PRDs/Plain.md")).toBe(true)
 })

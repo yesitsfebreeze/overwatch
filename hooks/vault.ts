@@ -5,10 +5,14 @@
 // The wave plan is computed here and projected to "00 Meta/Plan Data.json" (the Plan View
 // plugin's data) and "00 Meta/Plan Tasks.md". Ported from the workflow kit's vault and plan note.
 import type { Plan } from "../types/index.d.ts"
-import { checkReport, PLAN_TOOLS, refuse, runCheck, trimmed, withDecided, type PlanTool, type Result } from "./plan.ts"
-import { cmp, join, state, VAULT_DIR, type Io } from "./io.ts"
+import { checkReport, PLAN_TOOLS, refuse, runChecks, trimmed, type PlanTool, type Result } from "./plan.ts"
+import { cmp, join, state, STATE_DIR, VAULT_DIR, type Io } from "./io.ts"
 
 const SPECS = "01 Specs"
+/** The one path rule scope checks share: separators and a leading `./` normalize away, Windows compares case-blind. */
+const normPath = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "").toLowerCase()
+/** A path covers itself and everything under it, so `src/a` and `src/a/lex.ts` overlap. */
+const coversPath = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
 export const PLAN_DATA = "00 Meta/Plan Data.json"
 export const PLAN_TASKS = "00 Meta/Plan Tasks.md"
 const TEMPLATE = "00 Meta/Spec Template.md"
@@ -132,13 +136,13 @@ export type PlanItem = { done: boolean; text: string }
 const ITEM = /^\s*- \[([ xX])\] (.+?)\s*$/
 
 export const planItems = (text: string): PlanItem[] =>
-  (section(text, "Plan") ?? "").split(/\r?\n/).flatMap((l) => { const m = ITEM.exec(l); return m ? [{ done: m[1] !== " ", text: m[2] }] : [] })
+  (section(text, "Plan") ?? "").split(/\r?\n/).flatMap((l) => { const m = ITEM.exec(l); return m ? [{ done: m[1] !== " ", text: m[2].trim() }] : [] })
 
 /** Ticks the open Plan items whose text is in `done`; other lines stay byte for byte. */
 export function tickItems(text: string, done: ReadonlySet<string>): string {
   const body = section(text, "Plan")
   if (body === undefined) return text
-  const ticked = body.split(/(\r?\n)/).map((l) => { const m = ITEM.exec(l); return m && m[1] === " " && done.has(m[2]) ? l.replace("- [ ]", "- [x]") : l }).join("")
+  const ticked = body.split(/(\r?\n)/).map((l) => { const m = ITEM.exec(l); return m && m[1] === " " && done.has(m[2].trim()) ? l.replace("- [ ]", "- [x]") : l }).join("")
   return replaceSection(text, "Plan", ticked)
 }
 
@@ -269,7 +273,7 @@ export function computePlan(all: Spec[]): PlanData {
     const excluded = s.depends.filter((d) => byName.has(d) && byName.get(d)!.status !== "implemented" && !openNames.has(d))
     const owner = str(s.fields.owner), blocked = str(s.fields.blocked)
     const held = s.depends.includes(s.name) ? "self dependency" : cyclic.has(s.name) ? "cycle" : missing.length ? `missing ${missing.join(", ")}`
-      : excluded.length ? `waiting on excluded ${excluded.join(", ")}` : s.status === "deferred" ? "deferred" : blocked ? "blocked" : after.length ? "waiting" : owner ? "claimed" : ""
+      : excluded.length ? `waiting on excluded ${excluded.join(", ")}` : s.status === "deferred" ? "deferred" : blocked ? "blocked" : after.length ? "waiting" : owner ? "claimed" : !s.items.some((i) => !i.done) ? "no open Plan items" : ""
     if (missing.length) warnings.push(`${s.name} depends on missing ${missing.join(", ")}`)
     const e = effort(s)
     const start = Math.max(0, ...after.map((d) => ends.get(d) ?? 0))
@@ -281,11 +285,13 @@ export function computePlan(all: Spec[]): PlanData {
     })
   }
 
-  // Scope clashes: two open units of one wave that claim a common path cannot run together.
+  // Scope clashes: two units of one wave that can start now and claim overlapping paths.
   const clashes: string[][] = []
-  for (let i = 0; i < rows.length; i++)
-    for (let j = i + 1; j < rows.length; j++)
-      if (rows[i].wave === rows[j].wave && rows[i].paths.some((p) => rows[j].paths.includes(p))) clashes.push([rows[i].name, rows[j].name])
+  const free = rows.filter((r) => !r.held).map((r) => ({ ...r, paths: r.paths.map(normPath) }))
+  for (let i = 0; i < free.length; i++)
+    for (let j = i + 1; j < free.length; j++) {
+      if (free[i].wave === free[j].wave && free[i].paths.some((x) => free[j].paths.some((y) => coversPath(x, y)))) clashes.push([free[i].name, free[j].name])
+    }
 
   // Dependency concurrency: the most units whose [start, end) spans overlap.
   const edges = rows.flatMap((r) => [[r.start, 1], [r.end, -1]] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1])
@@ -359,7 +365,7 @@ async function writeChanged(io: Io, path: string, text: string): Promise<boolean
  * Computes the plan and writes the projections. Plan Data.json carries a hash of every vault note
  * (except Plan Tasks.md, which it generates), so the Plan View marks it stale when a note changes.
  */
-async function writePlan(io: Io): Promise<{ data: PlanData; wrote: string[] }> {
+export async function writePlan(io: Io): Promise<{ data: PlanData; wrote: string[] }> {
   const root = vaultPath(io)
   const notes = await readVault(io)
   const data = computePlan(specsOf(notes))
@@ -478,10 +484,13 @@ export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<
   const row = computePlan(specs).rows.find((r) => r.name === spec.name)
   if (!row) return refuse(s, `"${spec.name}" is ${spec.status === "implemented" ? "implemented" : "left out of the plan"}; nothing to load`)
   if (row.held) return refuse(s, `"${spec.name}" is held: ${row.held}${row.held === "claimed" ? ` by ${row.owner}; clear its owner to take it` : ""}`)
-  if (!spec.items.some((i) => !i.done)) return refuse(s, `${spec.path} has no open "## Plan" items; add test-sized ones first`)
-  const unit = { name: spec.name, tasks: { ...(s.unit?.tasks ?? {}) }, guards: [...(s.unit?.guards ?? [])] }
+  const open = spec.items.filter((i) => !i.done).map((i) => i.text)
+  if (!open.length) return refuse(s, `${spec.path} has no open "## Plan" items; add test-sized ones first`)
+  const repeated = open.filter((t, i) => open.indexOf(t) !== i)
+  if (repeated.length) return refuse(s, `${spec.path} repeats the Plan item "${repeated[0]}"; one task per item needs unique text`)
+  const unit = { name: spec.name, tasks: { ...(s.unit?.tasks ?? {}) }, guards: [...(s.unit?.guards ?? [])], checks: [...new Set([...(s.unit?.checks ?? []), ...spec.checks])] }
   const loaded = new Set(Object.values(unit.tasks))
-  const titles = spec.items.filter((i) => !i.done && !loaded.has(i.text)).map((i) => i.text)
+  const titles = open.filter((i) => !loaded.has(i))
   const lines = [`Loaded unit "${spec.name}" (${spec.category || "no category"}, wave ${row.wave})`]
   let next = s
   // Tasks and guards go through task_add and guard_add, so a unit's are built like any other.
@@ -506,12 +515,25 @@ export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<
   return { state: { ...next, unit }, text: lines.join("\n"), work: true }
 }
 
+/** This session's state folder as a pathspec from the repository root, or its bare name when it sits outside. */
+const stateSpec = (root: string, io: Io) => {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
+  const r = norm(root), d = norm(state(io))
+  return d.startsWith(`${r}/`) ? d.slice(r.length + 1) : STATE_DIR
+}
+
 /** Git's view of the work: HEAD and the changed paths outside .overwatch. */
 export async function gitState(io: Io): Promise<{ commit: string; dirty: string[] } | string> {
-  const head = await io.run(["git", "rev-parse", "HEAD"], { cwd: io.cwd, timeoutMs: 10_000 })
+  const [head, top] = await Promise.all([
+    io.run(["git", "rev-parse", "HEAD"], { cwd: io.cwd, timeoutMs: 10_000 }),
+    io.run(["git", "rev-parse", "--show-toplevel"], { cwd: io.cwd, timeoutMs: 10_000 }),
+  ])
   if (head.code !== 0) return `unit_record needs a git repository with a commit: ${head.stderr.trim() || "git rev-parse HEAD failed"}`
-  // Porcelain paths are relative to the repo root, the pathspec to cwd: let git exclude the state dir.
-  const st = await io.run(["git", "status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).overwatch"], { cwd: io.cwd, timeoutMs: 20_000 })
+  // Run from the repository root so work outside the session's cwd still counts; the state dir never does.
+  if (top.code !== 0) return `unit_record needs a git work tree: ${top.stderr.trim() || "git rev-parse --show-toplevel failed"}`
+  const root = top.stdout.trim()
+  // The state folder sits under the session's cwd, so exclude its path from the root, not a literal name.
+  const st = await io.run(["git", "status", "--porcelain", "--untracked-files=all", "--", ".", `:(exclude)${stateSpec(root, io)}`], { cwd: root, timeoutMs: 20_000 })
   if (st.code !== 0) return `git status failed: ${st.stderr.trim()}`
   const dirty = st.stdout.split("\n").map((l) => l.slice(3).replace(/^"|"$/g, "")).filter(Boolean)
   return { commit: head.stdout.trim(), dirty }
@@ -536,16 +558,19 @@ export async function unitRecord(io: Io, s: Plan, e: { summary?: unknown; limita
   const git = await gitState(io)
   if (typeof git === "string") return refuse(s, git)
   if (git.dirty.length) return refuse(s, `commit the unit's work first; uncommitted: ${git.dirty.slice(0, 8).join(", ")}${git.dirty.length > 8 ? " …" : ""}`)
-  const mine = s.guards.filter((g) => unit.guards.includes(g.id))
-  const decided = await Promise.all(mine.filter((g) => g.check).map((g) => runCheck(io.run, g, io.cwd)))
-  const state = withDecided(s, decided)
+  // The unit's checks are re-run from the commands unit_load kept, so a plan whose guards were
+  // dropped or re-added still cannot record the unit without them passing.
+  const checks = [...new Set([...(unit.checks ?? []), ...spec.checks])]
+  const decided = await runChecks(io.run, checks, io.cwd, "unit check")
   const failing = decided.filter((g) => !g.met)
-  if (failing.length) return refuse(state, `unit guards failing, nothing recorded:\n${checkReport(failing)}`)
+  if (failing.length) return refuse(s, `unit checks failing, nothing recorded:\n${checkReport(failing)}`)
+  // The plan's guards learn the outcome when their command is one of the unit's checks.
+  const state: Plan = { ...s, guards: s.guards.map((g) => { const hit = decided.find((d) => d.check === g.check); return hit ? { ...g, met: hit.met } : g }) }
   const done = Object.entries(unit.tasks).filter(([id]) => byId.get(Number(id))?.status === "done").map(([, text]) => text)
   const { text, status } = closeNote(spec.text, {
     done,
     commit: git.commit,
-    guards: decided.map((g) => `${g.id} exit 0`),
+    guards: decided.map((g) => `\`${g.check ?? g.id}\` exit 0`),
     summary,
     limitations,
   })

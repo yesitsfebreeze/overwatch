@@ -6,8 +6,8 @@
 // implemented. A need is resolved when it is done, or refined and all of its children are done.
 // Ported from pearde's board flow (scan, next, brief, refine, review, collect).
 import { type Io } from "./io.ts"
-import { checkReport, runCheck } from "./plan.ts"
-import { BAD_NAME, frontmatter, gitState, patchFrontmatter, readVault, replaceSection, section, sha256, specsOf, str, strings, vaultInit, vaultPath, vaultPlan, type Fields, type Spec } from "./vault.ts"
+import { checkReport, runChecks } from "./plan.ts"
+import { BAD_NAME, frontmatter, gitState, patchFrontmatter, readVault, replaceSection, section, sha256, specsOf, str, strings, vaultInit, vaultPath, vaultPlan, writePlan, type Fields, type Spec } from "./vault.ts"
 import type { Guard } from "../types/index.d.ts"
 
 export const PRDS = "02 PRDs"
@@ -46,6 +46,8 @@ export type Prd = {
   specs: string[]
   acceptance: Box[]
   rounds: Round[]
+  /** How many of `rounds` belong to an earlier attempt, before the last reopen. */
+  attemptStart: number
   text: string
 }
 
@@ -65,15 +67,23 @@ const links = (text: string): string[] => [...comments(section(text, "Specs") ??
 
 /** `- round 2 · 91/100 · digest abcdef0123456789 · 2026-11-12 · agent reviewer`. */
 const ROUND = /^-\s*round\s+(\d+)\s*·\s*(\d+)\/100\s*·\s*digest\s+([0-9a-f]+)\s*·\s*(\S+)\s*·\s*(.+?)\s*$/
-const rounds = (text: string): Round[] =>
-  comments(section(text, "Review") ?? "").split(/\r?\n/).flatMap((l) => {
+/** `- reopened 2026-11-12 · rounds reset` starts a fresh review allowance. */
+const REOPEN = /^-\s*reopened\b/
+function rounds(text: string): { list: Round[]; attemptStart: number } {
+  const list: Round[] = []
+  let attemptStart = 0
+  for (const l of comments(section(text, "Review") ?? "").split(/\r?\n/)) {
+    if (REOPEN.test(l)) { attemptStart = list.length; continue }
     const m = ROUND.exec(l)
-    return m ? [{ round: Number(m[1]), score: Number(m[2]), digest: m[3], date: m[4], reviewer: m[5] }] : []
-  })
+    if (m) list.push({ round: Number(m[1]), score: Number(m[2]), digest: m[3], date: m[4], reviewer: m[5] })
+  }
+  return { list, attemptStart }
+}
 
 export function parsePrd(path: string, text: string): Prd {
   const { fields } = frontmatter(text)
   const priority = Number(fields.priority)
+  const attempt = rounds(text)
   return {
     name: path.split("/").pop()!.replace(/\.md$/, ""),
     path,
@@ -87,18 +97,23 @@ export function parsePrd(path: string, text: string): Prd {
     checks: strings(fields.checks),
     specs: links(text),
     acceptance: boxes(text),
-    rounds: rounds(text),
+    rounds: attempt.list,
+    attemptStart: attempt.attemptStart,
     text,
   }
 }
 
 type Board = { prds: Prd[]; all: Map<string, Prd>; specs: Spec[] }
 
+/** The PRD a need or a parent names, matched the way pick() matches a request. */
+const at = (all: Map<string, Prd>, name: string) => all.get(name.toLowerCase())
+const key = (p: Prd) => p.name.toLowerCase()
+
 /** One read of the vault for every view: the PRD board, by name, and the units it links. */
 async function board(io: Io): Promise<Board> {
   const notes = await readVault(io)
   const prds = [...notes].filter(([p]) => p.startsWith(PRDS + "/")).map(([p, text]) => parsePrd(p, text))
-  return { prds, all: new Map(prds.map((p) => [p.name, p])), specs: specsOf(notes) }
+  return { prds, all: new Map(prds.map((p) => [key(p), p])), specs: specsOf(notes) }
 }
 
 const none = (io: Io) => `no PRDs yet in ${vaultPath(io, PRDS)}; prd_add writes one`
@@ -143,11 +158,11 @@ export function gate(p: Prd, digest: string): Gate {
 
 /** A need is resolved when it is done, or refined and every child it was split into is done. */
 function resolved(name: string, all: Map<string, Prd>): boolean {
-  const p = all.get(name)
+  const p = at(all, name)
   if (!p) return false
   if (p.status === "done") return true
   if (p.status !== "refine") return false
-  const children = [...all.values()].filter((c) => c.parent === p.name)
+  const children = [...all.values()].filter((c) => c.parent && c.parent.toLowerCase() === key(p))
   return children.length > 0 && children.every((c) => c.status === "done")
 }
 
@@ -156,7 +171,7 @@ export function held(p: Prd, all: Map<string, Prd>): string {
   if (p.status === "done") return "done"
   if (!STARTABLE.has(p.status)) return p.status === "blocked" && p.blocked ? `state: blocked — ${p.blocked}` : PARKED[p.status] ?? `state: ${p.status || "none"}`
   if (p.owner) return `claimed by ${p.owner}`
-  const missing = p.needs.filter((n) => !all.has(n))
+  const missing = p.needs.filter((n) => !at(all, n))
   if (missing.length) return `missing needs ${missing.join(", ")}`
   const open = p.needs.filter((n) => !resolved(n, all))
   if (open.length) return `needs: ${open.join(", ")}`
@@ -209,18 +224,23 @@ export async function prdBrief(io: Io, name: string): Promise<string> {
   const specs = b.specs.filter((s) => p.specs.includes(s.name))
   const missing = p.specs.filter((n) => !specs.some((s) => s.name === n))
   const g = gate(p, await contractDigest(io, p, b.specs))
+  const why = held(p, b.all)
   const acceptance = p.acceptance.length ? p.acceptance.map((x) => `- [${x.done ? "x" : " "}] ${x.text}`) : ["(none: add acceptance boxes before specced)"]
   const specLines = specs.map((s) => {
     const open = s.items.filter((i) => !i.done).length
     return `- ${s.name} · ${s.status} · ${open} open Plan item(s)${s.checks.length ? ` · checks: ${s.checks.join("; ")}` : ""}`
   })
+  let next = `next: work the linked units (unit_load), then prd_collect ${p.name}`
+  if (why) next = `next: ${why}`
+  else if (!p.specs.length) next = `next: write the units in 01 Specs and link them under "## Specs", then prd_set ${p.name} specced`
+  else if (!g.ok) next = `next: prd_review ${p.name} once the units are written: an independent reviewer scores the contract, ${GATE_SCORE} passes`
   return [
     `# ${p.name} · ${p.status} · priority ${p.priority}`,
     `${p.path}${p.parent ? ` · parent ${p.parent}` : ""}`,
     "",
     ...acceptance,
     "",
-    `needs: ${p.needs.length ? p.needs.map((n) => `${n} (${b.all.get(n)?.status ?? "missing"})`).join(", ") : "none"}`,
+    `needs: ${p.needs.length ? p.needs.map((n) => `${n} (${at(b.all, n)?.status ?? "missing"})`).join(", ") : "none"}`,
     `footprint: ${p.footprint.length ? p.footprint.join(", ") : "unset"}`,
     `checks: ${p.checks.length ? p.checks.join("; ") : "none"}`,
     `specs: ${specLines.length ? "" : "none yet; write units in 01 Specs and link them under \"## Specs\""}`,
@@ -228,11 +248,9 @@ export async function prdBrief(io: Io, name: string): Promise<string> {
     ...(missing.length ? [`missing units: ${missing.join(", ")}`] : []),
     "",
     g.line,
-    `held: ${held(p, b.all) || "no"}`,
+    `held: ${why || "no"}`,
     "",
-    p.status === "open"
-      ? `next: prd_set ${p.name} specced once the units exist, then prd_review; collect needs a fresh round >= ${GATE_SCORE}`
-      : `next: work the linked units (unit_load), then prd_review and prd_collect`,
+    next,
   ].join("\n")
 }
 
@@ -266,13 +284,19 @@ const nameProblem = (title: string) => !title || BAD_NAME.test(title) || /^[._]/
 export async function prdAdd(io: Io, e: { title?: unknown; summary?: unknown; acceptance?: unknown; needs?: unknown; footprint?: unknown; checks?: unknown; parent?: unknown; priority?: unknown }): Promise<string> {
   const title = nonEmpty(e.title)
   if (nameProblem(title)) throw new Error(`prd_add needs a title usable as a note name (none of ${`\\ / : * ? " < > | # ^ [ ]`}; not starting with . or _)`)
-  const parent = nonEmpty(e.parent)
-  if (parent) {
-    const found = await findPrd(io, parent)
+  const name = nonEmpty(e.parent), needsIn = list(e.needs)
+  const b = name || needsIn.length ? await board(io) : undefined
+  let parent = name
+  if (name && b) {
+    const found = pick(b, name)
     if (typeof found === "string") throw new Error(found)
+    parent = found.name
   }
-  const acceptance = list(e.acceptance), needs = list(e.needs), footprint = list(e.footprint), checks = list(e.checks)
+  const acceptance = list(e.acceptance), footprint = list(e.footprint), checks = list(e.checks)
+  // A need that names no PRD is kept as written: it holds the PRD until that note exists.
+  const needs = needsIn.map((n) => { const found = b && pick(b, n); return typeof found === "string" || !found ? n : found.name })
   await addNote(io, { title, parent, summary: nonEmpty(e.summary), priority: e.priority, acceptance, needs, footprint, checks })
+  await writePlan(io)
   return `Added ${PRDS}/${title}.md (status open${acceptance.length ? `, ${acceptance.length} acceptance box(es)` : ""}${needs.length ? `, needs ${needs.join(", ")}` : ""}). Link its units under "## Specs"; prd_next lists it when its needs are done.`
 }
 
@@ -292,9 +316,9 @@ export async function prdRefine(io: Io, e: { prd?: unknown; children?: unknown; 
   const clash = children.filter((c) => { const k = c.toLowerCase(); const hit = taken.has(k) || seen.has(k); seen.add(k); return hit })
   if (clash.length) throw new Error(`already in ${PRDS}: ${clash.join(", ")}`)
   const summary = nonEmpty(e.summary)
-  const added: string[] = []
-  for (const c of children) added.push(`Added ${await addNote(io, { title: c, parent: found.name, summary })} (parent ${found.name})`)
+  const added = await Promise.all(children.map(async (c) => `Added ${await addNote(io, { title: c, parent: found.name, summary })} (parent ${found.name})`))
   await io.write(vaultPath(io, found.path), patchFrontmatter(found.text, { status: "refine", updated: new Date().toISOString().slice(0, 10) }))
+  await writePlan(io)
   return `Refined "${found.name}" into ${children.length} child PRD(s): ${children.join(", ")} (parent set to refine).\n${added.join("\n")}`
 }
 
@@ -309,9 +333,22 @@ export async function prdSet(io: Io, e: { prd?: unknown; state?: unknown; reason
   if (state === "specced" && !found.specs.length) throw new Error(`"${found.name}" has no linked units; write them in 01 Specs and link them under "## Specs" first`)
   const reason = nonEmpty(e.reason)
   if (state === "blocked" && !reason) throw new Error("blocked needs a reason: what holds it and what would unblock it")
-  const text = patchFrontmatter(found.text, { status: state, blocked: state === "blocked" ? reason : null, updated: new Date().toISOString().slice(0, 10) })
+  const date = new Date().toISOString().slice(0, 10)
+  let text = patchFrontmatter(found.text, { status: state, blocked: state === "blocked" ? reason : null, updated: date })
+  // Reopening a failed PRD is the advertised recovery, so it starts a fresh review allowance.
+  const reopened = found.status === "failed" && STARTABLE.has(state)
+  if (reopened) {
+    text = appendReview(text, `- reopened ${date} · rounds reset`)
+  }
   await io.write(vaultPath(io, found.path), text)
-  return `"${found.name}" is ${state}${reason ? `: ${reason}` : ""}`
+  await writePlan(io)
+  return `"${found.name}" is ${state}${reopened ? " (review rounds reset)" : ""}${reason ? `: ${reason}` : ""}`
+}
+
+/** The note with one more line at the end of its Review section, the format every review writer shares. */
+const appendReview = (text: string, line: string) => {
+  const kept = (section(text, "Review") ?? "").trim()
+  return replaceSection(text, "Review", kept ? `${kept}\n${line}` : line)
 }
 
 const MAX_FINDINGS = 600
@@ -329,24 +366,27 @@ export async function prdReview(io: Io, e: { prd?: unknown; score?: unknown; rev
   if (!Number.isFinite(score) || score < 0 || score > 100) throw new Error("score is 0 to 100")
   const reviewer = nonEmpty(e.reviewer)
   if (!reviewer) throw new Error("prd_review needs the reviewer: who scored it (an agent id or name)")
-  const found = await requirePrd(io, name)
+  const b = await board(io)
+  const found = pick(b, name)
+  if (typeof found === "string") throw new Error(found)
   if (found.status === "done") throw new Error(`"${found.name}" is done; its record is final`)
-  if (found.rounds.length >= GATE_ROUNDS) throw new Error(`"${found.name}" used all ${GATE_ROUNDS} review rounds; the allowance is exhausted`)
-  const digest = await contractDigest(io, found)
+  const used = found.rounds.length - found.attemptStart
+  if (used >= GATE_ROUNDS) throw new Error(`"${found.name}" used all ${GATE_ROUNDS} review rounds since it was opened; the allowance is exhausted`)
+  const digest = await contractDigest(io, found, b.specs)
   const round = found.rounds.length + 1
   const date = new Date().toISOString().slice(0, 10)
   const findings = nonEmpty(e.findings)
   const blocked = Math.round(score) < GATE_SCORE
-  const spent = blocked && round >= GATE_ROUNDS
+  const spent = blocked && used + 1 >= GATE_ROUNDS
   const entry = [`- round ${round} · ${Math.round(score)}/100 · digest ${digest} · ${date} · ${reviewer}`, ...(findings ? [`  - finding: ${findings.slice(0, MAX_FINDINGS)}`] : [])].join("\n")
-  const kept = (section(found.text, "Review") ?? "").trim()
-  let text = replaceSection(found.text, "Review", kept ? `${kept}\n${entry}` : entry)
+  let text = appendReview(found.text, entry)
   text = patchFrontmatter(text, { updated: date, ...(spent ? { status: "failed" } : {}) })
   await io.write(vaultPath(io, found.path), text)
+  await writePlan(io)
   const verdict = spent
     ? `below ${GATE_SCORE} on the last allowed round: the PRD is failed; split it or prd_set it open again`
     : blocked
-      ? `below ${GATE_SCORE}: revise and review again (${GATE_ROUNDS - round} round(s) left)`
+      ? `below ${GATE_SCORE}: revise and review again (${GATE_ROUNDS - used - 1} round(s) left)`
       : `passes the gate; prd_collect can run once the units are implemented`
   return `Recorded review round ${round}/${GATE_ROUNDS} for "${found.name}": ${Math.round(score)}/100 by ${reviewer} · ${verdict}`
 }
@@ -380,8 +420,7 @@ export async function prdCollect(io: Io, e: { prd?: unknown; summary?: unknown }
   const digest = await contractDigest(io, p, b.specs)
   const g = gate(p, digest)
   if (!g.ok) throw new Error(`prd_collect: ${g.line}`)
-  const guards: Guard[] = p.checks.map((check, i) => ({ id: check, question: `prd check ${i + 1}`, check, met: false }))
-  const decided = await Promise.all(guards.map((x) => runCheck(io.run, x, io.cwd)))
+  const decided = await runChecks(io.run, p.checks, io.cwd, "prd check")
   const failed = decided.filter((x) => !x.met)
   if (failed.length) throw new Error(`prd_collect: checks failing, nothing recorded:\n${checkReport(failed)}`)
   const git = await gitState(io)

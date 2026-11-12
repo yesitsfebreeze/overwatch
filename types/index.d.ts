@@ -54,8 +54,8 @@ export type Plan = {
   unit?: LoadedUnit
 }
 
-/** A spec note's work in the session: task id to Plan item text, and the guards from its `checks`. */
-export type LoadedUnit = { name: string; tasks: Record<number, string>; guards: string[] }
+/** A spec note's work in the session: task id to Plan item text, the guards from its `checks`, and the check commands themselves, kept so unit_record runs them even after a plan edit. */
+export type LoadedUnit = { name: string; tasks: Record<number, string>; guards: string[]; checks?: string[] }
 
 /**
  * Whether changed code went through /code-review and /simplify. The first file edit sets `dirty`

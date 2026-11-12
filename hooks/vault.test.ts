@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing"
 import type { Plan } from "../types/index.d.ts"
 import { memIo, type Runner } from "./io.ts"
 import { EMPTY } from "./plan.ts"
-import { closeNote, computePlan, frontmatter, parseSpec, patchFrontmatter, planItems, PLAN_DATA, PLAN_TASKS, serialize, unitLoad, unitNew, unitRecord, vaultInit } from "./vault.ts"
+import { closeNote, computePlan, frontmatter, parseSpec, patchFrontmatter, planItems, PLAN_DATA, PLAN_TASKS, serialize, tickItems, unitLoad, unitNew, unitRecord, vaultInit } from "./vault.ts"
 
 const V = "/p/.overwatch/vault"
 const TEMPLATE = "---\ntitle: {{title}}\ncategory:\nstatus: target\nupdated: {{date}}\n---\n\n# {{title}}\n\n## Summary\n\nOne paragraph.\n\n## Plan\n\n- [ ] placeholder\n\n## Status\n\nNothing yet.\n\n## Open questions\n\n-\n"
@@ -28,6 +28,9 @@ test("plan: waves follow depends; cycles, missing prerequisites and claims hold;
     ...spec("F", "depends: [E]\n"),
     ...spec("G", "depends: [Nope]\n"),
     ...spec("H", "proof: abc\n"),
+    ...spec("K", "paths: [src/a.ts/lex.ts]\n"),
+    ...spec("L", "paths: [SRC/A.TS]\n"),
+    ...spec("M", "", "- [x] do it"),
   }).map(([p, t]) => parseSpec(p.slice(V.length + 1), t))
   specs.find((s) => s.name === "H")!.status = "implemented"
   const d = computePlan(specs)
@@ -40,9 +43,13 @@ test("plan: waves follow depends; cycles, missing prerequisites and claims hold;
   expect(row("E").held).toBe("cycle")
   expect(row("G").held).toBe("missing Nope")
   expect(row("C").mark).toBe("⏫")
-  expect(d.clashes).toEqual([["A", "D"]])
+  // A covers K's path and L's differs only in case; D is claimed and M has no open item,
+  // so neither can start now and neither clashes.
+  expect(d.clashes).toEqual([["A", "K"], ["A", "L"], ["K", "L"]])
+  expect(row("D").held).toBe("claimed")
+  expect(row("M").held).toBe("no open Plan items")
   expect(d.done.map((x) => x.name)).toEqual(["H"])
-  expect(d.progress.ready).toBe(1)
+  expect(d.progress.ready).toBe(3)
   expect(d.warnings.some((w) => w.includes("cycle"))).toBe(true)
 })
 
@@ -89,7 +96,7 @@ test("round trip: unit_new, unit_load turns Plan items into tasks and checks int
   let s: Plan = loaded.state
   expect(s.tasks.map((t) => [t.id, t.title])).toEqual([[4, "lex tokens"], [5, "build tree"]])
   expect(s.guards.map((g) => g.check)).toEqual(["bun test parser"])
-  expect(s.unit).toEqual({ name: "Parser", tasks: { 4: "lex tokens", 5: "build tree" }, guards: [s.guards[0].id] })
+  expect(s.unit).toEqual({ name: "Parser", tasks: { 4: "lex tokens", 5: "build tree" }, guards: [s.guards[0].id], checks: ["bun test parser"] })
   expect((await unitLoad(x, s, { unit: "Parser" })).warn).toBe(true) // nothing new
 
   const close = { summary: "Parses tokens into a tree.", limitations: "none" }
@@ -143,4 +150,26 @@ test("review fixes: wiki-link lists, claims wait on prerequisites, a shared chec
   const rec = await unitRecord(x, left, { summary: "One works.", limitations: "two dropped" })
   expect(rec.text).toContain("as partial")
   expect(ran.some((c) => c.includes("bun test"))).toBe(true)
+})
+
+test("unit_record re-runs the unit's checks even after its guards left the plan", async () => {
+  const run: Runner = async (argv) => {
+    if (argv[0] === "git" && argv[1] === "rev-parse") return { code: 0, stdout: "/p\n", stderr: "" }
+    if (argv[0] === "git" && argv[1] === "status") return { code: 0, stdout: "", stderr: "" }
+    return { code: 1, stdout: "", stderr: "boom" }
+  }
+  const x = io({ ...spec("A", "checks: [bun test]\n") }, run)
+  const s = (await unitLoad(x, EMPTY, { unit: "A" })).state
+  const done = { ...s, guards: [], tasks: s.tasks.map((t) => ({ ...t, status: "done" as const, progress: 100 })) }
+  const rec = await unitRecord(x, done, { summary: "s", limitations: "none" })
+  expect(rec.warn).toBe(true)
+  expect(rec.text).toContain("unit checks failing")
+})
+
+test("Plan items match by trimmed text, and a repeated item is refused", async () => {
+  const text = "---\nstatus: target\n---\n\n## Plan\n\n- [ ]  run tests\n"
+  expect(planItems(text).map((i) => i.text)).toEqual(["run tests"])
+  expect(planItems(tickItems(text, new Set(["run tests"])))[0].done).toBe(true)
+  const x = io({ ...spec("R", "", "- [ ] same\n- [ ] same") })
+  expect((await unitLoad(x, EMPTY, { unit: "R" })).text).toContain("repeats the Plan item")
 })

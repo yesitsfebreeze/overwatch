@@ -84,9 +84,8 @@ class PlanView extends ItemView {
     const p = data.progress || {};
     const rows = Array.isArray(data.rows) ? data.rows : [];
     const now = Date.now();
-    const basePath = basePathOf(this.app);
     const claims = new Map();
-    for (const row of rows) if (row.owner) claims.set(row, claimFor(this.app, row, basePath, now));
+    for (const row of rows) if (row.owner) claims.set(row, claimFor(this.app, row, now));
     const claimed = claims.size;
     const staleClaims = [...claims.values()].filter(state => state?.stale).length;
     let dataUpdated = 'unknown';
@@ -213,14 +212,6 @@ class PlanView extends ItemView {
   }
 }
 
-function basePathOf(app) {
-  try {
-    const adapter = app?.vault?.adapter;
-    if (adapter && typeof adapter.getBasePath === 'function') return adapter.getBasePath();
-    return adapter?.basePath || null;
-  } catch { return null; }
-}
-
 function sinceOf(app, row) {
   if (row.since) return row.since;
   try {
@@ -238,26 +229,10 @@ function timestamp(value) {
   return Number.isFinite(at) ? at : null;
 }
 
-function unitSlug(name) {
-  return String(name).toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-|-$/g, '');
-}
-
-function parseHeartbeat(text, row) {
-  try {
-    const heartbeat = JSON.parse(text);
-    if (heartbeat.unit !== row.name || heartbeat.owner !== row.owner) return null;
-    return timestamp(heartbeat.at);
-  } catch {
-    return null;
-  }
-}
-
-function claimState(row, { since, heartbeat, now = Date.now() } = {}) {
+function claimState(row, { since, now = Date.now() } = {}) {
   const started = timestamp(since);
-  const beat = timestamp(heartbeat);
-  const last = Math.max(started || 0, beat || 0) || null;
-  const age = last == null ? null : Math.max(0, now - last);
-  return { since: started, heartbeat: beat, last, age, stale: age != null && age > STALE_MS };
+  const age = started == null ? null : Math.max(0, now - started);
+  return { since: started, age, stale: age != null && age > STALE_MS };
 }
 
 function formatAge(ms) {
@@ -271,41 +246,13 @@ function formatAge(ms) {
 }
 
 function claimLabel(state) {
-  if (!state || state.last == null) return 'age unknown';
+  if (!state || state.since == null) return 'age unknown';
   return state.stale ? `stale ${formatAge(state.age)}` : `active ${formatAge(state.age)}`;
 }
 
-// The vault is vault inside the checkout; workflow state lives at the checkout root.
-// Walk up to the nearest ancestor holding vault/00 Meta, the same rule workflow.mjs uses.
-function checkoutRoot(basePath) {
-  const fs = require('fs');
-  const path = require('path');
-  let dir = path.resolve(basePath);
-  for (;;) {
-    if (fs.existsSync(path.join(dir, 'dev', 'vault', '00 Meta'))) return dir;
-    const up = path.dirname(dir);
-    if (up === dir) return null;
-    dir = up;
-  }
-}
-
-function heartbeatOf(basePath, row) {
-  if (!basePath) return null;
-  try {
-    // Obsidian desktop plugins run in Electron's Node context. On a host without
-    // the workflow state, the claim falls back to its frontmatter `since` stamp.
-    const fs = require('fs');
-    const path = require('path');
-    const root = checkoutRoot(basePath);
-    if (!root) return null;
-    const file = path.join(root, '.workflow', 'units',
-      `${unitSlug(row.name)}-${row.owner}`, 'heartbeat.json');
-    return parseHeartbeat(fs.readFileSync(file, 'utf8'), row);
-  } catch { return null; }
-}
-
-function claimFor(app, row, basePath, now) {
-  return claimState(row, { since: sinceOf(app, row), heartbeat: heartbeatOf(basePath, row), now });
+// A claim's age comes from the note's own `since` stamp, the only claim state overwatch writes.
+function claimFor(app, row, now) {
+  return claimState(row, { since: sinceOf(app, row), now });
 }
 
 function barClass(row, claim) {
@@ -385,9 +332,6 @@ module.exports = PlanPlugin;
 module.exports.PlanView = PlanView;
 module.exports.claimState = claimState;
 module.exports.claimLabel = claimLabel;
-module.exports.unitSlug = unitSlug;
-module.exports.checkoutRoot = checkoutRoot;
-module.exports.heartbeatOf = heartbeatOf;
 module.exports.STALE_MS = STALE_MS;
 module.exports.barClass = barClass;
 module.exports.sourceState = sourceState;
