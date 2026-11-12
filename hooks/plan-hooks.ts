@@ -1,6 +1,6 @@
 import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
-import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
+import { GUARD_MET, JUDGE_URL, judgeFile, judgeRequest, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
 import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { engineRun, sessionIo } from "./io.ts"
@@ -66,7 +66,7 @@ export async function startPlan($: any, e: any): Promise<void> {
   ])
 }
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
   on("tool.call", { tool: tool("guard_check") }, async ($, e: any) => guardCheck($, e))
   on("tool.call", { tool: tool("plan_show") }, async ($) => planShow($))
   for (const [name, { run, act }] of Object.entries({ ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS })) {
@@ -122,12 +122,14 @@ export const register: Register = (on) => {
         const paths = [...new Set(judged.flatMap((g) => g.files ?? []))]
         const [messages, files] = await Promise.all([
           $.session.messages({ as: "api" }),
-          Promise.all(paths.map(async (p) => [p, await $.fs.read(p).then((t) => t.slice(0, 12_000), () => "[no such file]")] as const)),
+          Promise.all(paths.map(async (p) => [p, await $.fs.read(p).then(judgeFile, () => "[no such file]")] as const)),
         ])
+        const request = judgeRequest(lastTurn(messages as Msg[]), judged, Object.fromEntries(files), options.maxJudgeTokens)
+        if (request.error) return judged.map((g) => ({ ...g, met: false, last: { error: request.error } }))
         const res = await $.http.fetch(JUDGE_URL, {
           method: "POST",
           headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-          body: JSON.stringify(judgeBody(lastTurn(messages as Msg[]), judged, Object.fromEntries(files))),
+          body: request.body,
         } as any)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const ps = judgeProbs(JSON.parse(res.text ?? "{}")?.answers, judged)

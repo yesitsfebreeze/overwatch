@@ -128,7 +128,7 @@ export const reviewLine = (v: Verify): string => {
 export const detail = (s: Plan, v: Verify): string =>
   [
     ...s.tasks.map((t) => `#${t.id} ${taskState(t)}: ${t.title}`),
-    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}`),
+    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}${g.last?.error ? `\n    not evaluated: ${g.last.error}` : ""}`),
     s.tasks.length || s.guards.length ? `${overall(s)}% overall.` : "No tasks, no guards.",
     reviewLine(v),
   ].join("\n")
@@ -197,7 +197,7 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
   if (!open.length && !unmet.length && !verify) return { verdict: { kind: "pass" }, next: { ...FRESH, nokeyTold: book.nokeyTold } }
   const lines = [
     ...open.map((t) => `- task #${t.id} "${t.title}" (${t.progress}%)`),
-    ...unmet.map((g) => `- guard ${g.id} (${g.check ? `check \`${g.check}\` ${ran(g)}` : `judged p=${(g.last?.p ?? 0).toFixed(2)}`}): ${g.question}${tail(g)}`),
+    ...unmet.map((g) => `- guard ${g.id} (${g.last?.error ? `not evaluated: ${g.last.error}` : g.check ? `check \`${g.check}\` ${ran(g)}` : `judged p=${(g.last?.p ?? 0).toFixed(2)}`}): ${g.question}${tail(g)}`),
     ...(verify ? [`- files changed: ${left.map((d) => `run ${d}`).join(", then ")} on the change (Skill tool), fix what they find`] : []),
   ]
   const sig = JSON.stringify([open.map((t) => [t.id, t.progress]), unmet.map((g) => [g.id, g.last?.exit, Math.round((g.last?.p ?? 0) * 10)]), verify && left])

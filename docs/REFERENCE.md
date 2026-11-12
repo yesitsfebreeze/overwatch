@@ -153,6 +153,7 @@ Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `stat
 - `bun`: compaction and `bin/overwatch`.
 - `TYPESAFE_API_KEY`: judged guards need it in the shell; compaction also reads the settings `env` map. Without it only guards with a `check` hold the stop.
 - `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`: the hooks module.
+- `maxJudgeTokens`: maximum estimated tokens in one complete serialized guard judgment request, default 18,000. Oversized input is not sent; its guards remain unverified with instructions to narrow the evidence. Invalid nonpositive or nonfinite values use the default. File excerpts explicitly mark truncation.
 - `slots`: followline gauges and their order, default `componion,plan,kern`.
 - Compaction: `toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, ….
 

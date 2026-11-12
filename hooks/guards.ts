@@ -4,6 +4,7 @@
  * from the recorded turn. Pure: the hooks module does the I/O.
  */
 import type { CheckTier, Guard } from "../types/index.d.ts"
+import { estimateTokens } from "../jev/state.js"
 
 // ── the turn, reduced to what a judge reads ──────────────────────────
 const MAX_RESULTS = 12
@@ -211,6 +212,8 @@ export const guardMark = (g: Guard): "upheld" | "failing" | "open" => (g.met ? "
 // ── the judge ────────────────────────────────────────────────────────
 export const GUARD_MET = 0.7
 export const JUDGE_URL = "https://api.typesafe.ai/v1/systemone"
+export const MAX_JUDGE_TOKENS = 18_000
+export const judgeFile = (text: string) => text.length <= 12_000 ? text : `${text.slice(0, 12_000)}\n...[truncated; ${text.length - 12_000} characters omitted]`
 
 const FRAME =
   "Judge only from the recorded turn (`user_request`, `assistant_said`, `actions_taken`, `command_results`) and, where shown, `project.files`, the real current content of those files. Something not shown is unknown, not absent. The agent's own words are a claim, not evidence; a recorded command result or a shown file is evidence."
@@ -230,6 +233,15 @@ export const judgeBody = (turn: Turn, guards: Guard[], files: Record<string, str
     ]),
   ),
 })
+
+/** Measure the complete serialized request; no question or selected file is silently dropped. */
+export function judgeRequest(turn: Turn, guards: Guard[], files: Record<string, string>, maxTokens?: unknown) {
+  const limit = typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : MAX_JUDGE_TOKENS
+  const body = JSON.stringify(judgeBody(turn, guards, files))
+  const tokens = estimateTokens(body)
+  const error = tokens > limit ? `Judge input is approximately ${tokens} tokens; limit ${limit}. Narrow the listed files or split the work into smaller guarded steps.` : undefined
+  return { body, tokens, error }
+}
 
 /** The probability of yes per guard id from Jev's answers; NaN where it gave none. */
 export const judgeProbs = (answers: any, guards: Guard[]): Record<string, number> =>

@@ -46,8 +46,8 @@ export type Guard = {
   files?: string[]
   /** Whether the last decision upheld it. A judged guard, once upheld, is retired. */
   met?: boolean
-  /** The last decision: the check's exit code (null: did not finish) and output tail, or the judge's p. */
-  last?: { exit?: number | null; p?: number; out?: string }
+  /** Last outcome: check exit/output, judge probability, or a local reason no evaluation was made. */
+  last?: { exit?: number | null; p?: number; out?: string; error?: string }
 }
 
 /** Tasks and guards: the whole plan the stop is held against. */

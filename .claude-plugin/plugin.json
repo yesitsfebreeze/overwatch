@@ -8,6 +8,12 @@
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "maxJudgeTokens": {
+      "type": "number",
+      "title": "Guard judge: maximum estimated input tokens",
+      "description": "Bounds the complete serialized guard judgment request. Oversized input remains unverified and blocks completion with instructions to narrow it. Invalid values use the default.",
+      "default": 18000
+    },
     "enabled": {
       "type": "boolean",
       "title": "Enabled",
