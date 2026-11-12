@@ -130,3 +130,70 @@ test("prd_refine splits an open PRD into children and turns the parent to refine
   const brief = await prdBrief(at as any, "Part One")
   expect(brief).toContain("parent Big")
 })
+
+test("held states: blocked and failed PRDs never show ready, and a refined parent resolves through its children", async () => {
+  const at = io(prd("A", "priority: 60\n"))
+  await prdSet(at as any, { prd: "A", state: "blocked", reason: "waits on vendor" })
+  expect(await prdNext(at as any)).toContain("nothing ready")
+  expect(await prdScan(at as any)).toContain("held: state: blocked — waits on vendor")
+  await expect(prdCollect(at as any, { prd: "A" })).rejects.toThrow("held: state: blocked")
+  await prdSet(at as any, { prd: "A", state: "open" })
+  expect(await prdNext(at as any)).toContain("A")
+
+  const split = io({ ...prd("Big", ""), ...prd("Down", "needs: [Big]\n") })
+  await prdRefine(split as any, { prd: "Big", children: ["One", "Two"] })
+  expect(await prdNext(split as any)).not.toContain("Down")
+  for (const c of ["One", "Two"]) {
+    const f = `${V}/02 PRDs/${c}.md`
+    split.files[f] = split.files[f].replace("status: open", "status: done")
+  }
+  // Every child collected: the refined parent no longer holds its dependents.
+  expect(await prdNext(split as any)).toContain("Down")
+})
+
+test("review rounds: the fifth miss fails the PRD, and a passing fifth buys no sixth", async () => {
+  const miss = io(prd("A", ""))
+  for (let i = 1; i <= GATE_ROUNDS; i++) await prdReview(miss as any, { prd: "A", score: 60, reviewer: "r" })
+  expect(miss.files[`${V}/02 PRDs/A.md`]).toContain("status: failed")
+  expect(await prdScan(miss as any)).toContain("held: state: failed")
+  await expect(prdReview(miss as any, { prd: "A", score: 96, reviewer: "r" })).rejects.toThrow("allowance is exhausted")
+
+  const pass = io(prd("A", ""))
+  for (let i = 2; i <= GATE_ROUNDS; i++) await prdReview(pass as any, { prd: "A", score: 60, reviewer: "r" })
+  expect(await prdReview(pass as any, { prd: "A", score: 96, reviewer: "r" })).toContain("passes the gate")
+  await expect(prdReview(pass as any, { prd: "A", score: 96, reviewer: "r" })).rejects.toThrow("allowance is exhausted")
+})
+
+test("the digest follows the contract text, not the ticks or the layout", async () => {
+  const at = io({ ...prd("A", "", "[[U]]"), ...unit("U", "target") })
+  const note = () => parsePrd("02 PRDs/A.md", at.files[`${V}/02 PRDs/A.md`])
+  const first = await contractDigest(at as any, note())
+  at.files[`${V}/02 PRDs/A.md`] = at.files[`${V}/02 PRDs/A.md`].replace("- [x] works", "- [ ] works")
+  expect(await contractDigest(at as any, note())).toBe(first)
+  at.files[`${V}/02 PRDs/A.md`] = at.files[`${V}/02 PRDs/A.md`].replace("- [ ] works", "- [x] works differently")
+  expect(await contractDigest(at as any, note())).not.toBe(first)
+  at.files[`${V}/02 PRDs/A.md`] = at.files[`${V}/02 PRDs/A.md`].replace("- [x] works differently", "- [x] works").replace("priority: 50", "priority: 70")
+  expect(await contractDigest(at as any, note())).toBe(first)
+})
+
+test("a newline in the reviewer cannot split the round line and reset the gate", async () => {
+  const at = io({ ...prd("A", "", "[[U]]"), ...unit("U", "implemented") })
+  await prdReview(at as any, { prd: "A", score: 95, reviewer: "agent\nr" })
+  expect(at.files[`${V}/02 PRDs/A.md`]).toContain("· agent r")
+  expect(await prdScan(at as any)).toContain("review: round 1 · 95/100")
+  // A second round appends; the first survives a rewritten section body.
+  await prdReview(at as any, { prd: "A", score: 96, reviewer: "agent-r", findings: "line one\nline two" })
+  const text = at.files[`${V}/02 PRDs/A.md`]
+  expect(text).toContain("round 1 · 95/100")
+  expect(text).toContain("round 2 · 96/100")
+  expect(text).toContain("finding: line one line two")
+})
+
+test("prd_add keeps the template's defaults for fields the caller leaves out", async () => {
+  const at = io()
+  await prdAdd(at as any, { title: "Plain" })
+  const text = at.files[`${V}/02 PRDs/Plain.md`]
+  expect(text).toContain("priority: 50")
+  expect(text).toContain("needs: []")
+  expect(text).toContain("checks: []")
+})

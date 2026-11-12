@@ -18,9 +18,10 @@ updated: {{date}}
 
 ## Acceptance
 
-- [ ] <Successful behavior at the real consumer boundary.>
-- [ ] <Invalid input, denial or stale revision leaves the right state intact.>
-- [ ] <Cancellation, failure or restart has an observable recovery outcome.>
+<!-- One - [ ] line per observable outcome; prd_add writes the boxes it is given here, and
+     prd_collect runs only when every one is ticked at the consumer boundary. Cover the success
+     path, the invalid or denied path, and recovery from cancellation or restart.
+-->
 
 ## Specs
 
@@ -29,8 +30,8 @@ updated: {{date}}
 ## Review
 
 <!-- prd_review appends one line per round: - round 1 · 92/100 · digest … · date · reviewer.
-     The digest covers this PRD's Acceptance section and every linked unit's Plan items and checks,
-     so editing any of them makes the round stale. 90/100 within 5 rounds. -->
+     The digest covers this PRD's acceptance text and checks plus every linked unit's Plan items
+     and checks, so editing any of them makes the round stale. 90/100 within 5 rounds. -->
 
 ## Status
 

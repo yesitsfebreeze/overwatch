@@ -162,10 +162,10 @@ export type Spec = {
   text: string
 }
 
-const strings = (v: Value | undefined): string[] => (Array.isArray(v) ? v : v == null || v === "" ? [] : [v]).map(String).filter(Boolean)
-const str = (v: Value | undefined) => (v == null ? "" : String(v))
+export const strings = (v: Value | undefined): string[] => (Array.isArray(v) ? v : v == null || v === "" ? [] : [v]).map(String).filter(Boolean)
+export const str = (v: Value | undefined) => (v == null ? "" : String(v))
 /** Note names from a frontmatter value: `[[A]]` wiki links, inline lists and nested lists all flatten to plain names. */
-const noteRefs = (v: Value | undefined): string[] =>
+export const noteRefs = (v: Value | undefined): string[] =>
   (Array.isArray(v) ? (v.flat(Infinity) as Value[]) : [v]).map((x) => str(x).replace(/[[\]]/g, "").trim()).filter(Boolean)
 
 export function parseSpec(path: string, text: string): Spec {
@@ -418,7 +418,7 @@ export async function vaultInit(io: Io): Promise<string> {
     : `vault at ${root} is complete; nothing added`
 }
 
-const BAD_NAME = /[\\/:*?"<>|#^[\]]/
+export const BAD_NAME = /[\\/:*?"<>|#^[\]]/
 
 function findSpec(io: Io, specs: Spec[], name: string): Spec | string {
   const hit = specs.find((s) => s.name === name) ?? specs.find((s) => s.name.toLowerCase() === name.toLowerCase())

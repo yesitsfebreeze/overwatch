@@ -14,8 +14,8 @@ Everything goes through the PRD tools (`mcp__overwatch__prd_scan`, `prd_next`, `
 ## The flow
 
 - **open → specced.** Write the units that implement the PRD in `01 Specs` and link them under its `## Specs` section; then `prd_set {prd, state:"specced"}`. Refuses without a linked unit.
-- **Review.** An independent reviewer scores the contract 0-100; `prd_review {prd, score, reviewer, findings?}` records the round. The round is bound to a digest of the acceptance boxes plus every linked unit's Plan items and checks: editing any of them makes it stale. 90 passes, five rounds per PRD.
-- **Collect.** `prd_collect {prd}` refuses until needs are done, every acceptance box is ticked, every linked unit is implemented with its Plan items ticked, the last review round is fresh and at least 90, the tree outside `.overwatch/` is clean and every `checks` command exits 0 at HEAD. It then writes `status: done`, the proof line and the Collection receipt; nothing is written before every gate holds.
+- **Review.** An independent reviewer scores the contract 0-100; `prd_review {prd, score, reviewer, findings?}` records the round. The round is bound to a digest of the acceptance text, the PRD's `checks` and every linked unit's Plan items and checks: editing them makes it stale, ticking boxes does not. 90 passes. Five rounds per PRD; miss the gate on the fifth and the PRD is set `failed`.
+- **Collect.** `prd_collect {prd}` refuses until needs are resolved (done, or refined with every child done), every acceptance box is ticked, every linked unit is implemented with its Plan items ticked, the last review round is fresh and at least 90, the tree outside `.overwatch/` is clean and every `checks` command exits 0 at HEAD. It then writes `status: done`, the proof line and the Collection receipt; nothing is written before every gate holds.
 - **blocked / failed.** `prd_set` needs a reason for blocked; clear it with any other state.
 
 Never invent a review score or a reviewer, and never tick an acceptance box the work did not observe. A guard or gate that cannot be met is reported to the user, not bypassed.
