@@ -27,9 +27,9 @@ export default Plugin.define({
         })
     })
 
-    // A submitted prompt resets the stop rounds. The idle re-prompt below counts as one; the 3-unchanged cap still ends a stuck loop.
-    await ctx.session.hook("prompt", async () => {
-      await onEvent(io, { kind: "prompt", cwd: dir, person: true })
+    // Only a human prompt resets the stop rounds; our continuations retain both caps.
+    await ctx.session.hook("prompt", async (e: any) => {
+      await onEvent(io, { kind: "prompt", cwd: dir, person: e.metadata?.overwatch !== "continuation" })
     })
 
     await ctx.session.hook("context", async (e: any) => {
@@ -54,7 +54,7 @@ export default Plugin.define({
       for await (const ev of ctx.event.subscribe({ signal: ac.signal, types: ["session.idle"] }) as AsyncIterable<any>) {
         if (ev?.type !== "session.idle") continue
         const o = await onEvent(io, { kind: "stop", cwd: dir })
-        if (o.block) await ctx.session.prompt({ sessionID: ev.data.sessionID, text: o.block }).catch(() => {})
+        if (o.block) await ctx.session.prompt({ sessionID: ev.data.sessionID, text: o.block, metadata: { overwatch: "continuation" } }).catch(() => {})
       }
     })().catch(() => {})
     return () => ac.abort()
