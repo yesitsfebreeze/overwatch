@@ -3,10 +3,13 @@ import { session } from "./test-session.ts"
 import { tool } from "./plan.ts"
 
 session("guard evaluation: defer open work, reuse exact judgments, and stop spending at the cap", async ($, on) => {
+  on("session.id", async () => ({ value: "guard-usage-test" }) as any)
   on("session.cwd", async () => ({ value: "/repo" }) as any)
   on("env.get", async () => ({ value: "test-key" }) as any)
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))
   on("classic.Stop", async () => ({}) as any)
+  let usage: any
+  on("fs.write", async (_: any, e: any) => { if (String(e.path).replace(/\\/g, "/").endsWith("/usage/guard-usage-test.json")) usage = JSON.parse(e.text); return { value: undefined } as any })
   let evidence = "first"
   let reads = 0
   let requests = 0
@@ -25,7 +28,7 @@ session("guard evaluation: defer open work, reuse exact judgments, and stop spen
   })
   on("http.fetch", async () => {
     requests++
-    return { value: { ok: !failed, status: failed ? 503 : 200, text: JSON.stringify({ answers: invalid ? {} : { "evidence-match-requirements": { noul: 0.1 } } }) } } as any
+    return { value: { ok: !failed, status: failed ? 503 : 200, text: JSON.stringify({ usage: { input_tokens: 7, output_tokens: 2, cache_read_input_tokens: 3 }, answers: invalid ? {} : { "evidence-match-requirements": { noul: 0.1 } } }) } } as any
   })
   on("process.run", async (_: any, e: any) => {
     const isCheck = (e.argv ?? e).at(-1) === "guard-probe"
@@ -47,6 +50,7 @@ session("guard evaluation: defer open work, reuse exact judgments, and stop spen
   await stop()
   await stop()
   expect(requests).toBe(1)
+  expect(usage.attempts).toBe(1)
   expect(checks).toBe(3)
   evidence = "changed"
   await stop()
@@ -65,6 +69,9 @@ session("guard evaluation: defer open work, reuse exact judgments, and stop spen
   await stop()
   await stop()
   expect(requests).toBe(7)
+  expect([usage.attempts, usage.successes, usage.failures]).toEqual([7, 3, 4])
+  expect(usage.usage.input_tokens).toEqual({ total: 49, reported: 7, unknown: 0 })
+  expect(usage.usage.cache_read_input_tokens.total).toBe(21)
   failed = false
   await prompt()
   for (let n = 1; n <= 8; n++) {

@@ -149,7 +149,8 @@ Plain files in `.overwatch/` in the working directory, beside `incidents.json`; 
 | `plan.json` | tasks and guards outside Claude Code |
 | `evidence/<unit>.json` | the last `unit_record` run: commit, guards, outputs |
 | `context/<session>/` | originals of cut and folded messages |
-| `status/<session>.json` | compaction's status, read by kern's turn deck |
+| `status/<session>.json` | compaction status, estimated context removed, and sidecar usage snapshot |
+| `usage/<session>.json` | shared Jev request counts and provider-reported usage, including guard-only sessions |
 
 Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `status`) and the shared Jev dataset `~/.jev/log/`.
 
@@ -223,3 +224,26 @@ Routine prompts and checklists show at most five recent distinct whole mistake r
 ### Grading transport failures
 
 Each compaction grading request is sent once. A connection rejection, lost response, HTTP error, or invalid answer uses deterministic fallback heads; the next batch does not run. An ambiguous failure can still have incurred provider usage, so no automatic retry or billing assumption is made. Per-fold request and estimated input budgets still apply.
+
+### Jev usage accounting
+
+`status` reads the shared usage snapshots even with compaction disabled. Each actual
+HTTP invocation is counted once, with operation (`compaction` or `guard`), a session
+operation id, batch number, attempt number, outcome, and estimated serialized input.
+Cache hits and local preflight rejection create no request record. Retries are zero.
+Successful compaction dataset rows retain `client: componion` and their existing
+state/questions/answers/model fields; guard and failure rows contain metadata only.
+Rows append to `~/.jev/log/YYYY-MM-DD.jsonl` and include the new accounting fields.
+
+Provider-returned `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
+`cache_creation_input_tokens` are recorded independently, including on HTTP errors
+and invalid answers. Only finite nonnegative numbers count. Missing fields are
+`null`, with snapshot coverage `{total, reported, unknown}` for each field; a known
+zero is distinct from unknown usage. Transport failure may have incurred provider
+usage despite having no returned counts. Logging failures never change a grade.
+Snapshots serialize concurrent updates, persist across reload, and are independent
+of compaction registration. Malformed report snapshots display unavailable.
+
+The legacy `saved`/`lastFold` values estimate context tokens removed; `savedKind`
+labels that meaning explicitly. They do not measure billed savings or offset Jev
+usage. No prices, net savings, or unreported main-agent usage are inferred.

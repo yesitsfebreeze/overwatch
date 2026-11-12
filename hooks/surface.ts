@@ -1,3 +1,4 @@
+import { usageReport } from "./usage.ts"
 /**
  * The tool-surface ledger and a repo's verification checks, over `Io` so the hooks and bin/overwatch run the same code.
  *
@@ -362,7 +363,7 @@ async function memory(io: Io): Promise<string> {
 }
 
 export async function status(io: Io): Promise<string> {
-  const [git, checks, mist, guard, mem, st, caught] = await Promise.all([
+  const [git, checks, mist, guard, mem, st, caught, usage] = await Promise.all([
     io.run(["git", "status", "--porcelain"]).then((r) => (r.code === 0 ? r.stdout.trimEnd().split("\n").filter(Boolean) : [])),
     frozen(io),
     readMistakes(io),
@@ -370,6 +371,7 @@ export async function status(io: Io): Promise<string> {
     memory(io),
     load(io),
     loadIncidents(io),
+    usageReport(io).catch(() => "Jev usage: unavailable; provider usage unknown."),
   ])
   const fires = Object.values(st.counts)
   return [
@@ -379,6 +381,7 @@ export async function status(io: Io): Promise<string> {
     mist ? `mistakes: ${mistakeLines(mist).length} recorded` : "mistakes: none recorded",
     guard,
     tallyLine(caught),
+    usage,
     mem,
     `tools fired: ${fires.length}, total fires: ${fires.reduce((a, c) => a + c, 0)}`,
   ].join("\n")

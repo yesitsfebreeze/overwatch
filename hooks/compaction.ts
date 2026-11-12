@@ -10,10 +10,10 @@
 import type { EngineInterface, Register, SessionMessage } from 'claude-code';
 import { compact, resolveOptions } from '../jev/compact.js';
 import { estimateTokens } from '../jev/state.js';
-import { buildJevRequest, parseJevResponse, DEFAULT_MODEL } from '../jev/request.js';
+import { buildJevRequest, noulAnswer, DEFAULT_MODEL } from '../jev/request.js';
 import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
 import { STATE_DIR } from './io.ts';
-import { today } from './io.ts';
+import { observedRequest, usageOperation, usageSnapshot, type UsageOperation } from './usage.ts';
 import { incident } from './incidents.ts';
 import { liveResultBudget, originalPage } from './paging.ts';
 
@@ -261,7 +261,7 @@ export const failureLine = (fails: { tool: string; text: string }[], outcomeMax:
 
 // CONTRACT §2 (~/orchi/docs/CONTRACT.md): what kern's turn deck reads.
 type Status = { saved: number; folds: number; lastFold: number; jev: string; compacting: boolean; failures: number; nextCompactAt: number };
-export const statusPayload = (s: Status, ts: number) => ({ v: 1, ts, ...s });
+export const statusPayload = (s: Status, ts: number, usage?: unknown) => ({ v: 1, ts, ...s, savedKind: 'estimated_context_tokens_removed', ...(usage ? { usage } : {}) });
 
 type State = { home: string };
 
@@ -270,7 +270,7 @@ type State = { home: string };
 async function publish($: EngineInterface, s: Status) {
   try {
     const path = `${await $.session.cwd()}/${STATE_DIR}/status/${await $.session.id()}.json`;
-    await $.fs.write(path, JSON.stringify(statusPayload(s, Date.now())));
+    await $.fs.write(path, JSON.stringify(statusPayload(s, Date.now(), await usageSnapshot($))));
   } catch { /* status is best effort */ }
 }
 
@@ -288,16 +288,6 @@ async function keepOriginal($: EngineInterface, s: State, id: string, text: stri
   } catch { return false; }
 }
 
-// CONTRACT §8 dataset: one line per answered Jev call. $.fs has no append or mkdir, so a child does both;
-// perl's syswrite is one O_APPEND write, so kern and orly appending the same file never interleave.
-async function logJev($: EngineInterface, entry: object) {
-  try {
-    const day = today(); // UTC day, CONTRACT §8
-    const script = 'use File::Path; mkpath($ARGV[0]); open(F, ">>", "$ARGV[0]/$ARGV[1]") or die; local $/; syswrite(F, <STDIN>)';
-    await $.process.run(['perl', '-e', script, `${await $.env.get('HOME')}/.jev/log`, `${day}.jsonl`], { stdin: JSON.stringify(entry) + '\n' });
-  } catch { /* the dataset never fails a fold */ }
-}
-
 // Jev grades each tool call in the region; its answer always shapes the fold (a paid call is never
 // discarded). Unreachable, every call gets a short head and the fold goes ahead anyway.
 export async function jevHeads($: EngineInterface, region: readonly SessionMessage[], options: object, out: { jev: string }): Promise<Heads> {
@@ -309,29 +299,34 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
     if (!apiKey) throw new Error('no TYPESAFE_API_KEY');
     const budget = resolveOptions(options);
     let requests = 0, inputTokens = 0;
+    let operation: UsageOperation | undefined;
     const asker = { ask: async (st: never, questions: never) => {
       const q = buildJevRequest({ apiKey, model: DEFAULT_MODEL }, st, questions);
       const init = { method: q.method, headers: q.headers, body: q.body };
       const requestTokens = estimateTokens(q.body);
+      if (requests >= budget.maxRequests || inputTokens + requestTokens > budget.maxTotalTokens) throw new Error('fold grading budget exhausted');
       const send = () => {
-        if (requests >= budget.maxRequests || inputTokens + requestTokens > budget.maxTotalTokens) {
-          throw new Error('fold grading budget exhausted');
-        }
         requests++;
         inputTokens += requestTokens;
         return $.http.fetch(q.url, init);
       };
       // A transport rejection may follow provider acceptance; never send it again.
-      const r = await send();
-      const res = parseJevResponse(r.status, r.ok, r.text);
-      void logJev($, { ts: Date.now(), client: 'componion', model: res.model ?? DEFAULT_MODEL, state: st, questions, answers: res.answers });
-      return res;
+      operation ??= await usageOperation($, 'compaction');
+      return observedRequest($, operation, requests + 1, requestTokens, send, (body) => {
+        if (!body?.answers || typeof body.answers !== 'object') throw new Error('invalid_response');
+        for (const name of Object.keys(questions)) {
+          const p = noulAnswer(body.answers, name);
+          if (p < 0 || p > 1) throw new Error('invalid_response');
+        }
+        return body;
+      }, { state: st, questions });
     } };
     const result = await compact(region as never, asker as never, options);
     for (const d of result.decisions) heads.set(d.tool_use_id, HEAD[d.action as keyof typeof HEAD] ?? HEAD.drop_result);
     out.jev = 'jev';
   } catch (err) {
-    const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim();
+    const message = err instanceof Error ? err.message : '';
+    const reason = ['transport_error', 'http_error', 'invalid_response', 'no TYPESAFE_API_KEY', 'fold grading budget exhausted'].includes(message) ? message : 'grading unavailable';
     $.ui.log(`overwatch compaction: jev failed: ${reason}`, { to: 'debug' });
     out.jev = `jev failed: ${reason.slice(0, 80)}`;
   }

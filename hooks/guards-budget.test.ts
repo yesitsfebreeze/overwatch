@@ -1,5 +1,6 @@
 import { test, expect } from "claude-code/testing"
 import { session } from "./test-session.ts"
+import { usageSnapshot } from "./usage.ts"
 import { tool } from "./plan.ts"
 import { judgeFile, judgeRequest, lastTurn, MAX_JUDGE_TOKENS } from "./guards.ts"
 
@@ -34,6 +35,7 @@ test("judge files visibly mark the existing per-file truncation", () => {
 })
 
 session("judge budget: oversized evidence blocks without HTTP; smaller evidence can pass", async ($, on) => {
+  on("session.id", async () => ({ value: "guard-budget-usage-test" }) as any)
   on("session.cwd", async () => ({ value: "/repo" }) as any)
   on("env.get", async () => ({ value: "test-key" }) as any)
   on("session.messages", async () => ({ value: [{ role: "user", content: "Verify the selected files." }] }) as any)
@@ -51,6 +53,7 @@ session("judge budget: oversized evidence blocks without HTTP; smaller evidence 
   const stop = () => $.classic.Stop({ stop_hook_active: false } as any)
   const blocked = JSON.stringify(await stop())
   expect(requests.length).toBe(0)
+  expect((await usageSnapshot($)).attempts).toBe(0)
   expect(blocked).toContain("not evaluated")
   expect(blocked).toContain("18000")
   expect(blocked).not.toContain("judged p=")

@@ -7,6 +7,7 @@ import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
 import { measured, trackEdit } from "./review.ts"
+import { observedRequest, usageOperation } from "./usage.ts"
 import { liveResultBudget } from "./paging.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
@@ -142,19 +143,23 @@ export const register: Register = (on, options) => {
         const cached = await read($, JUDGMENT)
         let ps = cached.probabilities
         if (cached.body !== request.body) {
-          const res = await $.http.fetch(JUDGE_URL, {
+          const operation = await usageOperation($, 'guard')
+          ps = await observedRequest($, operation, 1, request.tokens, () => $.http.fetch(JUDGE_URL, {
             method: "POST",
             headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
             body: request.body,
-          } as any)
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          ps = judgeProbs(JSON.parse(res.text ?? "{}")?.answers, judged)
-          if (!Object.values(ps).every((p) => Number.isFinite(p) && p >= 0 && p <= 1)) throw new Error("incomplete or invalid judgment")
+          } as any), (body) => {
+            if (!judged.every((g) => typeof (body?.answers?.[g.id]?.noul ?? body?.answers?.[g.id]?.probability) === 'number')) throw new Error('invalid_response')
+            const values = judgeProbs(body?.answers, judged)
+            if (!Object.values(values).every((p) => Number.isFinite(p) && p >= 0 && p <= 1)) throw new Error('invalid_response')
+            return values
+          })
           await update($, JUDGMENT, () => ({ body: request.body, probabilities: ps }))
         }
         return judged.map((g) => ({ ...g, met: ps[g.id]! >= GUARD_MET, last: { p: ps[g.id]! || 0 } }))
       } catch (err: any) {
-        $.ui.toast(`overwatch: judge unavailable (${err?.message ?? err}); judged guards not decided this stop`)
+        const reason = ['transport_error', 'http_error', 'invalid_response'].includes(err?.message) ? err.message : 'judgment unavailable'
+        $.ui.toast(`overwatch: judge unavailable (${reason}); judged guards not decided this stop`)
         return []
       }
     }

@@ -319,7 +319,7 @@ test('failure lines and cut ids', () => {
 
 test('status payload matches CONTRACT §2', () => {
   const s = { saved: 75000, folds: 3, lastFold: 12000, jev: 'F3: 12 msgs folded · jev', compacting: false, failures: 0, nextCompactAt: 85000 };
-  expect(Object.keys(statusPayload(s, 1))).toEqual(['v', 'ts', 'saved', 'folds', 'lastFold', 'jev', 'compacting', 'failures', 'nextCompactAt']);
+  expect(Object.keys(statusPayload(s, 1))).toEqual(['v', 'ts', 'saved', 'folds', 'lastFold', 'jev', 'compacting', 'failures', 'nextCompactAt', 'savedKind']);
   expect(statusPayload(s, 1).v).toBe(1);
 });
 
@@ -405,8 +405,8 @@ test('a failed Jev grade names its reason in the status, clipped to 80 chars', a
   await jevHeads($(undefined, ''), region, {}, out);
   expect(out.jev).toBe('jev failed: no TYPESAFE_API_KEY');
   await jevHeads($('k', 'overloaded\n'.repeat(40)), region, { preserveRecentMessages: 0 }, out);
-  expect(out.jev.slice(0, 50)).toBe('jev failed: Jev request failed (500): overloaded o');
-  expect(out.jev.length).toBe('jev failed: '.length + 80);
+  expect(out.jev).toBe('jev failed: http_error');
+  expect(out.jev).not.toContain('overloaded');
 });
 
 test('Jev grades change folded results by original tool id, preserving pinned and fallback heads', async () => {
@@ -441,7 +441,7 @@ test('an answered Jev call appends one dataset line; a failed log write still fo
     env: { get: async (k: string) => (k === 'HOME' ? '/h' : 'k') }, settings: { read: async () => ({}) }, ui: { log: () => {} },
     http: { fetch: async (_: string, init: any) => {
       const qs = Object.keys(JSON.parse(init.body).questions);
-      return { status: 200, ok: true, text: JSON.stringify({ model: 'jev-9', answers: Object.fromEntries(qs.map((q) => [q, { noul: 0.9 }])) }) };
+      return { status: 200, ok: true, text: JSON.stringify({ model: 'jev-9', usage: { input_tokens: 12, output_tokens: 3 }, answers: Object.fromEntries(qs.map((q) => [q, { noul: 0.9 }])) }) };
     } },
     process: { run },
   }) as never;
@@ -454,7 +454,11 @@ test('an answered Jev call appends one dataset line; a failed log write still fo
   expect(runs[0].argv[4]).toBe(`${new Date(line0().ts).toISOString().slice(0, 10)}.jsonl`);
   expect(runs[0].init.stdin.indexOf('\n')).toBe(runs[0].init.stdin.length - 1);
   const line = line0();
-  expect(Object.keys(line)).toEqual(['ts', 'client', 'model', 'state', 'questions', 'answers']);
+  expect(line.usage.input_tokens).toBe(12);
+  expect(line.usage.output_tokens).toBe(3);
+  expect(line.usage.cache_read_input_tokens).toBe(null);
+  expect(line.operation).toBe('compaction');
+  expect(line.attempt).toBe(1);
   expect([line.client, line.model]).toEqual(['componion', 'jev-9']);
   expect(Object.keys(line.answers)).toEqual(Object.keys(line.questions));
   const failing = await jevHeads($(async () => { throw new Error('disk full'); }), region, { preserveRecentMessages: 0 }, out);
