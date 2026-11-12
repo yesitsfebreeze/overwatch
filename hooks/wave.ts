@@ -85,9 +85,12 @@ export function computePlan(all: Spec[]): PlanData {
   const rows: Row[] = []
   const ends = new Map<string, number>()
   for (const s of [...open].sort((a, b) => wave.get(a.name)! - wave.get(b.name)! || cmp(a.name, b.name))) {
-    const after = s.depends.filter((d) => openNames.has(d))
-    const missing = s.depends.filter((d) => !byName.has(d))
-    const excluded = s.depends.filter((d) => byName.has(d) && byName.get(d)!.status !== "implemented" && !openNames.has(d))
+    const after: string[] = [], missing: string[] = [], excluded: string[] = []
+    for (const d of s.depends) {
+      if (openNames.has(d)) after.push(d)
+      else if (!byName.has(d)) missing.push(d)
+      else if (byName.get(d)!.status !== "implemented") excluded.push(d)
+    }
     const owner = str(s.fields.owner), since = str(s.fields.since), blocked = str(s.fields.blocked)
     const open = openItems(s), rep = repeatedItem(open)
     const held = s.depends.includes(s.name) ? "self dependency" : cyclic.has(s.name) ? "cycle" : missing.length ? `missing ${missing.join(", ")}`
@@ -105,7 +108,7 @@ export function computePlan(all: Spec[]): PlanData {
 
   // Scope clashes: two units of one wave that can start now and claim overlapping paths.
   const clashes: string[][] = []
-  const free = rows.filter((r) => !r.held).map((r) => ({ ...r, paths: r.paths.map(normPath) }))
+  const free = rows.filter((r) => !r.held && r.paths.length).map((r) => ({ name: r.name, wave: r.wave, paths: r.paths.map(normPath) }))
   for (let i = 0; i < free.length; i++)
     for (let j = i + 1; j < free.length; j++) {
       if (free[i].wave === free[j].wave && free[i].paths.some((x) => free[j].paths.some((y) => coversPath(x, y)))) clashes.push([free[i].name, free[j].name])
@@ -116,11 +119,12 @@ export function computePlan(all: Spec[]): PlanData {
   let parallel = 0, live = 0
   for (const [, d] of edges) parallel = Math.max(parallel, (live += d))
 
-  const count = (st: string) => included.filter((s) => s.status === st).length
+  const statusCount: Record<string, number> = {}
+  for (const s of included) statusCount[s.status] = (statusCount[s.status] ?? 0) + 1
   const progress: Record<string, number> = {
     implemented: done.length,
     proven: done.filter((s) => str(s.fields.proof)).length,
-    ...Object.fromEntries(["partial", "target", "proposed", "deferred", "open-question"].map((st) => [st, count(st)])),
+    ...Object.fromEntries(["partial", "target", "proposed", "deferred", "open-question"].map((st) => [st, statusCount[st] ?? 0])),
     total: included.length,
     open: open.length,
     ready: rows.filter((r) => !r.held).length,
@@ -141,10 +145,20 @@ export function computePlan(all: Spec[]): PlanData {
 }
 
 /** The open rows by wave, with the wave's effort (its longest unit). */
+const waveCache = new WeakMap<PlanData, { wave: number; effort: number; rows: Row[] }[]>()
+
 function waves(d: PlanData): { wave: number; effort: number; rows: Row[] }[] {
+  const hit = waveCache.get(d)
+  if (hit) return hit
   const by = new Map<number, Row[]>()
-  for (const r of d.rows) by.set(r.wave, [...(by.get(r.wave) ?? []), r])
-  return [...by].sort((a, b) => a[0] - b[0]).map(([wave, rows]) => ({ wave, effort: Math.max(...rows.map((r) => r.effort)), rows }))
+  for (const r of d.rows) {
+    const rows = by.get(r.wave) ?? []
+    rows.push(r)
+    by.set(r.wave, rows)
+  }
+  const out = [...by].sort((a, b) => a[0] - b[0]).map(([wave, rows]) => ({ wave, effort: Math.max(...rows.map((r) => r.effort)), rows }))
+  waveCache.set(d, out)
+  return out
 }
 
 /** Plan Tasks.md: the waves, the done units and the warnings, generated for the Plan View. */

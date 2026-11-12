@@ -1,7 +1,7 @@
 import { expect, test } from "claude-code/testing"
 import { memIo, type Runner } from "./io.ts"
 import { EMPTY } from "./plan.ts"
-import { addChange, changelog, changelogStatus, groupCommits, parseChangelog, renderChangelog, versionCmp } from "./changelog.ts"
+import { addChange, changelog, changelogCommand, changelogStatus, groupCommits, parseChangelog, renderChangelog, versionCmp } from "./changelog.ts"
 
 const io = (files: Record<string, string>, run?: Runner) => ({
   ...memIo(files, "/p"),
@@ -114,4 +114,21 @@ test("changelog: an LTS-only call persists without new bullets, and a foreign fi
   const refused = await changelog(bad, plan, { file: "other.md", what_changed: "x" })
   expect(refused.warn).toBe(true)
   expect(bad.files["/p/other.md"]).toBe('{"not":"a changelog"}')
+})
+
+const withStarBullet = () => io({ "/p/package.json": '{"version":"0.2.0"}', "/p/CHANGELOG.md": "# Changelog\n\n## [0.2.0] - 2026-02-01\n\n* add vault\n" })
+
+test("changelog: a * bullet dedupes against a - bullet", async () => {
+  const at = withStarBullet()
+  const r = await changelog(at, plan, { what_changed: "add vault" })
+  expect(r.text).toContain("Already in CHANGELOG.md under 0.2.0")
+  expect(at.files["/p/CHANGELOG.md"]!.match(/add vault/g)!.length).toBe(1)
+})
+
+test("changelog: an unknown flag is refused and writes nothing", async () => {
+  const at = withStarBullet()
+  const bad = await changelogCommand(at, ["--LTS"])
+  expect(bad.code).toBe(2)
+  expect(bad.text).toContain("unknown flag --LTS")
+  expect(at.files["/p/CHANGELOG.md"]).not.toContain("--LTS")
 })

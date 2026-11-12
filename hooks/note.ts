@@ -3,7 +3,7 @@
  * read/replace, UTC dates, note-name rules, and the string/list coercion every tool argument
  * goes through. One format, so a note written by unit_new reads the same as one from prd_add.
  */
-import type { Io } from "./io.ts"
+import { today, type Io } from "./io.ts"
 import { trimmed } from "./plan.ts"
 
 // --- frontmatter: the YAML subset the vault uses (scalars, inline and block lists) ---
@@ -75,7 +75,11 @@ export function patchFrontmatter(text: string, changes: Record<string, Value | u
   const lines = m ? m[1].split(/\r?\n/) : []
   const body = m ? text.slice(m[0].length) : text.replace(/^\uFEFF/, "")
   for (const [key, value] of Object.entries(changes)) {
-    const index = lines.findIndex((line) => new RegExp(`^${key}:(?:\\s|$)`).test(line))
+    const index = lines.findIndex((line) => {
+      if (!line.startsWith(`${key}:`)) return false
+      const next = line[key.length + 1]
+      return next === undefined || /\s/.test(next)
+    })
     if (index >= 0) {
       let end = index + 1
       while (end < lines.length && /^\s*-\s/.test(lines[end])) end++
@@ -112,6 +116,14 @@ export function replaceSection(text: string, name: string, body: string): string
 
 // --- values, names and dates ---
 
+/** The one checklist line: `- [ ] text`, shared by the vault Plan, PRD acceptance and the changelog. */
+export const CHECKBOX = /^\s*- \[([ xX])\] (.+?)\s*$/
+
+export function checkbox(line: string): { done: boolean; text: string } | undefined {
+  const m = CHECKBOX.exec(line)
+  return m ? { done: m[1] !== " ", text: m[2]!.trim() } : undefined
+}
+
 export const strings = (v: Value | undefined): string[] => (Array.isArray(v) ? v : v == null || v === "" ? [] : [v]).map(String).filter(Boolean)
 export const str = (v: Value | undefined) => (v == null ? "" : String(v))
 
@@ -125,7 +137,7 @@ export function toList(v: unknown, collapse = false): string[] {
 }
 
 /** Today in UTC, the form every note's date and updated field uses. */
-export const today = () => new Date().toISOString().slice(0, 10)
+export { today } from "./io.ts"
 
 /** Characters Obsidian refuses in a note name, and the leading . or _ it hides. */
 export const BAD_NAME = /[\\/:*?"<>|#^[\]]/
@@ -143,7 +155,9 @@ export async function writeNote(io: Io, n: {
   sections?: Record<string, string | undefined>
 }): Promise<void> {
   if (await io.exists(n.file)) throw new Error(`${n.exists} exists; edit it instead`)
-  let text = n.template.replaceAll("{{title}}", n.title).replaceAll("{{date}}", today())
+  // The date pass runs before the title pass, so a title containing `$&` or `{{date}}` is never
+  // read as a replacement pattern or re-substituted.
+  let text = n.template.replaceAll("{{date}}", today()).replaceAll("{{title}}", () => n.title)
   if (n.fields && Object.keys(n.fields).length) text = patchFrontmatter(text, n.fields)
   for (const [name, body] of Object.entries(n.sections ?? {})) if (body) text = replaceSection(text, name, body)
   await io.write(n.file, text)

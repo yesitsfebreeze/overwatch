@@ -8,8 +8,8 @@ import type { Plan } from "../types/index.d.ts"
 import { checkTier } from "./guards.ts"
 import { checkReport, PLAN_TOOLS, refuse, runCheck, runChecks, trimmed, type PlanTool, type Result } from "./plan.ts"
 import { cmp, join, readJson, state, STATE_DIR, VAULT_DIR, type Io } from "./io.ts"
-import { badName, frontmatter, NAME_RULE, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, type Fields, type Value } from "./note.ts"
-import { claimStale, computePlan, normPath, openItems, planReport, renderTasks, slash, type PlanData, type Row } from "./wave.ts"
+import { badName, checkbox, frontmatter, NAME_RULE, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, type Fields, type Value } from "./note.ts"
+import { computePlan, normPath, openItems, planReport, renderTasks, slash, type PlanData, type Row } from "./wave.ts"
 
 const SPECS = "01 Specs"
 export const PLAN_DATA = "00 Meta/Plan Data.json"
@@ -17,7 +17,6 @@ export const PLAN_TASKS = "00 Meta/Plan Tasks.md"
 const TEMPLATE = "00 Meta/Spec Template.md"
 /** The scaffold shipped in the plugin, copied by vaultInit. */
 const SCAFFOLD = "data/vault"
-/** A claim older than this is stale and may be taken over with an explicit takeover. */
 /** Recorded unit_record runs: what was checked, at which commit, with what output. */
 const EVIDENCE_DIR = "evidence"
 
@@ -31,16 +30,14 @@ export const vaultPath = (io: Io, ...parts: string[]) => state(io, VAULT_DIR, ..
 // vault consumer keeps importing it here.
 export { BAD_NAME, NAME_RULE, badName, frontmatter, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, serialize, type Fields, type Value } from "./note.ts"
 export type PlanItem = { done: boolean; text: string }
-const ITEM = /^\s*- \[([ xX])\] (.+?)\s*$/
-
 export const planItems = (text: string): PlanItem[] =>
-  (section(text, "Plan") ?? "").split(/\r?\n/).flatMap((l) => { const m = ITEM.exec(l); return m ? [{ done: m[1] !== " ", text: m[2].trim() }] : [] })
+  (section(text, "Plan") ?? "").split(/\r?\n/).flatMap((l) => checkbox(l) ?? [])
 
 /** Ticks the open Plan items whose text is in `done`; other lines stay byte for byte. */
 export function tickItems(text: string, done: ReadonlySet<string>): string {
   const body = section(text, "Plan")
   if (body === undefined) return text
-  const ticked = body.split(/(\r?\n)/).map((l) => { const m = ITEM.exec(l); return m && m[1] === " " && done.has(m[2].trim()) ? l.replace("- [ ]", "- [x]") : l }).join("")
+  const ticked = body.split(/(\r?\n)/).map((l) => { const c = checkbox(l); return c && !c.done && done.has(c.text) ? l.replace("- [ ]", "- [x]") : l }).join("")
   return replaceSection(text, "Plan", ticked)
 }
 
@@ -185,8 +182,9 @@ export async function unitNew(io: Io, e: { title?: unknown; category?: unknown; 
   if (badName(title)) throw new Error(`unit_new needs a title usable as a note name (${NAME_RULE})`)
   const category = trimmed(e.category)
   if (!CATEGORIES.includes(category)) throw new Error(`category must be one of ${CATEGORIES.join(", ")}`)
-  const tasks = toList(e.tasks)
-  if (!tasks.length) throw new Error("unit_new needs tasks: one test-sized Plan item each")
+  const { tasks } = e
+  const plan = toList(tasks, true)
+  if (!plan.length) throw new Error("unit_new needs tasks: one test-sized Plan item each")
   if (!(await io.exists(vaultPath(io, TEMPLATE)))) await copyScaffold(io)
   const file = vaultPath(io, SPECS, `${title}.md`)
   const template = (await io.read(vaultPath(io, TEMPLATE))) ?? ""
@@ -194,11 +192,11 @@ export async function unitNew(io: Io, e: { title?: unknown; category?: unknown; 
   await writeNote(io, {
     template, file, title, exists: `${SPECS}/${title}.md`,
     fields: { category, depends: depends.length ? depends : null, checks: checks.length ? checks : null, paths: paths.length ? paths : null },
-    sections: { Summary: trimmed(e.summary), Plan: tasks.map((t) => `- [ ] ${t}`).join("\n") },
+    sections: { Summary: trimmed(e.summary), Plan: plan.map((t) => `- [ ] ${t}`).join("\n") },
   })
   const { data } = await writePlan(io)
   const row = data.rows.find((r) => r.name === title)
-  return `Added ${SPECS}/${title}.md (${tasks.length} Plan item(s), wave ${row?.wave ?? "?"}${row?.held ? `, held: ${row.held}` : ""}). unit_load loads it into the session plan.`
+  return `Added ${SPECS}/${title}.md (${plan.length} Plan item(s), wave ${row?.wave ?? "?"}${row?.held ? `, held: ${row.held}` : ""}). unit_load loads it into the session plan.`
 }
 
 type Closeout = { done: string[]; commit: string; guards: string[]; summary: string; limitations: string; run?: string }
@@ -298,10 +296,6 @@ const stateSpec = (root: string, io: Io) => {
   const r = slash(root), d = slash(state(io))
   return normPath(d).startsWith(`${normPath(r)}/`) ? d.slice(r.length + 1) : STATE_DIR
 }
-
-/** The spec's open Plan item texts, in note order. */
-
-/** The first open Plan item text that appears twice, or undefined. */
 
 /** unit_load: read the vault once, then load the named unit. */
 export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown; owner?: unknown }): Promise<Result> {

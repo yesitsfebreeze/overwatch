@@ -10,7 +10,7 @@ const scaffold = () => ({
   "/plug/data/vault/00 Meta/PRD Template.md": PRD_TEMPLATE,
   "/plug/data/vault/Home.md": "# Home\n",
 })
-const io = (files: Record<string, string> = {}, run?: Runner) => ({ ...memIo({ ...scaffold(), ...files }, "/p"), root: "/plug", ...(run ? { run } : {}) })
+const io = (files: Record<string, string> = {}, run?: Runner) => ({ ...memIo({ ...scaffold(), ...files }, "/p", run), root: "/plug" })
 
 const prd = (name: string, fm: string, body = "") => ({
   [`${V}/02 PRDs/${name}.md`]: `---\nstatus: open\npriority: 50\n${fm}---\n\n# ${name}\n\n## Acceptance\n\n- [x] works\n- [x] refuses bad input\n\n## Specs\n\n${body}\n\n## Review\n\n## Status\n\nNothing yet.\n`,

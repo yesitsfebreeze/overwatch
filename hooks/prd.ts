@@ -7,7 +7,7 @@
 // Ported from pearde's board flow (scan, next, brief, refine, review, collect).
 import { type Io } from "./io.ts"
 import { checkReport, runChecks } from "./plan.ts"
-import { badName, frontmatter, NAME_RULE, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, type Fields } from "./note.ts"
+import { badName, checkbox, frontmatter, NAME_RULE, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, type Fields } from "./note.ts"
 import { gitState, readVault, sha256, specsOf, vaultInit, vaultPath, vaultPlan, writePlan, type Spec } from "./vault.ts"
 
 export const PRDS = "02 PRDs"
@@ -57,9 +57,8 @@ const nonEmpty = (v: unknown) => (typeof v === "string" ? v.replace(/\s+/g, " ")
 /** Template guidance lives in HTML comments; nothing inside one is a box, a unit link or a round. */
 const comments = (t: string) => t.replace(/<!--[\s\S]*?-->/g, "")
 
-const BOX = /^\s*- \[([ xX])\] (.+?)\s*$/
 const boxes = (text: string): Box[] =>
-  comments(section(text, "Acceptance") ?? "").split(/\r?\n/).flatMap((l) => { const m = BOX.exec(l); return m ? [{ done: m[1] !== " ", text: m[2] }] : [] })
+  comments(section(text, "Acceptance") ?? "").split(/\r?\n/).flatMap((l) => checkbox(l) ?? [])
 
 /** `[[Unit]]` or `[[Unit|alias]]` in the "## Specs" section, one unit per link. */
 const links = (text: string): string[] => [...comments(section(text, "Specs") ?? "").matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)].map((m) => m[1].trim()).filter(Boolean)

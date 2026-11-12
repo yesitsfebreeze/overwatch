@@ -10,6 +10,7 @@
  * State: .overwatch/ in the working directory (surface.json, checks.json, mistakes.md).
  */
 import { cmp, type Io, join, onPath, readJson, state } from "./io.ts"
+import { today } from "./io.ts"
 import { CHECK_TIERS, checkTier, isTier } from "./guards.ts"
 import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./incidents.ts"
 
@@ -25,8 +26,6 @@ type Ledger = {
   triggers: Record<string, string>
   drawn: { name: string; uses: number } | null
 }
-
-const today = () => new Date().toISOString().slice(0, 10)
 
 const statePath = (io: Io) => state(io, "surface.json")
 

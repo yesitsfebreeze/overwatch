@@ -5,7 +5,8 @@
 // full history and a re-run only adds what is missing.
 import type { Plan } from "../types/index.d.ts"
 import { abs, cmp, readJson, type Io } from "./io.ts"
-import { today } from "./note.ts"
+import { today } from "./io.ts"
+import { checkbox } from "./note.ts"
 import { EMPTY, refuse, trimmed, type PlanTool, type Result } from "./plan.ts"
 
 export const DEFAULT_FILE = "CHANGELOG.md"
@@ -85,7 +86,7 @@ export function parseChangelog(text: string): ChangelogFile {
 export function renderChangelog(f: ChangelogFile): string {
   const head = f.preamble.trim() || HEADER
   const out = [head]
-  for (const e of [...f.entries].sort((a, b) => versionCmp(b.version, a.version))) {
+  for (const e of [...f.entries].sort(newestFirst)) {
     out.push(`## [${e.version}]${e.date ? ` - ${e.date}` : ""}${e.lts ? " (LTS)" : ""}`)
     const body = trimBlank(e.body)
     if (body.length) out.push(body.join("\n"))
@@ -95,13 +96,18 @@ export function renderChangelog(f: ChangelogFile): string {
 
 /** One bullet line: an already-bulleted or checklist line loses its marker, never repeats it. */
 export function bulletLine(text: string): string {
-  return `- ${text.trim().replace(BULLET, "").replace(/^\[[ xX]\]\s+/, "").trim()}`
+  const bare = text.trim().replace(BULLET, "").trim()
+  const box = checkbox(`- ${bare}`)
+  return `- ${(box ? box.text : bare).trim()}`
 }
 
 /** One change per line from a tool argument, blanks dropped. */
 const changeLines = (v: unknown): string[] => (typeof v === "string" ? v.split(/\r?\n/).map(trimmed).filter(Boolean) : [])
 
 const countBullets = (e: ChangelogEntry) => e.body.filter((l) => BULLET.test(l.trim())).length
+
+/** Newest version first: the one ordering rule for rendered sections and status listings. */
+const newestFirst = (a: ChangelogEntry, b: ChangelogEntry) => versionCmp(b.version, a.version)
 
 /** Adds each change as a bullet under `version`, creating the section (dated, newest first on render). */
 export function addChange(f: ChangelogFile, version: string, changes: string[], date?: string, lts = false, replaceDate = false): { added: string[]; skipped: string[] } {
@@ -113,10 +119,11 @@ export function addChange(f: ChangelogFile, version: string, changes: string[], 
   if (lts) e.lts = true
   const added: string[] = []
   const skipped: string[] = []
+  const seen = new Set(e.body.map(bulletLine))
   for (const change of changes) {
     const line = bulletLine(change)
-    if (e.body.some((l) => l.trim() === line)) skipped.push(change.trim())
-    else { e.body.push(line); added.push(change.trim()) }
+    if (seen.has(line)) skipped.push(change.trim())
+    else { e.body.push(line); seen.add(line); added.push(change.trim()) }
   }
   e.body = trimBlank(e.body)
   return { added, skipped }
@@ -213,7 +220,7 @@ export async function changelogStatus(io: Io, file: string): Promise<string> {
   const [{ version, source }, text] = await Promise.all([currentVersion(io), io.read(abs(io, file))])
   const entries = text ? parseChangelog(text).entries : []
   const lts = entries.filter((e) => e.lts).map((e) => e.version)
-  const versions = [...entries].sort((a, b) => versionCmp(b.version, a.version))
+  const versions = [...entries].sort(newestFirst)
   const described = versions.map((e) => {
     const n = countBullets(e)
     return `${e.version} (${n} change${n === 1 ? "" : "s"})`
@@ -228,14 +235,14 @@ export async function changelogStatus(io: Io, file: string): Promise<string> {
 
 /** Rebuilds every version's bullets from git history, keeping bullets already written by hand. */
 async function backfill(io: Io, s: Plan, file: string, e: any): Promise<Result> {
-  const grouped = await groupCommits(io)
+  const [grouped, loaded] = await Promise.all([groupCommits(io), readChangelog(io, file)])
   if (typeof grouped === "string") return refuse(s, grouped)
-  const loaded = await readChangelog(io, file)
   if (typeof loaded === "string") return refuse(s, loaded)
   const { f, raw } = loaded
   const explicit = trimmed(e.version)
   const date = trimmed(e.date)
-  if (date && !DATE.test(date)) return refuse(s, `date must be YYYY-MM-DD, got "${date}"`)
+  const dateError = badDate(date)
+  if (dateError) return refuse(s, dateError)
   const text = changeLines(e.what_changed)
   let added = 0
   let skipped = 0
@@ -249,7 +256,7 @@ async function backfill(io: Io, s: Plan, file: string, e: any): Promise<Result> 
   // reports a write that did not happen.
   if (text.length || e.lts === true || date) {
     const target = explicit || (await currentVersion(io)).version
-    if (!target) return refuse(s, "no version to write under: pass version, or add a version to package.json or VERSION")
+    if (!target) return refuse(s, NO_VERSION)
     const r = addChange(f, target, text, date, e.lts === true, !!date)
     added += r.added.length
     skipped += r.skipped.length
@@ -269,12 +276,13 @@ export async function changelog(io: Io, s: Plan, e: any): Promise<Result> {
   if (e.backfill === true) return backfill(io, s, file, e)
   const changes = changeLines(e.what_changed)
   const date = trimmed(e.date)
-  if (date && !DATE.test(date)) return refuse(s, `date must be YYYY-MM-DD, got "${date}"`)
+  const dateError = badDate(date)
+  if (dateError) return refuse(s, dateError)
   const lts = e.lts === true
   if (!changes.length && !lts && !date) return { state: s, text: await changelogStatus(io, file) }
   const { version: current, source } = await currentVersion(io)
   const version = trimmed(e.version) || current
-  if (!version) return refuse(s, "no version to write under: pass version, or add a version to package.json or VERSION")
+  if (!version) return refuse(s, NO_VERSION)
   const loaded = await readChangelog(io, file)
   if (typeof loaded === "string") return refuse(s, loaded)
   const { f, raw: before } = loaded
@@ -293,7 +301,11 @@ export async function changelog(io: Io, s: Plan, e: any): Promise<Result> {
 }
 
 /** `overwatch changelog [what changed] [--version v] [--file path] [--date YYYY-MM-DD] [--lts] [--backfill]`. */
-const USAGE = "usage: changelog [what changed] [--version v] [--file path] [--date YYYY-MM-DD] [--lts] [--backfill]"
+export const CHANGELOG_USAGE = "usage: changelog [what changed] [--version v] [--file path] [--date YYYY-MM-DD] [--lts] [--backfill]"
+
+/** A bad date, or "" when the date is fine. */
+const badDate = (date: string) => (date && !DATE.test(date) ? `date must be YYYY-MM-DD, got "${date}"` : "")
+const NO_VERSION = "no version to write under: pass version, or add a version to package.json or VERSION"
 
 export async function changelogCommand(io: Io, argv: string[]): Promise<{ text: string; code: number }> {
   const args: string[] = []
@@ -306,7 +318,8 @@ export async function changelogCommand(io: Io, argv: string[]): Promise<{ text: 
       e[a.slice(2)] = v
     } else if (a === "--lts") e.lts = true
     else if (a === "--backfill") e.backfill = true
-    else if (a === "--help" || a === "-h") return { text: USAGE, code: 0 }
+    else if (a === "--help" || a === "-h") return { text: CHANGELOG_USAGE, code: 0 }
+    else if (a.startsWith("--")) return { text: `unknown flag ${a}` + "\n" + CHANGELOG_USAGE, code: 2 }
     else args.push(a)
   }
   if (args.length) e.what_changed = args.join(" ")

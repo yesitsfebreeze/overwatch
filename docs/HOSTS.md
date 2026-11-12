@@ -1,17 +1,14 @@
 # Hosts
 
-One core (`host/core.ts`) serves every host: the plan tools, the edit gate, the stop hold and the plan reminder. Per-host config lives in `adapters/`. The canonical, step-by-step source is [install.txt](../install.txt); this page is the readable map.
+Claude Code runs `hooks/overwatch.ts` with `hooks/plan-hooks.ts`; every other host uses `host/core.ts`. Per-host config lives in `adapters/`. The canonical, step-by-step source is [install.txt](../install.txt); this page is the readable map.
 
 ## What every host gets
 
-- The plan tools (`mcp__overwatch__*`).
-- The plan reminder before work starts.
-- The edit gate: file edits are refused until the plan has tasks and guards.
-- The stop hold: a stop is refused while a task is open or a guard is unupheld.
-- No compaction, followline, tool-surface block or review pass; judged guards do not hold the stop.
-- Plan state is per project (`.overwatch/plan.json`), not per session.
+Every host gets the plan tools. Hosts that run hooks also get the plan reminder, the edit gate and the stop hold; an MCP-only host gets only the tools.
 
-An MCP-only host gets the tools but neither the edit gate nor the stop hold. Say so when installing.
+## Outside Claude Code
+
+- No compaction, followline, tool-surface block or review pass; judged guards do not hold the stop. Plan state is per project (`.overwatch/plan.json`), not per session.
 
 ## Matrix
 
@@ -33,7 +30,8 @@ An MCP-only host gets the tools but neither the edit gate nor the stop hold. Say
 - A stable checkout, `$OW`, and `$OW/bin/overwatch` linked into `~/.local/bin` (every hook and MCP config calls `overwatch`).
 
 ```sh
-git clone https://github.com/yesitsfebreeze/overwatch "$OW"
+OW="$HOME/dev/overwatch"        # or an existing checkout: the clone is skipped
+test -d "$OW/.git" || git clone https://github.com/yesitsfebreeze/overwatch "$OW"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$OW/bin/overwatch" "$HOME/.local/bin/overwatch"
 overwatch help
@@ -191,6 +189,6 @@ claude plugin marketplace update overwatch
 claude plugin update overwatch@overwatch
 ```
 
-Codex CLI and Copilot CLI: run the host's install commands again. opencode: `cd "$OW/adapters/opencode" && bun install`. Then rerun the host's VERIFY line and restart the agent.
+Codex CLI, Copilot CLI and opencode: rerun the host's install step and VERIFY line above, then restart the agent.
 
-Uninstall reverses the steps; a project's state is its `.overwatch/` folder and can be deleted.
+A project's state is its `.overwatch/` folder. To start fresh, delete everything in it except `.overwatch/vault/`: the spec vault is git-tracked durable work.

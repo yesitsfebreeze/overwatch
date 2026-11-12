@@ -12,6 +12,7 @@ import { compact } from '../jev/compact.js';
 import { buildJevRequest, parseJevResponse, DEFAULT_MODEL } from '../jev/request.js';
 import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
 import { STATE_DIR } from './io.ts';
+import { today } from './io.ts';
 import { incident } from './incidents.ts';
 
 type Limits = { keepRecentTokens: number; toolResultMaxChars: number; outcomeMaxChars: number; cutUserChars?: number };
@@ -230,7 +231,7 @@ async function keepOriginal($: EngineInterface, s: State, id: string, text: stri
 // perl's syswrite is one O_APPEND write, so kern and orly appending the same file never interleave.
 async function logJev($: EngineInterface, entry: object) {
   try {
-    const day = new Date().toISOString().slice(0, 10); // UTC day, CONTRACT §8
+    const day = today(); // UTC day, CONTRACT §8
     const script = 'use File::Path; mkpath($ARGV[0]); open(F, ">>", "$ARGV[0]/$ARGV[1]") or die; local $/; syswrite(F, <STDIN>)';
     await $.process.run(['perl', '-e', script, `${await $.env.get('HOME')}/.jev/log`, `${day}.jsonl`], { stdin: JSON.stringify(entry) + '\n' });
   } catch { /* the dataset never fails a fold */ }

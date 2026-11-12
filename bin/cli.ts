@@ -2,7 +2,7 @@
 import { clean, disk } from "../hooks/gardener.ts"
 import { hygiene } from "../hooks/hygiene.ts"
 import { vaultInit, vaultPlan } from "../hooks/vault.ts"
-import { changelogCommand } from "../hooks/changelog.ts"
+import { CHANGELOG_USAGE, changelogCommand } from "../hooks/changelog.ts"
 import { prdAdd, prdBrief, prdCollect, prdNext, prdRefine, prdReview, prdScan, prdSet } from "../hooks/prd.ts"
 import { loadout } from "../hooks/loadout.ts"
 import { launch, launched } from "../hooks/launch.ts"
@@ -26,7 +26,7 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch disk-clean [--apply] <path…>  delete surveyed leftovers; a dry run without --apply
   overwatch launch [--wait] <cmd>  run a command in the background; --wait blocks instead
   overwatch launched [id]          background runs, or one run with its log tail
-  overwatch changelog [what changed] [--version v] [--file path] [--date YYYY-MM-DD] [--lts] [--backfill]
+  ${CHANGELOG_USAGE.replace("usage: ", "overwatch ")}
                                    add a versioned changelog entry, or rebuild it from git history
   overwatch vault init|plan        create the spec vault (.overwatch/vault) / compute and write the wave plan
   overwatch prd scan|next [n]      PRDs and why each is held / the ready ones

@@ -140,8 +140,13 @@ export async function onPath(io: Io, names: readonly string[]): Promise<Set<stri
   return new Set(r.stdout.split("\n").filter(Boolean))
 }
 
+/** Today in UTC, the form every note date, ledger stamp and changelog section uses. */
+export function today(now = new Date()): string {
+  return now.toISOString().slice(0, 10)
+}
+
 /** An Io over a map of absolute paths to text: tests and hygiene's selftest. */
-export function memIo(files: Record<string, string>, cwd = "/mem"): Io & { files: Record<string, string> } {
+export function memIo(files: Record<string, string>, cwd = "/mem", runner?: Runner): Io & { files: Record<string, string> } {
   const dirOf = (p: string) => p.replace(/\/+$/, "") + "/"
   return {
     files,
@@ -158,7 +163,7 @@ export function memIo(files: Record<string, string>, cwd = "/mem"): Io & { files
       return [...seen.values()]
     },
     exists: async (p) => p in files || Object.keys(files).some((f) => f.startsWith(dirOf(p))),
-    run: async () => ({ code: 127, stdout: "", stderr: "no processes in memory" }),
+    run: runner ?? (async () => ({ code: 127, stdout: "", stderr: "no processes in memory" })),
     env: async () => undefined,
     cwd,
     root: cwd,

@@ -7,7 +7,7 @@ import { claimStale, closeNote, computePlan, frontmatter, parseSpec, patchFrontm
 const V = "/p/.overwatch/vault"
 const TEMPLATE = "---\ntitle: {{title}}\ncategory:\nstatus: target\nupdated: {{date}}\n---\n\n# {{title}}\n\n## Summary\n\nOne paragraph.\n\n## Plan\n\n- [ ] placeholder\n\n## Status\n\nNothing yet.\n\n## Open questions\n\n-\n"
 const scaffold = () => ({ "/plug/data/vault/00 Meta/Spec Template.md": TEMPLATE, "/plug/data/vault/Home.md": "# Home\n", "/plug/data/vault/.obsidian/community-plugins.json": '["plan-view"]' })
-const io = (files: Record<string, string> = {}, run?: Runner) => ({ ...memIo({ ...scaffold(), ...files }, "/p"), root: "/plug", ...(run ? { run } : {}) })
+const io = (files: Record<string, string> = {}, run?: Runner) => ({ ...memIo({ ...scaffold(), ...files }, "/p", run), root: "/plug" })
 const spec = (name: string, fm: string, plan = "- [ ] do it") => ({ [`${V}/01 Specs/${name}.md`]: `---\nstatus: target\ncategory: behavior\n${fm}---\n\n# ${name}\n\n## Plan\n\n${plan}\n` })
 
 test("frontmatter: lists parse, patch keeps other lines, a comma value is quoted", () => {
@@ -250,4 +250,13 @@ test("unit_next loads the first startable unit and vault_status lists claims and
   expect(ledger).toContain("claims:")
   expect(ledger).toContain("C by x@1")
   expect(ledger).toContain("ready: none")
+})
+
+test("unit_new: a title with $& or {{date}} stays literal and a newline task cannot split the note", async () => {
+  const x = io({})
+  await unitNew(x, { title: "Save $& {{date}}", category: "behavior", tasks: ["do x\n## Status\n\nDone"] })
+  const note = x.files[`${V}/01 Specs/Save $& {{date}}.md`]!
+  expect(note).toContain("# Save $& {{date}}")
+  expect(note).toContain("- [ ] do x ## Status Done")
+  expect(planItems(note)).toEqual([{ done: false, text: "do x ## Status Done" }])
 })

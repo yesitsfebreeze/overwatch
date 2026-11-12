@@ -7,7 +7,7 @@
  * Ceiling: read-modify-write with no lock, so two sessions recording at once can
  * lose a count; move to an append-only log once `Io` has an append.
  */
-import { readJson, sessionIo, state, type Io } from "./io.ts"
+import { readJson, sessionIo, state, today, type Io } from "./io.ts"
 
 /** What is caught. `lesson` is the line a habit adds to the prompt; a kind without one is only counted. */
 const KINDS = {
@@ -28,9 +28,8 @@ type Incident = { at: string; kind: Kind; detail: string }
 export type Incidents = { days: Record<string, Partial<Record<Kind, number>>>; recent: Incident[] }
 
 const path = (io: Io) => state(io, "incidents.json")
-const day = (d: Date) => d.toISOString().slice(0, 10)
 /** The last day outside the window. */
-const oldest = (now: Date) => day(new Date(now.getTime() - WINDOW_DAYS * 86_400_000))
+const oldest = (now: Date) => today(new Date(now.getTime() - WINDOW_DAYS * 86_400_000))
 
 export async function load(io: Io): Promise<Incidents> {
   const raw = await readJson<any>(io, path(io), {})
@@ -39,9 +38,9 @@ export async function load(io: Io): Promise<Incidents> {
 
 /** The ledger with one more incident: days past the window and entries past RECENT_MAX fall out. */
 export function add(st: Incidents, kind: Kind, detail: string, now = new Date()): Incidents {
-  const today = day(now)
+  const stamp = today(now)
   const days = Object.fromEntries(Object.entries(st.days).filter(([d]) => d > oldest(now)))
-  days[today] = { ...days[today], [kind]: (days[today]?.[kind] ?? 0) + 1 }
+  days[stamp] = { ...days[stamp], [kind]: (days[stamp]?.[kind] ?? 0) + 1 }
   const entry: Incident = { at: now.toISOString(), kind, detail: detail.replace(/\s+/g, " ").trim().slice(0, 200) }
   return { days, recent: [...st.recent, entry].slice(-RECENT_MAX) }
 }
