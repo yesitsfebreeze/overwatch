@@ -65,13 +65,13 @@
     "maxTotalTokens": {
       "type": "number",
       "title": "Fold: total grader input budget (tokens)",
-      "description": "Maximum estimated input across all requests and retries in one fold. Over-budget folds use deterministic heads. 0 disables paid grading.",
+      "description": "Maximum estimated input across all requests in one fold. Over-budget folds use deterministic heads. 0 disables paid grading.",
       "default": 36000
     },
     "maxRequests": {
       "type": "number",
       "title": "Fold: maximum grader requests",
-      "description": "Maximum requests, including retries, per fold. Batches run sequentially. 0 disables paid grading.",
+      "description": "Maximum requests per fold. Batches run sequentially; failed requests are not retried. 0 disables paid grading.",
       "default": 2
     },
     "keepRecentTokens": {

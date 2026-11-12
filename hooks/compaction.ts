@@ -321,7 +321,8 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
         inputTokens += requestTokens;
         return $.http.fetch(q.url, init);
       };
-      const r = await send().catch(() => send());
+      // A transport rejection may follow provider acceptance; never send it again.
+      const r = await send();
       const res = parseJevResponse(r.status, r.ok, r.text);
       void logJev($, { ts: Date.now(), client: 'componion', model: res.model ?? DEFAULT_MODEL, state: st, questions, answers: res.answers });
       return res;

@@ -89,12 +89,29 @@ test('grading batches run one at a time and stop after the first failure', async
   expect(calls).toBe(1);
 });
 
-test('transport retries also consume the fold request and input budgets', async () => {
-  for (const options of [{ maxRequests: 1 }, { maxRequests: 2, maxTotalTokens: 17000 }]) {
-    let attempts = 0;
-    const heads = await jevHeads(grader(async () => { attempts++; throw new Error('offline'); }), gradingTranscript(40), { ...gradingOptions, ...options }, { jev: '' });
+test('transport rejection never repeats an ambiguous or unsent grading request', async () => {
+  for (const accepted of [false, true]) {
+    let attempts = 0, acceptedRequests = 0;
+    const heads = await jevHeads(grader(async () => {
+      attempts++;
+      if (accepted) acceptedRequests++;
+      throw new Error(accepted ? 'response lost after provider acceptance' : 'connection failed before send');
+    }), gradingTranscript(10), { ...gradingOptions, maxRequests: 10, maxTotalTokens: 100000 }, { jev: '' });
     expect(attempts).toBe(1);
+    expect(acceptedRequests).toBe(accepted ? 1 : 0);
     expect(heads.size).toBe(0);
+  }
+});
+
+test('an HTTP failure falls back once and a successful response is used once', async () => {
+  for (const ok of [false, true]) {
+    let attempts = 0;
+    const heads = await jevHeads(grader(async (_url, init) => {
+      attempts++;
+      return { status: ok ? 200 : 503, ok, text: ok ? JSON.stringify(graded(JSON.parse(init.body).questions)) : 'unavailable' };
+    }), gradingTranscript(10), gradingOptions, { jev: '' });
+    expect(attempts).toBe(1);
+    expect(heads.size > 0).toBe(ok);
   }
 });
 
