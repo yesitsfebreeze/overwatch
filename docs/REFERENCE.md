@@ -41,9 +41,11 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 | `guard_add` | `question`, `check?`, `files?`, `tier?`, `timeout_ms?` | adds a guard; tier is `fast`, `unit` or `milestone` |
 | `guard_check` | `guard_id?`, `tier?`, `timeout_ms?` | runs the checks now, all or one tier, records the outcome |
 | `guard_drop` | `guard_id` | removes a guard, on the user's word only |
-| `plan_show` | | tasks, guards with last outcome, review state |
+| `plan_show` | `id?`, `offset?`, `limit?` | exact pages of all tasks, completed history, guards with evidence, and review state |
 | `plan_clear` | | empties the plan |
 | `changelog` | `what_changed?`, `version?`, `backfill?`, `file?`, `date?`, `lts?` | adds a bullet under the current version; `backfill` groups every commit by the version it saw; no arguments reports current, LTS and each version |
+
+Routine reminders show counts and up to three open task and guard previews; completed titles and check commands stay in `plan_show`. Its response is `{id, offset, text, next_offset, total_chars}`. Append `text` unchanged and request the next page with the returned `id` and `offset: next_offset` until `next_offset` is `null`. Offsets count UTF-16 code units. The default limit is 6000 characters; escaped JSON pages remain below 7800 characters. A changed content revision refuses continuation: restart at offset 0 without `id`. Pages may split a command, so assemble the complete text before using it.
 
 ### Spec vault
 

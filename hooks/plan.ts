@@ -1,5 +1,6 @@
 import type { FollowlineSlot, Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
-import { TOOL_PREFIX } from "./catalog.ts"
+import { hash, TOOL_PREFIX } from "./catalog.ts"
+import { originalPage } from "./paging.ts"
 import { CHECK_TIERS, CHECK_TIMEOUT_MS, MAX_CHECK_TIMEOUT_MS, checkTimeout, guardMark, isTier, makeGuard } from "./guards.ts"
 import { shellArgv, type Io, type Runner } from "./io.ts"
 
@@ -146,22 +147,40 @@ export const reviewLine = (v: Verify): string => {
 export const detail = (s: Plan, v: Verify): string =>
   [
     ...s.tasks.map((t) => `#${t.id} ${taskState(t)}: ${t.title}`),
-    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}${g.last?.error ? `\n    not evaluated: ${g.last.error}` : ""}${g.last?.timedOut ? `\n    ${ran(g)}` : ""}`),
+    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}${g.last?.error ? `\n    not evaluated: ${g.last.error}` : ""}${g.last?.timedOut ? `\n    ${ran(g)}` : ""}${g.files || g.timeout_ms !== undefined || g.last ? `\n    evidence: ${JSON.stringify({ files: g.files, timeout_ms: g.timeout_ms, last: g.last })}` : ""}`),
     s.tasks.length || s.guards.length ? `${overall(s)}% overall.` : "No tasks, no guards.",
     reviewLine(v),
   ].join("\n")
 
-/** The plan in one line, for the reminder. */
-const summary = (s: Plan): string =>
-  [
-    s.tasks.length
-      ? `${s.tasks.length} task(s), ${overall(s)}% overall: ` +
-        s.tasks.map((t) => `#${t.id} "${t.title}" ${taskState(t)}`).join("; ")
-      : "",
-    s.guards.length ? `${s.guards.length} guard(s): ` + s.guards.map((g) => `${g.id} [${guardMark(g)}]${g.check ? ` (\`${g.check}\`)` : ""}`).join("; ") : "",
-  ]
-    .filter(Boolean)
-    .join(". ")
+/** Exact detail pages. The content revision prevents joining pages from different plans. */
+export function planPage(s: Plan, v: Verify, args: Record<string, unknown> = {}) {
+  const text = detail(s, v)
+  const id = hash(text)
+  if (args.id !== undefined && args.id !== id) throw new Error("plan changed or id is invalid; restart plan_show at offset 0 without id")
+  if (typeof args.offset === "number" && args.offset > 0 && args.id === undefined) throw new Error("pass the first page's id when continuing plan_show")
+  return originalPage(text, id, args.offset === undefined ? 0 : args.offset as number, args.limit === undefined ? 6000 : args.limit as number, 7800)
+}
+
+/** Only previews are abbreviated; identifiers and shell commands are never shortened. */
+const preview = (text: string) => {
+  const line = text.replace(/\s+/g, " ")
+  return line.length > 64 ? line.slice(0, 64) + "…" : line
+}
+const visibleId = (id: string) => id.length <= 64 ? id : "(long id; see plan_show)"
+
+/** Fixed-size previews and complete counts, regardless of completed history size. */
+const summary = (s: Plan): string => {
+  const open = openTasks(s)
+  const current = [...open.filter((t) => t.status === "active"), ...open.filter((t) => t.status !== "active")].slice(0, 3)
+  const pending = s.guards.filter((g) => !g.met)
+  const failing = pending.filter((g) => guardMark(g) === "failing")
+  const guards = [...failing, ...pending.filter((g) => guardMark(g) !== "failing")].slice(0, 3)
+  return [
+    s.tasks.length ? `${s.tasks.length} task(s), ${overall(s)}% overall; ${s.tasks.length - open.length} done, ${open.length} open: ` + current.map((t) => `#${t.id} "${preview(t.title)}" ${taskState(t)}`).join("; ") : "",
+    s.guards.length ? `${s.guards.length} guard(s): ` + guards.map((g) => `${visibleId(g.id)} [${g.last?.error ? "not evaluated" : guardMark(g)}]`).join("; ") + `; ${s.guards.length - pending.length} upheld, ${pending.length} open, ${failing.length} failing` : "",
+    "Full details and completed history: plan_show (paged)",
+  ].filter(Boolean).join(". ")
+}
 
 /** The mean over all tasks, a done task counting 100. */
 export const overall = (s: Plan): number =>
@@ -221,7 +240,9 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
   const sig = JSON.stringify([open.map((t) => [t.id, t.progress]), unmet.map((g) => [g.id, g.last?.exit, Math.round((g.last?.p ?? 0) * 10)]), verify && left])
   const stalls = sig === book.sig ? book.stalls + 1 : 0
   const next = { ...book, sig, stalls, rounds: book.rounds + 1 }
-  const head = `overwatch: not done — ${lines.length} item(s) open:\n${lines.join("\n")}`
+  const full = lines.join("\n")
+  const feedback = full.length <= 2000 ? full : `- ${summary({ ...s, guards: decided })}${verify ? `\n- files changed: ${left.join(", then ")}` : ""}`
+  const head = `overwatch: not done — ${lines.length} item(s) open:\n${feedback}`
   if (stalls >= MAX_STALLS || next.rounds > MAX_ROUNDS)
     return { verdict: { kind: "stalled", reason: `${head}\n${stalls >= MAX_STALLS ? `unchanged over ${MAX_STALLS} refused stops` : `${MAX_ROUNDS} refused stops this prompt`} — letting the stop through for the user to decide.` }, next }
   return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the plan tools (task_progress, task_complete, guard_check), then stop again. ${contract}` }, next }
@@ -342,7 +363,12 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
     },
   },
   plan_show: {
-    description: "Show the whole plan: every task with its number, progress and status; every guard with its id, question, check and last outcome; and whether /code-review and /simplify are due on the changed files. Read-only.",
+    description: "Read the complete plan and completed history as exact text pages, including all guard fields and review status. Returns {id,offset,text,next_offset,total_chars}. Concatenate text unchanged; while next_offset is not null, pass it as offset with the same id. If the plan changes, restart without id at offset 0. Read-only.",
+    properties: {
+      id: { type: "string", description: "The first page's content revision; required for continuation pages." },
+      offset: { type: "integer", minimum: 0, description: "UTF-16 character offset from next_offset; defaults to 0." },
+      limit: { type: "integer", minimum: 1, description: "Maximum characters requested; defaults to 6000 and is bounded by the serialized page budget." },
+    },
   },
   plan_clear: {
     description: "Empty the plan: every task and every guard. Only when the user abandons the work or asks for a fresh start; finished work is completed, not cleared.",

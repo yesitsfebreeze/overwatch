@@ -8,7 +8,7 @@
  * plan; key by session once every host passes a session id to its MCP servers.
  */
 import type { Plan, StopBook } from "../types/index.d.ts"
-import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runAutoChecks, runPicked, stopBudgetReason, stopVerdict, withDecided } from "../hooks/plan.ts"
+import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, planPage, gateReason, openLine, reminder, runAutoChecks, runPicked, stopBudgetReason, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
@@ -71,7 +71,7 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
   try {
     const cmd = COMMAND_TOOLS[name]
     if (cmd) return { text: await cmd.run(at, args) }
-    if (name === "plan_show") return withState(io, root, (s) => [s, { text: plain(detail(s.plan, CLEAN)) }])
+    if (name === "plan_show") return await withState(io, root, (s) => [s, { text: JSON.stringify(planPage(s.plan, CLEAN, args)) }])
     if (name === "guard_check") {
       return withState(io, root, async (s) => {
         const out = await runPicked(s.plan, args.guard_id, args.tier, io.run, root, args.timeout_ms)

@@ -9,6 +9,29 @@ import { fromNode } from "../bin/node-io.ts"
 import { callTool, onEvent } from "./core.ts"
 import { hook } from "./hooks.ts"
 import { memIo } from "../hooks/io.ts"
+import { CLEAN, detail } from "../hooks/plan.ts"
+
+test("portable plan_show forwards exact pages and rejects invalid or stale continuation", async () => {
+  const io = memIo({}, "/plan-pages")
+  process.env.OVERWATCH_PROJECT = io.cwd
+  const title = 'literal mcp__overwatch__prefix 😀 \\"\n'.repeat(300)
+  await callTool(io, "task_add", { titles: [title] })
+  let page = JSON.parse((await callTool(io, "plan_show", { limit: 1000 })).text)
+  const id = page.id
+  let text = ""
+  while (true) {
+    expect(JSON.stringify(page).length).toBeLessThan(8000)
+    text += page.text
+    if (page.next_offset === null) break
+    page = JSON.parse((await callTool(io, "plan_show", { id, offset: page.next_offset, limit: 1000 })).text)
+  }
+  expect(text).toBe(detail({ tasks: [{ id: 1, title: title.trim(), progress: 0, status: "todo" }], nextId: 2, guards: [] }, CLEAN))
+  expect((await callTool(io, "plan_show", { offset: -1 })).error).toBe(true)
+  expect((await callTool(io, "plan_show", { offset: 1 })).text).toContain("first page's id")
+  expect((await callTool(io, "plan_show", { limit: "5" })).error).toBe(true)
+  await callTool(io, "task_add", { titles: ["new revision"] })
+  expect((await callTool(io, "plan_show", { id, offset: 1 })).text).toContain("plan changed")
+})
 
 const sandbox = () => {
   const dir = mkdtempSync(join(tmpdir(), "ow-"))

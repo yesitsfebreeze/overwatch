@@ -2,7 +2,7 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeFile, judgeRequest, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runAutoChecks, runPicked, skillRan, slot, stopBudgetReason, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, planPage, gateReason, newWork, openLine, reminder, runAutoChecks, runPicked, skillRan, slot, stopBudgetReason, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
@@ -44,9 +44,10 @@ async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: 
   return { result: out.report }
 }
 
-async function planShow($: any): Promise<{ result: string }> {
+async function planShow($: any, e: any) {
   const [s, v] = await Promise.all([read($, PLAN), read($, VERIFY)])
-  return { result: detail(s, v) }
+  try { return { result: planPage(s, v, e) } }
+  catch (err: any) { return { deny: String(err?.message ?? err) } }
 }
 
 /** The plan beside a prompt: the full rules once per session, then one line. Only the person resets the stop rounds; task notifications and peers do not. */
@@ -73,7 +74,7 @@ export async function startPlan($: any, e: any): Promise<void> {
 
 export const register: Register = (on, options) => {
   on("tool.call", { tool: tool("guard_check") }, async ($, e: any) => guardCheck($, e))
-  on("tool.call", { tool: tool("plan_show") }, async ($) => planShow($))
+  on("tool.call", { tool: tool("plan_show") }, async ($, e: any) => planShow($, e))
   for (const [name, { run, act }] of Object.entries({ ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS })) {
     if (!run && !act) continue
     on("tool.call", { tool: tool(name) }, async ($, e: any) => {
