@@ -38,8 +38,8 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 | `task_complete` | `task_id` | finishes a task |
 | `task_replace` | `task_id`, `title` | retires the old task for a new one |
 | `task_remove` | `task_id` | drops a task |
-| `guard_add` | `question`, `check?`, `files?`, `tier?` | adds a guard; tier is `fast`, `unit` or `milestone` |
-| `guard_check` | `guard_id?`, `tier?` | runs the checks now, all or one tier, records the outcome |
+| `guard_add` | `question`, `check?`, `files?`, `tier?`, `timeout_ms?` | adds a guard; tier is `fast`, `unit` or `milestone` |
+| `guard_check` | `guard_id?`, `tier?`, `timeout_ms?` | runs the checks now, all or one tier, records the outcome |
 | `guard_drop` | `guard_id` | removes a guard, on the user's word only |
 | `plan_show` | | tasks, guards with last outcome, review state |
 | `plan_clear` | | empties the plan |
@@ -180,3 +180,9 @@ bin/overwatch hygiene --selftest
 bun test ./host/host.check.ts  # the core other agents run
 claude --plugin-dir . -p hi --debug-file ow.log; grep "did not load" ow.log
 ```
+
+### Guard timeouts
+
+Plan shell guards default to 60000 ms. Set `timeout_ms` on `guard_add`, or on `guard_check` to update all selected guards and retry. Values must be integers from 1 to 600000. A transport timeout stays unmet and pauses automatic retries; an explicit `guard_check` retries it. Ordinary failures and successful checks are still rerun at later stops to detect regressions. Natural exit code 124 is a failure, not proof of a transport timeout.
+
+Refresh installed command-hook adapters to get their 660-second outer Stop budget (Gemini: 660000 ms). This exceeds the maximum guard budget with startup overhead. Vault closeout checks (`unit_record`, `unit_verify` reruns, `prd_collect`) remain fresh explicit checks with the default 60000 ms; they do not inherit plan-guard overrides.

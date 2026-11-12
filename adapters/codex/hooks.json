@@ -3,6 +3,6 @@
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "overwatch hook codex SessionStart", "timeout": 30 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "overwatch hook codex UserPromptSubmit", "timeout": 30 }] }],
     "PreToolUse": [{ "matcher": "^(apply_patch|Edit|Write)$", "hooks": [{ "type": "command", "command": "overwatch hook codex PreToolUse", "timeout": 30 }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "overwatch hook codex Stop", "timeout": 180 }] }]
+    "Stop": [{ "hooks": [{ "type": "command", "command": "overwatch hook codex Stop", "timeout": 660 }] }]
   }
 }

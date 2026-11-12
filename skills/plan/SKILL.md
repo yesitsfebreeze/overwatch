@@ -28,4 +28,4 @@ Every stop is refused while a task is open, a guard is not upheld, or 10+ net li
 
 - Need the user's input: AskUserQuestion, then continue.
 - A guard that cannot be met: say so and why. Only the user drops a guard (`guard_drop {guard_id}`). Never reword or drop one to get past a refusal.
-- After a fix, `guard_check` confirms a guard holds.
+- After a fix, `guard_check` confirms a guard holds. Shell checks default to 60000 ms; `guard_check {guard_id, timeout_ms:120000}` changes that guard’s budget and retries it (maximum 600000). A timeout remains unmet and pauses automatic retries until an explicit check.

@@ -38,8 +38,10 @@ export type CheckTier = "fast" | "unit" | "milestone"
 export type Guard = {
   id: string
   question: string
-  /** Shell command that decides it: exit 0 is upheld. Re-run at every stop, so a regression reopens it. */
+  /** Shell command: exit 0 is upheld. Re-run after tasks finish; timeouts pause until an explicit check. */
   check?: string
+  /** Per-check budget, 1–600000 ms; omitted means 60000. */
+  timeout_ms?: number
   /** How heavy the check is, so guard_check can run one tier without the rest. */
   tier?: CheckTier
   /** Files whose current content the judge sees, relative to the project. */
@@ -47,7 +49,7 @@ export type Guard = {
   /** Whether the last decision upheld it. A judged guard, once upheld, is retired. */
   met?: boolean
   /** Last outcome: check exit/output, judge probability, or a local reason no evaluation was made. */
-  last?: { exit?: number | null; p?: number; out?: string; error?: string }
+  last?: { exit?: number | null; p?: number; out?: string; error?: string; timedOut?: boolean; timeout_ms?: number }
 }
 
 /** Tasks and guards: the whole plan the stop is held against. */

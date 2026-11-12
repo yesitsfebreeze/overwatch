@@ -8,7 +8,7 @@
  * plan; key by session once every host passes a session id to its MCP servers.
  */
 import type { Plan, StopBook } from "../types/index.d.ts"
-import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runCheck, runPicked, stopBudgetReason, stopVerdict, withDecided } from "../hooks/plan.ts"
+import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runAutoChecks, runPicked, stopBudgetReason, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
@@ -74,7 +74,7 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
     if (name === "plan_show") return withState(io, root, (s) => [s, { text: plain(detail(s.plan, CLEAN)) }])
     if (name === "guard_check") {
       return withState(io, root, async (s) => {
-        const out = await runPicked(s.plan, args.guard_id, args.tier, io.run, root)
+        const out = await runPicked(s.plan, args.guard_id, args.tier, io.run, root, args.timeout_ms)
         if (typeof out === "string") return [s, { text: out, error: true }]
         return [{ ...s, plan: withDecided(s.plan, out.decided) }, { text: out.report }]
       })
@@ -127,7 +127,7 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
         if (exhausted) return [s, { notify: exhausted }]
         // Judged guards need the turn's transcript, which each host shapes differently: they fail open here (ceiling: read transcript_path where a host gives one).
         const open = s.plan.tasks.some((t) => t.status !== "done") ? [] : openGuards(s.plan.guards)
-        const decided = await Promise.all(open.filter((g) => g.check).map((g) => runCheck(io.run, g, root)))
+        const decided = await runAutoChecks(io.run, open, root)
         const plan = withDecided(s.plan, decided)
         const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops, HOST_CONTRACT)
         const out: Outcome = verdict.kind === "pass" ? {} : verdict.kind === "block" ? { block: plain(verdict.reason) } : { notify: plain(verdict.reason) }

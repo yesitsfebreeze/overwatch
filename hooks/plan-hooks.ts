@@ -2,7 +2,7 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeFile, judgeRequest, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopBudgetReason, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runAutoChecks, runPicked, skillRan, slot, stopBudgetReason, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
@@ -38,7 +38,7 @@ const record = async ($: any, decided: Guard[]): Promise<Plan> => {
 
 async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: string }> {
   const [s, root] = await Promise.all([read($, PLAN), read($, ROOT)])
-  const out = await runPicked(s, e.guard_id, e.tier, engineRun($), root || undefined)
+  const out = await runPicked(s, e.guard_id, e.tier, engineRun($), root || undefined, e.timeout_ms)
   if (typeof out === "string") return { deny: out }
   await record($, out.decided)
   return { result: out.report }
@@ -156,7 +156,7 @@ export const register: Register = (on, options) => {
       }
     }
 
-    const [checked, judged] = await Promise.all([Promise.all(open.filter((g) => g.check).map((g) => runCheck(engineRun($), g, cwd))), judge(open.filter((g) => !g.check))])
+    const [checked, judged] = await Promise.all([runAutoChecks(engineRun($), open, cwd), judge(open.filter((g) => !g.check))])
     const decided = [...checked, ...judged]
     const plan = decided.length ? await record($, decided) : s
     const { verdict, next: nb } = stopVerdict(plan, decided, v, { ...book, nokeyTold })

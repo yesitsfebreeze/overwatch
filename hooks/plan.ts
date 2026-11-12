@@ -1,6 +1,6 @@
 import type { FollowlineSlot, Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
 import { TOOL_PREFIX } from "./catalog.ts"
-import { CHECK_TIERS, guardMark, isTier, makeGuard } from "./guards.ts"
+import { CHECK_TIERS, CHECK_TIMEOUT_MS, MAX_CHECK_TIMEOUT_MS, checkTimeout, guardMark, isTier, makeGuard } from "./guards.ts"
 import { shellArgv, type Io, type Runner } from "./io.ts"
 
 // The plan's pure logic: tools, reminder, gate and stop verdict. No engine import:
@@ -18,8 +18,7 @@ const MAX_ROUNDS = 8
 export const stopBudgetReason = (book: StopBook): string | undefined => book.rounds >= MAX_ROUNDS
   ? `overwatch: automatic verification budget exhausted after ${MAX_ROUNDS} refused stops. Work remains unverified; no new checks or judgments ran. Run guard_check explicitly or ask the user how to continue.`
   : undefined
-/** A check past this is killed and counts as not upheld. */
-export const CHECK_TIMEOUT_MS = 60_000
+export { CHECK_TIMEOUT_MS } from "./guards.ts"
 /** `/review` is the older name of `/code-review`. */
 export const REVIEW_SKILLS = new Set(["code-review", "review"])
 /** Tools that change files. Ceiling: writes through Bash or kern `fs` are not seen; track a diff of the worktree instead. */
@@ -66,17 +65,26 @@ export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: 
 const taskState = (t: Task) => (t.status === "done" ? "done" : `${t.progress}%${t.status === "active" ? " active" : ""}`)
 
 /** How a check ended (`exit 1` / `did not finish`), and its output's last lines, indented. */
-export const ran = (g: Guard) => (g.last?.exit === null ? "did not finish" : `exit ${g.last?.exit}`)
+export const ran = (g: Guard) => g.last?.timedOut
+  ? `timed out after ${g.last.timeout_ms ?? CHECK_TIMEOUT_MS} ms; automatic retries paused; retry guard_check with timeout_ms up to ${MAX_CHECK_TIMEOUT_MS}`
+  : g.last?.error ? `not run: ${g.last.error}` : g.last?.exit === null ? "did not finish" : `exit ${g.last?.exit}`
 export const tail = (g: Guard) => (g.last?.out ? `\n    ${g.last.out.trim().split("\n").slice(-4).join("\n    ")}` : "")
 
 /** A guard after its check ran: exit 0 upholds it, null means it did not finish. */
 export const checked = (g: Guard, exit: number | null, out: string): Guard => ({ ...g, met: exit === 0, last: { exit, out: out.trim().slice(-600) } })
 
-/** Runs one guard's check from `cwd`; a check past CHECK_TIMEOUT_MS counts as not upheld. */
+/** Runs one guard's check from `cwd` within its configured budget; a timeout stays unmet. */
 export const runCheck = async (run: Runner, g: Guard, cwd?: string): Promise<Guard> => {
-  const r = await run([...await shellArgv(run), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-  return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
+  const timeout = checkTimeout(g.timeout_ms)
+  if (typeof timeout === "string") return { ...g, met: false, last: { error: timeout } }
+  const r = await run([...await shellArgv(run), "-c", g.check!], { cwd, timeoutMs: timeout })
+  const result = checked(g, r.timedOut ? null : r.code, r.stdout + r.stderr)
+  return r.timedOut ? { ...result, last: { ...result.last, timedOut: true, timeout_ms: timeout } } : result
 }
+
+/** Timeouts remain unmet but do not launch another process until an explicit guard_check. */
+export const runAutoChecks = (run: Runner, guards: Guard[], cwd?: string): Promise<Guard[]> =>
+  Promise.all(guards.filter((g) => g.check).map((g) => g.last?.timedOut ? { ...g, met: false } : runCheck(run, g, cwd)))
 
 /**
  * One outcome per check command, run from `cwd`. The guard objects are throwaway: a note's checks
@@ -103,13 +111,20 @@ export const pickChecks = (s: Plan, guard_id: unknown, tier?: unknown): Guard[] 
     : "no guard has a check; judged guards are decided at the stop"
 }
 
-export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n")
+export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : g.last?.timedOut ? `${ran(g)}${tail(g)}` : `failing (${ran(g)})${tail(g)}`}`).join("\n")
 
 /** guard_check over every host: the picked guards' checks run through `run`, returning the decision or the refusal. */
-export async function runPicked(s: Plan, guard_id: unknown, tier: unknown, run: Runner, cwd?: string): Promise<{ decided: Guard[]; report: string } | string> {
+export async function runPicked(s: Plan, guard_id: unknown, tier: unknown, run: Runner, cwd?: string, timeout_ms?: unknown): Promise<{ decided: Guard[]; report: string } | string> {
   const pick = pickChecks(s, guard_id, tier)
   if (typeof pick === "string") return pick
-  const decided = await Promise.all(pick.map((g) => runCheck(run, g, cwd)))
+  const timeout = checkTimeout(timeout_ms)
+  if (typeof timeout === "string") return timeout
+  const selected = pick.map((g) => timeout_ms === undefined ? g : { ...g, timeout_ms: timeout })
+  for (const g of selected) {
+    const valid = checkTimeout(g.timeout_ms)
+    if (typeof valid === "string") return `${g.id}: ${valid}; set timeout_ms on guard_check to correct it`
+  }
+  const decided = await Promise.all(selected.map((g) => runCheck(run, g, cwd)))
   return { decided, report: checkReport(decided) }
 }
 
@@ -131,7 +146,7 @@ export const reviewLine = (v: Verify): string => {
 export const detail = (s: Plan, v: Verify): string =>
   [
     ...s.tasks.map((t) => `#${t.id} ${taskState(t)}: ${t.title}`),
-    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}${g.last?.error ? `\n    not evaluated: ${g.last.error}` : ""}`),
+    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}${g.last?.error ? `\n    not evaluated: ${g.last.error}` : ""}${g.last?.timedOut ? `\n    ${ran(g)}` : ""}`),
     s.tasks.length || s.guards.length ? `${overall(s)}% overall.` : "No tasks, no guards.",
     reviewLine(v),
   ].join("\n")
@@ -293,16 +308,17 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
     run: (s, e) => withTask(s, e, (t, tasks) => ({ state: { ...s, tasks: tasks.filter((x) => x !== t) }, text: `Removed #${t.id} "${t.title}"` })),
   },
   guard_add: {
-    description: "Add a guard: one yes/no question about the finished work that must hold before the session may stop. Add one per deliverable. Give a check whenever a command can decide it: it runs from the session's start directory at every stop (and on guard_check), exit 0 = upheld, so a regression reopens it. Without a check, a judge decides from the last turn and the listed files. Taste words (clean, nice, readable) are refused unless a check decides. Returns the guard's id.",
+    description: "Add a guard: one yes/no question about the finished work that must hold before the session may stop. Add one per deliverable. Give a check whenever a command can decide it: it runs from the session's start directory after tasks finish (and on guard_check), exit 0 = upheld. Timeouts pause automatic retries; explicit guard_check retries. Without a check, a judge decides from the last turn and the listed files. Taste words (clean, nice, readable) are refused unless a check decides. Returns the guard's id.",
     properties: {
       question: { type: "string", description: "One yes/no question about the finished work, at least 15 characters, e.g. \"Do the parser tests pass?\"." },
       check: { type: "string", description: "Shell command that decides it, exit 0 = upheld, e.g. \"bun test hooks/\". Leave out only when no command can decide it." },
       files: { type: "array", items: { type: "string" }, description: "Files (relative to the project) whose current content the judge reads; for guards without a check." },
+      timeout_ms: { type: "integer", minimum: 1, maximum: MAX_CHECK_TIMEOUT_MS, description: "Shell check budget in milliseconds; default 60000, maximum 600000." },
       tier: { type: "string", enum: [...CHECK_TIERS], description: "How heavy the check is, so guard_check can run one tier at a time." },
     },
     required: ["question"],
     run: (s, e) => {
-      const g = makeGuard(s.guards, e.question ?? "", e.check, e.files, e.tier)
+      const g = makeGuard(s.guards, e.question ?? "", e.check, e.files, e.tier, e.timeout_ms)
       if (typeof g === "string") return refuse(s, g)
       return { state: { ...s, guards: [...s.guards, g] }, text: `Guard ${g.id}${g.check ? ` (check: ${g.check})` : " (judged)"}: ${g.question} (${s.guards.length + 1} guards)` }
     },
@@ -318,9 +334,10 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
     },
   },
   guard_check: {
-    description: "Run the guards' shell checks now and record the outcome, instead of waiting for the stop. Use after a fix to confirm a guard holds before stopping. Only guards with a check run here; judged guards are decided at the stop. Returns each guard upheld or failing with its exit code and output tail.",
+    description: "Run the guards' shell checks now and record the outcome, instead of waiting for the stop. Use after a fix to confirm a guard holds before stopping. Only guards with a check run here; judged guards are decided at the stop. Returns each guard upheld, failing, or timed out with its output tail; timeout_ms updates the selected guards' budgets.",
     properties: {
       guard_id: { type: "string", description: "Run only this guard's check; leave out to run every guard that has one." },
+      timeout_ms: { type: "integer", minimum: 1, maximum: MAX_CHECK_TIMEOUT_MS, description: "Update the selected guards' timeout and retry, including previously timed-out checks. Default remains their existing budget." },
       tier: { type: "string", enum: [...CHECK_TIERS], description: "Run only checks of this tier." },
     },
   },

@@ -186,8 +186,14 @@ export function checkTier(command: string): CheckTier {
   return "fast"
 }
 
+export const CHECK_TIMEOUT_MS = 60_000
+export const MAX_CHECK_TIMEOUT_MS = 600_000
+export const checkTimeout = (value: unknown): number | string => value === undefined ? CHECK_TIMEOUT_MS
+  : typeof value === "number" && Number.isInteger(value) && value > 0 && value <= MAX_CHECK_TIMEOUT_MS ? value
+  : `timeout_ms must be an integer from 1 to ${MAX_CHECK_TIMEOUT_MS} (default ${CHECK_TIMEOUT_MS})`
+
 /** A new guard, or the reason it is refused. */
-export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[], tier?: string): Guard | string {
+export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[], tier?: string, timeout_ms?: unknown): Guard | string {
   const q = question.trim().replace(/\s+/g, " ")
   if (q.length < 15) return "a guard is one yes/no question of at least 15 characters"
   const c = check?.trim()
@@ -197,7 +203,11 @@ export function makeGuard(taken: Guard[], question: string, check?: string, file
   if (taste) return `taste words cannot be judged: ${taste[0]}`
   const t = tier?.trim()
   if (t && !isTier(t)) return `tier must be one of ${CHECK_TIERS.join(", ")}`
+  const timeout = checkTimeout(timeout_ms)
+  if (typeof timeout === "string") return timeout
+  if (timeout_ms !== undefined && !c) return "timeout_ms only applies to a shell check"
   const g: Guard = { id: guardId(q, taken.map((x) => x.id)), question: q }
+  if (timeout_ms !== undefined) g.timeout_ms = timeout
   if (c) g.check = c
   if (t) g.tier = t as Guard["tier"]
   if (files?.length) g.files = files

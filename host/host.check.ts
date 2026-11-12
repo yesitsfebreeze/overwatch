@@ -16,6 +16,27 @@ const sandbox = () => {
   return { dir, io: fromNode(dir) }
 }
 
+test("portable timeout remains unmet, pauses automatic retry, and explicit override persists", async () => {
+  let calls = 0, timedOut = true
+  const budgets: number[] = []
+  const io = memIo({}, "/timeout-check", async (argv, init) => {
+    if (argv.at(-1) !== "timeout-probe") return { code: 0, stdout: "", stderr: "" }
+    calls++; budgets.push(init!.timeoutMs!)
+    return { code: timedOut ? 124 : 0, stdout: "", stderr: "", timedOut }
+  })
+  process.env.OVERWATCH_PROJECT = io.cwd
+  await callTool(io, "guard_add", { question: "Does the timeout probe pass?", check: "timeout-probe" })
+  expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toContain("timed out")
+  expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toContain("timed out")
+  expect(calls).toBe(1)
+  expect((await callTool(io, "guard_check", { timeout_ms: 600001 })).error).toBe(true)
+  expect(calls).toBe(1)
+  timedOut = false
+  expect((await callTool(io, "guard_check", { timeout_ms: 180000 })).text).toContain("upheld")
+  expect(await onEvent(io, { kind: "stop", cwd: io.cwd })).toEqual({})
+  expect(budgets).toEqual([60000, 180000, 180000])
+})
+
 test("automatic checks: open work waits, the ninth stop spends nothing, explicit checks stay fresh", async () => {
   let checks = 0
   let exit = 1
