@@ -3,6 +3,7 @@ import { sessionIo as io, type Io } from "./io.ts"
 import { clean, disk, MIN_MIB } from "./gardener.ts"
 import { hygiene } from "./hygiene.ts"
 import { loadout } from "./loadout.ts"
+import { launch, launched } from "./launch.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
 import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
@@ -75,6 +76,20 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     },
     required: ["paths"],
     run: (io, e) => clean(io, (Array.isArray(e.paths) ? e.paths : []).map(text).filter(Boolean), e.apply === true),
+  },
+  launch: {
+    description: "Run a shell command in the background and return at once with its id and log path, so builds, test suites, servers and anything slow never block you. Runs from the project directory; output goes to .overwatch/launch/<id>/log. Read it back with launched. wait: true runs it in the foreground instead (up to 10 minutes) and returns the exit code and output tail.",
+    properties: {
+      command: { type: "string", description: "The shell command, e.g. \"cargo build --release\"." },
+      wait: { type: "boolean", description: "true blocks until it ends; left out, it runs in the background." },
+    },
+    required: ["command"],
+    run: (io, e) => launch(io, text(e.command), e.wait === true),
+  },
+  launched: {
+    description: "State of background runs started with launch: running, exit <code>, or gone. With an id: that run and the last 30 lines of its log. Without: the 10 newest runs, one line each. Read-only.",
+    properties: { id: { type: "string", description: "The id launch returned; leave out to list runs." } },
+    run: (io, e) => launched(io, text(e.id)),
   },
 }
 

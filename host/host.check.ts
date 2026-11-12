@@ -49,6 +49,21 @@ test("hook formats: Codex Stop blocks with a reason, PreToolUse denies", async (
   expect(JSON.parse(stop.text).decision).toBe("block")
 })
 
+test("launch: returns at once, the run goes on, launched reads its exit code and log", async () => {
+  const { io } = sandbox()
+  const t0 = Date.now()
+  const id = /launched id (\w+)/.exec((await callTool(io, "launch", { command: "sleep 1; echo built; exit 3" })).text)?.[1] ?? ""
+  expect(Date.now() - t0).toBeLessThan(800)
+  expect((await callTool(io, "launched", { id })).text).toContain("running")
+  let done = ""
+  // The command text holds "exit 3" and "built" too: match the state and the log line only.
+  for (let i = 0; i < 40 && !done.startsWith(`${id} exit`); i++) await Bun.sleep(100), (done = (await callTool(io, "launched", { id })).text)
+  expect(Date.now() - t0).toBeGreaterThan(900)
+  expect(done).toStartWith(`${id} exit 3`)
+  expect(done).toEndWith("\nbuilt")
+  expect((await callTool(io, "launch", { command: "echo now", wait: true })).text).toBe("exit 0\nnow")
+})
+
 test("mcp: initialize, tools/list, tools/call over stdio", async () => {
   const { dir } = sandbox()
   const p = Bun.spawn(["bun", join(import.meta.dir, "../bin/cli.ts"), "mcp"], { cwd: dir, stdin: "pipe", stdout: "pipe", env: process.env })

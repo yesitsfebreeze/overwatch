@@ -26,6 +26,7 @@ Any other agent: point it at [install.txt](install.txt).
 | surface | tool-usage ledger, learned triggers, frozen checks, mistakes (`/overwatch`) |
 | loadout | active plugins per layer (`/loadout`) |
 | gardener | frees a nearly full disk, see below (`/gardener`) |
+| launch | runs builds and other slow commands in the background, logs in `.overwatch/launch/` |
 | hygiene | rates a repo's `skills/`, writes LEDGER.md, one GitHub issue per finding (`/hygiene`) |
 
 Replaces tasksitter, componion, followline, steward, loadout, disk-gardener and skill-hygiene.
@@ -59,6 +60,8 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 | `hygiene_ledger` | `repo?` | lints and ranks a repo's skills, writes LEDGER.md |
 | `disk` | `scope?`, `min_mib?` | surveys what can go; deletes nothing |
 | `disk_clean` | `paths[]`, `apply?` | deletes surveyed leftovers, each judged again; dry run without `apply` |
+| `launch` | `command`, `wait?` | runs a command in the background, returns its id at once; `wait` blocks instead |
+| `launched` | `id?` | background runs: running, exit code or gone; with `id`, the log tail |
 
 ## Tasks and guards
 
