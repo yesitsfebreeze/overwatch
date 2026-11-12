@@ -10,6 +10,8 @@ metadata:
 
 # Verification Before Completion
 
+Core planning and checks are available by default. Unit workflows require `vault`; PRD workflows require `prd` (which includes vault). `tool_groups` lists enabled groups and configuration; enable optional groups and restart before using their tools.
+
 ```
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```

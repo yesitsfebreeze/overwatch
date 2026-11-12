@@ -38,16 +38,18 @@ export type CheckTier = "fast" | "unit" | "milestone"
 export type Guard = {
   id: string
   question: string
-  /** Shell command that decides it: exit 0 is upheld. Re-run at every stop, so a regression reopens it. */
+  /** Shell command: exit 0 is upheld. Re-run after tasks finish; timeouts pause until an explicit check. */
   check?: string
+  /** Per-check budget, 1–600000 ms; omitted means 60000. */
+  timeout_ms?: number
   /** How heavy the check is, so guard_check can run one tier without the rest. */
   tier?: CheckTier
   /** Files whose current content the judge sees, relative to the project. */
   files?: string[]
   /** Whether the last decision upheld it. A judged guard, once upheld, is retired. */
   met?: boolean
-  /** The last decision: the check's exit code (null: did not finish) and output tail, or the judge's p. */
-  last?: { exit?: number | null; p?: number; out?: string }
+  /** Last outcome: check exit/output, judge probability, or a local reason no evaluation was made. */
+  last?: { exit?: number | null; p?: number; out?: string; error?: string; timedOut?: boolean; timeout_ms?: number }
 }
 
 /** Tasks and guards: the whole plan the stop is held against. */
@@ -64,11 +66,15 @@ export type LoadedUnit = { name: string; tasks: Record<number, string>; guards: 
 
 /**
  * Whether changed code went through /code-review and /simplify. The first file edit sets `dirty`
- * and voids a pass run before it. `lines` sums the lines edited since /simplify last ran and
+ * and voids a pass run before it. `lines` counts net lines changed since /simplify last ran and
  * decides whether it is asked for; `unreviewed` is the same for /code-review. A stop that passes
- * clears all of it.
+ * clears all of it. Counts saturate at the largest review threshold.
  */
-export type Verify = { dirty: boolean; review: boolean; simplify: boolean; lines: number; unreviewed: number }
+export type Verify = {
+  dirty: boolean; review: boolean; simplify: boolean; lines: number; unreviewed: number
+  files?: Record<string, { current: string; review: string; simplify: string }>
+  unknown?: { review: boolean; simplify: boolean }
+}
 
 /** What the next stop compares against. */
 export type StopBook = {
@@ -99,6 +105,8 @@ declare module "claude-code" {
       plan: Plan
       verify: Verify
       stop: StopBook
+      /** Exact guard request and validated probabilities cached within one user turn. */
+      judgment: { body: string; probabilities: Record<string, number> }
       root: string
       /** The full plan reminder went out this session; later prompts carry one line. */
       told: boolean

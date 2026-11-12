@@ -3,6 +3,6 @@
   "hooks": {
     "sessionStart": [{ "command": "overwatch hook cursor sessionStart" }],
     "preToolUse": [{ "command": "overwatch hook cursor preToolUse", "matcher": "Write" }],
-    "stop": [{ "command": "overwatch hook cursor stop", "loop_limit": 8, "timeout": 180 }]
+    "stop": [{ "command": "overwatch hook cursor stop", "loop_limit": 8, "timeout": 660 }]
   }
 }

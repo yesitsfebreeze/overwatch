@@ -3,6 +3,9 @@ name: prd
 description: Plan durable outcomes as PRDs in the spec vault and collect them against evidence. A PRD note holds acceptance boxes, needs, footprint and checks; its linked units do the work; a review round of at least 90 gates collection. Use when the user asks what to work on next, wants a plan of record, asks to split big work, review a plan, or finish a PRD ("what's ready", "prd", "collect the PRD", "review the plan").
 ---
 
+Tool availability: enable the `prd` group through native `toolGroups` or portable `OVERWATCH_TOOL_GROUPS`, then restart. `tool_groups` shows the configuration.
+
+
 Everything goes through the PRD tools (`mcp__overwatch__prd_scan`, `prd_next`, `prd_brief`, `prd_add`, `prd_refine`, `prd_set`, `prd_review`, `prd_collect`). The notes live in `.overwatch/vault/02 PRDs`, the units in `01 Specs`, both Obsidian and git-tracked.
 
 ## Choosing work

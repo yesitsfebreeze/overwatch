@@ -3,6 +3,6 @@
   "hooks": {
     "sessionStart": [{ "type": "command", "bash": "overwatch hook copilot sessionStart", "timeoutSec": 30 }],
     "preToolUse": [{ "type": "command", "matcher": "edit|create", "bash": "overwatch hook copilot preToolUse", "timeoutSec": 30 }],
-    "agentStop": [{ "type": "command", "bash": "overwatch hook copilot agentStop", "timeoutSec": 180 }]
+    "agentStop": [{ "type": "command", "bash": "overwatch hook copilot agentStop", "timeoutSec": 660 }]
   }
 }

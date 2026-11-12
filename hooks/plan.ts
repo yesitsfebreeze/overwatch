@@ -1,6 +1,7 @@
 import type { FollowlineSlot, Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
-import { TOOL_PREFIX } from "./catalog.ts"
-import { CHECK_TIERS, guardMark, isTier, makeGuard } from "./guards.ts"
+import { hash, TOOL_PREFIX } from "./catalog.ts"
+import { originalPage } from "./paging.ts"
+import { CHECK_TIERS, CHECK_TIMEOUT_MS, MAX_CHECK_TIMEOUT_MS, checkTimeout, guardMark, isTier, makeGuard } from "./guards.ts"
 import { shellArgv, type Io, type Runner } from "./io.ts"
 
 // The plan's pure logic: tools, reminder, gate and stop verdict. No engine import:
@@ -15,8 +16,10 @@ export const FRESH: StopBook = { sig: "", stalls: 0, rounds: 0 }
 export const MAX_STALLS = 3
 /** Refused stops per user prompt before the same. */
 const MAX_ROUNDS = 8
-/** A check past this is killed and counts as not upheld. */
-export const CHECK_TIMEOUT_MS = 60_000
+export const stopBudgetReason = (book: StopBook): string | undefined => book.rounds >= MAX_ROUNDS
+  ? `overwatch: automatic verification budget exhausted after ${MAX_ROUNDS} refused stops. Work remains unverified; no new checks or judgments ran. Run guard_check explicitly or ask the user how to continue.`
+  : undefined
+export { CHECK_TIMEOUT_MS } from "./guards.ts"
 /** `/review` is the older name of `/code-review`. */
 export const REVIEW_SKILLS = new Set(["code-review", "review"])
 /** Tools that change files. Ceiling: writes through Bash or kern `fs` are not seen; track a diff of the worktree instead. */
@@ -25,35 +28,6 @@ export const EDIT_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "mcp__p
 export const LARGE_CHANGE_LINES = 50
 /** Under this many changed lines no review pass is due. */
 export const SMALL_CHANGE_LINES = 10
-
-/** Lines in `s`; a trailing newline starts none. No copy: whole-file writes pass through here. */
-const lineCount = (s: unknown) => {
-  if (typeof s !== "string" || !s) return 0
-  let n = 1
-  for (let i = s.indexOf("\n"); i !== -1 && i < s.length - 1; i = s.indexOf("\n", i + 1)) n++
-  return n
-}
-const parts = (i: any): unknown[] => [i?.edits, i?.items].filter(Array.isArray).flat()
-const oldText = (i: any) => i?.old_string ?? i?.old ?? i?.oldText
-const wholeText = (i: any) => i?.content ?? i?.text
-const newText = (i: any) => i?.new_string ?? i?.new ?? i?.newText ?? wholeText(i) ?? i?.new_source
-
-/** The larger of the replaced and the new text, summed over `edits` and git-fs `items`. */
-const shownLines = (i: any): number => {
-  const ps = parts(i)
-  if (ps.length) return ps.reduce((n: number, x) => n + shownLines(x), 0)
-  return Math.max(lineCount(oldText(i)), lineCount(newText(i)))
-}
-
-/** The call replaces text its input does not show: a whole-file write, a replace_all, a notebook cell replace or delete. */
-const hidesReplaced = (i: any): boolean =>
-  parts(i).some(hidesReplaced) ||
-  i?.replace_all === true ||
-  (oldText(i) === undefined && wholeText(i) !== undefined) ||
-  (i?.notebook_path !== undefined && i?.edit_mode !== "insert")
-
-/** Lines one edit call touches. A call hiding what it replaces counts at least SMALL_CHANGE_LINES, once per call, so it is never exempt as small. */
-export const changedLines = (i: any): number => Math.max(shownLines(i), hidesReplaced(i) ? SMALL_CHANGE_LINES : 0)
 
 const clamp = (p: number) => Math.max(0, Math.min(100, Math.round(p)))
 const openTasks = (s: Plan) => s.tasks.filter((t) => t.status !== "done")
@@ -72,14 +46,18 @@ const withTask = (s: Plan, e: any, f: (t: Task, tasks: Task[]) => Result): Resul
 
 /** The review passes still due, each judged by the lines changed since it last ran. */
 export const due = (v: Verify): string[] =>
-  [(v.unreviewed || 0) >= LARGE_CHANGE_LINES && !v.review && "/code-review", (v.lines || 0) >= SMALL_CHANGE_LINES && !v.simplify && "/simplify"].filter((x): x is string => !!x)
+  [((v.unreviewed || 0) >= LARGE_CHANGE_LINES || v.unknown?.review) && !v.review && "/code-review", ((v.lines || 0) >= SMALL_CHANGE_LINES || v.unknown?.simplify) && !v.simplify && "/simplify"].filter((x): x is string => !!x)
 
-/** One edit of `n` lines: the first marks the change dirty and voids an earlier pass; later ones add to both counts and keep it. */
-export const edited = (v: Verify, n: number): Verify =>
-  v.dirty ? { ...v, lines: (v.lines || 0) + n, unreviewed: (v.unreviewed || 0) + n } : { ...CLEAN, dirty: true, lines: n, unreviewed: n }
+/** Replace the measured net totals; a first real edit voids a pass run before it. */
+export const edited = (v: Verify, lines: number, unreviewed = lines): Verify =>
+  ({ ...(v.dirty ? v : CLEAN), dirty: true, lines, unreviewed })
 
-/** A review skill ran: its count restarts at 0, so the fixes it asks for are judged by their own size once new work starts. */
-export const skillRan = (v: Verify, skill: "review" | "simplify"): Verify => ({ ...v, [skill]: true, [skill === "review" ? "unreviewed" : "lines"]: 0 })
+/** Each pass gets its own baseline; fixes during that pass retain its completion flag. */
+export const skillRan = (v: Verify, skill: "review" | "simplify"): Verify => ({
+  ...v, [skill]: true, [skill === "review" ? "unreviewed" : "lines"]: 0,
+  ...(v.files ? { files: Object.fromEntries(Object.entries(v.files).map(([p, f]) => [p, { ...f, [skill]: f.current }])) } : {}),
+  ...(v.unknown ? { unknown: { ...v.unknown, [skill]: false } } : {}),
+})
 
 /** New work ends a review pass: each skill is due again by the lines changed since it last ran. */
 export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: false })
@@ -88,17 +66,26 @@ export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: 
 const taskState = (t: Task) => (t.status === "done" ? "done" : `${t.progress}%${t.status === "active" ? " active" : ""}`)
 
 /** How a check ended (`exit 1` / `did not finish`), and its output's last lines, indented. */
-export const ran = (g: Guard) => (g.last?.exit === null ? "did not finish" : `exit ${g.last?.exit}`)
+export const ran = (g: Guard) => g.last?.timedOut
+  ? `timed out after ${g.last.timeout_ms ?? CHECK_TIMEOUT_MS} ms; automatic retries paused; retry guard_check with timeout_ms up to ${MAX_CHECK_TIMEOUT_MS}`
+  : g.last?.error ? `not run: ${g.last.error}` : g.last?.exit === null ? "did not finish" : `exit ${g.last?.exit}`
 export const tail = (g: Guard) => (g.last?.out ? `\n    ${g.last.out.trim().split("\n").slice(-4).join("\n    ")}` : "")
 
 /** A guard after its check ran: exit 0 upholds it, null means it did not finish. */
 export const checked = (g: Guard, exit: number | null, out: string): Guard => ({ ...g, met: exit === 0, last: { exit, out: out.trim().slice(-600) } })
 
-/** Runs one guard's check from `cwd`; a check past CHECK_TIMEOUT_MS counts as not upheld. */
+/** Runs one guard's check from `cwd` within its configured budget; a timeout stays unmet. */
 export const runCheck = async (run: Runner, g: Guard, cwd?: string): Promise<Guard> => {
-  const r = await run([...await shellArgv(run), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-  return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
+  const timeout = checkTimeout(g.timeout_ms)
+  if (typeof timeout === "string") return { ...g, met: false, last: { error: timeout } }
+  const r = await run([...await shellArgv(run), "-c", g.check!], { cwd, timeoutMs: timeout })
+  const result = checked(g, r.timedOut ? null : r.code, r.stdout + r.stderr)
+  return r.timedOut ? { ...result, last: { ...result.last, timedOut: true, timeout_ms: timeout } } : result
 }
+
+/** Timeouts remain unmet but do not launch another process until an explicit guard_check. */
+export const runAutoChecks = (run: Runner, guards: Guard[], cwd?: string): Promise<Guard[]> =>
+  Promise.all(guards.filter((g) => g.check).map((g) => g.last?.timedOut ? { ...g, met: false } : runCheck(run, g, cwd)))
 
 /**
  * One outcome per check command, run from `cwd`. The guard objects are throwaway: a note's checks
@@ -125,13 +112,20 @@ export const pickChecks = (s: Plan, guard_id: unknown, tier?: unknown): Guard[] 
     : "no guard has a check; judged guards are decided at the stop"
 }
 
-export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n")
+export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : g.last?.timedOut ? `${ran(g)}${tail(g)}` : `failing (${ran(g)})${tail(g)}`}`).join("\n")
 
 /** guard_check over every host: the picked guards' checks run through `run`, returning the decision or the refusal. */
-export async function runPicked(s: Plan, guard_id: unknown, tier: unknown, run: Runner, cwd?: string): Promise<{ decided: Guard[]; report: string } | string> {
+export async function runPicked(s: Plan, guard_id: unknown, tier: unknown, run: Runner, cwd?: string, timeout_ms?: unknown): Promise<{ decided: Guard[]; report: string } | string> {
   const pick = pickChecks(s, guard_id, tier)
   if (typeof pick === "string") return pick
-  const decided = await Promise.all(pick.map((g) => runCheck(run, g, cwd)))
+  const timeout = checkTimeout(timeout_ms)
+  if (typeof timeout === "string") return timeout
+  const selected = pick.map((g) => timeout_ms === undefined ? g : { ...g, timeout_ms: timeout })
+  for (const g of selected) {
+    const valid = checkTimeout(g.timeout_ms)
+    if (typeof valid === "string") return `${g.id}: ${valid}; set timeout_ms on guard_check to correct it`
+  }
+  const decided = await Promise.all(selected.map((g) => runCheck(run, g, cwd)))
   return { decided, report: checkReport(decided) }
 }
 
@@ -143,7 +137,7 @@ export const reviewLine = (v: Verify): string => {
   if (!v.dirty) return "Review: no file changes since the last passed stop."
   const lines = Math.max(v.lines || 0, v.unreviewed || 0)
   const left = due(v)
-  if (left.length) return `Review: ${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; due once tasks and guards are clear: ${left.join(", then ")}.`
+  if (left.length) return `Review: ${v.unknown?.review || v.unknown?.simplify ? "unmeasured changes; " : ""}${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; due once tasks and guards are clear: ${left.join(", then ")}.`
   if (v.review || v.simplify) return "Review: review pass done."
   if (lines < SMALL_CHANGE_LINES) return `Review: ${lines} changed line(s) (small); no review pass needed.`
   return `Review: ${lines} changed line(s) since the last pass; none due yet.`
@@ -153,22 +147,40 @@ export const reviewLine = (v: Verify): string => {
 export const detail = (s: Plan, v: Verify): string =>
   [
     ...s.tasks.map((t) => `#${t.id} ${taskState(t)}: ${t.title}`),
-    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}`),
+    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}${g.last?.error ? `\n    not evaluated: ${g.last.error}` : ""}${g.last?.timedOut ? `\n    ${ran(g)}` : ""}${g.files || g.timeout_ms !== undefined || g.last ? `\n    evidence: ${JSON.stringify({ files: g.files, timeout_ms: g.timeout_ms, last: g.last })}` : ""}`),
     s.tasks.length || s.guards.length ? `${overall(s)}% overall.` : "No tasks, no guards.",
     reviewLine(v),
   ].join("\n")
 
-/** The plan in one line, for the reminder. */
-const summary = (s: Plan): string =>
-  [
-    s.tasks.length
-      ? `${s.tasks.length} task(s), ${overall(s)}% overall: ` +
-        s.tasks.map((t) => `#${t.id} "${t.title}" ${taskState(t)}`).join("; ")
-      : "",
-    s.guards.length ? `${s.guards.length} guard(s): ` + s.guards.map((g) => `${g.id} [${guardMark(g)}]${g.check ? ` (\`${g.check}\`)` : ""}`).join("; ") : "",
-  ]
-    .filter(Boolean)
-    .join(". ")
+/** Exact detail pages. The content revision prevents joining pages from different plans. */
+export function planPage(s: Plan, v: Verify, args: Record<string, unknown> = {}, maxChars = 7800) {
+  const text = detail(s, v)
+  const id = hash(text)
+  if (args.id !== undefined && args.id !== id) throw new Error("plan changed or id is invalid; restart plan_show at offset 0 without id")
+  if (typeof args.offset === "number" && args.offset > 0 && args.id === undefined) throw new Error("pass the first page's id when continuing plan_show")
+  return originalPage(text, id, args.offset === undefined ? 0 : args.offset as number, args.limit === undefined ? 6000 : args.limit as number, maxChars)
+}
+
+/** Only previews are abbreviated; identifiers and shell commands are never shortened. */
+const preview = (text: string) => {
+  const line = text.replace(/\s+/g, " ")
+  return line.length > 64 ? line.slice(0, 64) + "…" : line
+}
+const visibleId = (id: string) => id.length <= 64 ? id : "(long id; see plan_show)"
+
+/** Fixed-size previews and complete counts, regardless of completed history size. */
+const summary = (s: Plan): string => {
+  const open = openTasks(s)
+  const current = [...open.filter((t) => t.status === "active"), ...open.filter((t) => t.status !== "active")].slice(0, 3)
+  const pending = s.guards.filter((g) => !g.met)
+  const failing = pending.filter((g) => guardMark(g) === "failing")
+  const guards = [...failing, ...pending.filter((g) => guardMark(g) !== "failing")].slice(0, 3)
+  return [
+    s.tasks.length ? `${s.tasks.length} task(s), ${overall(s)}% overall; ${s.tasks.length - open.length} done, ${open.length} open: ` + current.map((t) => `#${t.id} "${preview(t.title)}" ${taskState(t)}`).join("; ") : "",
+    s.guards.length ? `${s.guards.length} guard(s): ` + guards.map((g) => `${visibleId(g.id)} [${g.last?.error ? "not evaluated" : guardMark(g)}]`).join("; ") + `; ${s.guards.length - pending.length} upheld, ${pending.length} open, ${failing.length} failing` : "",
+    "Full details and completed history: plan_show (paged)",
+  ].filter(Boolean).join(". ")
+}
 
 /** The mean over all tasks, a done task counting 100. */
 export const overall = (s: Plan): number =>
@@ -214,7 +226,7 @@ type StopVerdict = { kind: "pass" } | { kind: "block"; reason: string } | { kind
  * clear, so it reviews finished work. A refusal with nothing changed counts toward MAX_STALLS, every
  * refusal toward MAX_ROUNDS; either cap lets the stop through, so a stuck run never loops.
  */
-export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook): { verdict: StopVerdict; next: StopBook } {
+export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook, contract = CONTRACT): { verdict: StopVerdict; next: StopBook } {
   const open = openTasks(s)
   const unmet = decided.filter((g) => !g.met)
   const left = due(v)
@@ -222,16 +234,18 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
   if (!open.length && !unmet.length && !verify) return { verdict: { kind: "pass" }, next: { ...FRESH, nokeyTold: book.nokeyTold } }
   const lines = [
     ...open.map((t) => `- task #${t.id} "${t.title}" (${t.progress}%)`),
-    ...unmet.map((g) => `- guard ${g.id} (${g.check ? `check \`${g.check}\` ${ran(g)}` : `judged p=${(g.last?.p ?? 0).toFixed(2)}`}): ${g.question}${tail(g)}`),
+    ...unmet.map((g) => `- guard ${g.id} (${g.last?.error ? `not evaluated: ${g.last.error}` : g.check ? `check \`${g.check}\` ${ran(g)}` : `judged p=${(g.last?.p ?? 0).toFixed(2)}`}): ${g.question}${tail(g)}`),
     ...(verify ? [`- files changed: ${left.map((d) => `run ${d}`).join(", then ")} on the change (Skill tool), fix what they find`] : []),
   ]
   const sig = JSON.stringify([open.map((t) => [t.id, t.progress]), unmet.map((g) => [g.id, g.last?.exit, Math.round((g.last?.p ?? 0) * 10)]), verify && left])
   const stalls = sig === book.sig ? book.stalls + 1 : 0
   const next = { ...book, sig, stalls, rounds: book.rounds + 1 }
-  const head = `overwatch: not done — ${lines.length} item(s) open:\n${lines.join("\n")}`
+  const full = lines.join("\n")
+  const feedback = full.length <= 2000 ? full : `- ${summary({ ...s, guards: decided })}${verify ? `\n- files changed: ${left.join(", then ")}` : ""}`
+  const head = `overwatch: not done — ${lines.length} item(s) open:\n${feedback}`
   if (stalls >= MAX_STALLS || next.rounds > MAX_ROUNDS)
     return { verdict: { kind: "stalled", reason: `${head}\n${stalls >= MAX_STALLS ? `unchanged over ${MAX_STALLS} refused stops` : `${MAX_ROUNDS} refused stops this prompt`} — letting the stop through for the user to decide.` }, next }
-  return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the plan tools (task_progress, task_complete, guard_check), then stop again. ${CONTRACT}` }, next }
+  return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the plan tools (task_progress, task_complete, guard_check), then stop again. ${contract}` }, next }
 }
 
 /**
@@ -315,16 +329,17 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
     run: (s, e) => withTask(s, e, (t, tasks) => ({ state: { ...s, tasks: tasks.filter((x) => x !== t) }, text: `Removed #${t.id} "${t.title}"` })),
   },
   guard_add: {
-    description: "Add a guard: one yes/no question about the finished work that must hold before the session may stop. Add one per deliverable. Give a check whenever a command can decide it: it runs from the session's start directory at every stop (and on guard_check), exit 0 = upheld, so a regression reopens it. Without a check, a judge decides from the last turn and the listed files. Taste words (clean, nice, readable) are refused unless a check decides. Returns the guard's id.",
+    description: "Add a guard: one yes/no question about the finished work that must hold before the session may stop. Add one per deliverable. Give a check whenever a command can decide it: it runs from the session's start directory after tasks finish (and on guard_check), exit 0 = upheld. Timeouts pause automatic retries; explicit guard_check retries. Without a check, a judge decides from the last turn and the listed files. Taste words (clean, nice, readable) are refused unless a check decides. Returns the guard's id.",
     properties: {
       question: { type: "string", description: "One yes/no question about the finished work, at least 15 characters, e.g. \"Do the parser tests pass?\"." },
       check: { type: "string", description: "Shell command that decides it, exit 0 = upheld, e.g. \"bun test hooks/\". Leave out only when no command can decide it." },
       files: { type: "array", items: { type: "string" }, description: "Files (relative to the project) whose current content the judge reads; for guards without a check." },
+      timeout_ms: { type: "integer", minimum: 1, maximum: MAX_CHECK_TIMEOUT_MS, description: "Shell check budget in milliseconds; default 60000, maximum 600000." },
       tier: { type: "string", enum: [...CHECK_TIERS], description: "How heavy the check is, so guard_check can run one tier at a time." },
     },
     required: ["question"],
     run: (s, e) => {
-      const g = makeGuard(s.guards, e.question ?? "", e.check, e.files, e.tier)
+      const g = makeGuard(s.guards, e.question ?? "", e.check, e.files, e.tier, e.timeout_ms)
       if (typeof g === "string") return refuse(s, g)
       return { state: { ...s, guards: [...s.guards, g] }, text: `Guard ${g.id}${g.check ? ` (check: ${g.check})` : " (judged)"}: ${g.question} (${s.guards.length + 1} guards)` }
     },
@@ -340,14 +355,20 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
     },
   },
   guard_check: {
-    description: "Run the guards' shell checks now and record the outcome, instead of waiting for the stop. Use after a fix to confirm a guard holds before stopping. Only guards with a check run here; judged guards are decided at the stop. Returns each guard upheld or failing with its exit code and output tail.",
+    description: "Run the guards' shell checks now and record the outcome, instead of waiting for the stop. Use after a fix to confirm a guard holds before stopping. Only guards with a check run here; judged guards are decided at the stop. Returns each guard upheld, failing, or timed out with its output tail; timeout_ms updates the selected guards' budgets.",
     properties: {
       guard_id: { type: "string", description: "Run only this guard's check; leave out to run every guard that has one." },
+      timeout_ms: { type: "integer", minimum: 1, maximum: MAX_CHECK_TIMEOUT_MS, description: "Update the selected guards' timeout and retry, including previously timed-out checks. Default remains their existing budget." },
       tier: { type: "string", enum: [...CHECK_TIERS], description: "Run only checks of this tier." },
     },
   },
   plan_show: {
-    description: "Show the whole plan: every task with its number, progress and status; every guard with its id, question, check and last outcome; and whether /code-review and /simplify are due on the changed files. Read-only.",
+    description: "Read the complete plan and completed history as exact text pages, including all guard fields and review status. Returns {id,offset,text,next_offset,total_chars}. Concatenate text unchanged; while next_offset is not null, pass it as offset with the same id. If the plan changes, restart without id at offset 0. Read-only.",
+    properties: {
+      id: { type: "string", description: "The first page's content revision; required for continuation pages." },
+      offset: { type: "integer", minimum: 0, description: "UTF-16 character offset from next_offset; defaults to 0." },
+      limit: { type: "integer", minimum: 1, description: "Maximum characters requested; defaults to 6000 and is bounded by the serialized page budget." },
+    },
   },
   plan_clear: {
     description: "Empty the plan: every task and every guard. Only when the user abandons the work or asks for a fresh start; finished work is completed, not cleared.",

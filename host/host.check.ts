@@ -6,14 +6,106 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fromNode } from "../bin/node-io.ts"
-import { callTool, onEvent } from "./core.ts"
-import { hook } from "./hooks.ts"
+process.env.OVERWATCH_TOOL_GROUPS = "all"
+const { callTool, onEvent } = await import("./core.ts")
+const { hook } = await import("./hooks.ts")
+import { memIo } from "../hooks/io.ts"
+import { CLEAN, detail } from "../hooks/plan.ts"
+
+test("portable plan_show forwards exact pages and rejects invalid or stale continuation", async () => {
+  const io = memIo({}, "/plan-pages")
+  process.env.OVERWATCH_PROJECT = io.cwd
+  const title = 'literal mcp__overwatch__prefix 😀 \\"\n'.repeat(300)
+  await callTool(io, "task_add", { titles: [title] })
+  let page = JSON.parse((await callTool(io, "plan_show", { limit: 1000 })).text)
+  const id = page.id
+  let text = ""
+  while (true) {
+    expect(JSON.stringify(page).length).toBeLessThan(8000)
+    text += page.text
+    if (page.next_offset === null) break
+    page = JSON.parse((await callTool(io, "plan_show", { id, offset: page.next_offset, limit: 1000 })).text)
+  }
+  expect(text).toBe(detail({ tasks: [{ id: 1, title: title.trim(), progress: 0, status: "todo" }], nextId: 2, guards: [] }, CLEAN))
+  expect((await callTool(io, "plan_show", { offset: -1 })).error).toBe(true)
+  expect((await callTool(io, "plan_show", { offset: 1 })).text).toContain("first page's id")
+  expect((await callTool(io, "plan_show", { limit: "5" })).error).toBe(true)
+  await callTool(io, "task_add", { titles: ["new revision"] })
+  expect((await callTool(io, "plan_show", { id, offset: 1 })).text).toContain("plan changed")
+})
 
 const sandbox = () => {
   const dir = mkdtempSync(join(tmpdir(), "ow-"))
   process.env.OVERWATCH_PROJECT = dir
   return { dir, io: fromNode(dir) }
 }
+
+test("mistakes reader: portable and CLI pages preserve the original history", async () => {
+  const { dir, io } = sandbox()
+  const raw = '# Full history 😀\n- quoted "\\ lesson\n'.repeat(300)
+  await io.write(join(dir, ".overwatch", "mistakes.md"), raw)
+  let page = JSON.parse((await callTool(io, "mistakes", { limit: 1200 })).text), joined = ""
+  while (true) {
+    joined += page.text
+    if (page.next_offset === null) break
+    page = JSON.parse((await callTool(io, "mistakes", { id: page.id, offset: page.next_offset, limit: 1200 })).text)
+  }
+  expect(joined).toBe(raw)
+  const cli = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/cli.ts"), "mistakes", "0", "1000"], { cwd: dir })
+  expect(cli.exitCode).toBe(0)
+  expect(JSON.parse(cli.stdout.toString()).text).toBe(raw.slice(0, 1000))
+  expect((await callTool(io, "mistakes", { limit: 0 })).error).toBe(true)
+})
+
+test("portable timeout remains unmet, pauses automatic retry, and explicit override persists", async () => {
+  let calls = 0, timedOut = true
+  const budgets: number[] = []
+  const io = memIo({}, "/timeout-check", async (argv, init) => {
+    if (argv.at(-1) !== "timeout-probe") return { code: 0, stdout: "", stderr: "" }
+    calls++; budgets.push(init!.timeoutMs!)
+    return { code: timedOut ? 124 : 0, stdout: "", stderr: "", timedOut }
+  })
+  process.env.OVERWATCH_PROJECT = io.cwd
+  await callTool(io, "guard_add", { question: "Does the timeout probe pass?", check: "timeout-probe" })
+  expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toContain("timed out")
+  expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toContain("timed out")
+  expect(calls).toBe(1)
+  expect((await callTool(io, "guard_check", { timeout_ms: 600001 })).error).toBe(true)
+  expect(calls).toBe(1)
+  timedOut = false
+  expect((await callTool(io, "guard_check", { timeout_ms: 180000 })).text).toContain("upheld")
+  expect(await onEvent(io, { kind: "stop", cwd: io.cwd })).toEqual({})
+  expect(budgets).toEqual([60000, 180000, 180000])
+})
+
+test("automatic checks: open work waits, the ninth stop spends nothing, explicit checks stay fresh", async () => {
+  let checks = 0
+  let exit = 1
+  const io = memIo({}, "/guard-evaluation", async (argv) => {
+    const check = argv.at(-1) === "guard-probe"
+    if (check) checks++
+    return { code: check ? exit : 0, stdout: "", stderr: "" }
+  })
+  process.env.OVERWATCH_PROJECT = io.cwd
+  await callTool(io, "task_add", { titles: ["Finish work"] })
+  await callTool(io, "guard_add", { question: "Does the guard probe pass?", check: "guard-probe" })
+  await onEvent(io, { kind: "stop", cwd: io.cwd })
+  expect(checks).toBe(0)
+  await callTool(io, "guard_check")
+  expect(checks).toBe(1)
+  await callTool(io, "task_complete", { task_id: 1 })
+  await onEvent(io, { kind: "prompt", cwd: io.cwd, person: true })
+  for (exit = 1; exit <= 8; exit++) expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toBeTruthy()
+  expect(checks).toBe(9)
+  expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).notify).toContain("unverified")
+  expect(checks).toBe(9)
+  exit = 0
+  await callTool(io, "guard_check")
+  expect(checks).toBe(10)
+  await onEvent(io, { kind: "prompt", cwd: io.cwd, person: true })
+  expect(await onEvent(io, { kind: "stop", cwd: io.cwd })).toEqual({})
+  expect(checks).toBe(11)
+})
 
 test("plan: edits wait for tasks and guards; the stop holds until the check passes", async () => {
   const { dir, io } = sandbox()
@@ -25,6 +117,10 @@ test("plan: edits wait for tasks and guards; the stop holds until the check pass
   const held = await onEvent(io, { kind: "stop", cwd: dir })
   expect(held.block).toContain('task #1')
   expect(held.block).not.toContain("mcp__overwatch__")
+  expect(held.block).toContain("task_progress, task_complete, guard_check")
+  expect(held.block).toContain("only the user drops a guard")
+  for (const instruction of ["/code-review", "/simplify", "Skill", "AskUserQuestion"])
+    expect(held.block).not.toContain(instruction)
   await callTool(io, "task_complete", { task_id: 1 })
   expect((await onEvent(io, { kind: "stop", cwd: dir })).block).toContain("test -f done")
   await io.run(["touch", "done"], { cwd: dir })

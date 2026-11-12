@@ -58,6 +58,7 @@ export type CallAction = 'keep' | 'drop_result' | 'drop_call';
 
 export interface CallDecision extends CallAnswer {
   id: string;
+  tool_use_id: string;
   tool: string;
   action: CallAction;
   reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped';
@@ -103,6 +104,10 @@ export interface CompactOptions {
   maxStateTokens?: number;
   /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
   maxRequestTokens?: number;
+  /** Estimated input ceiling across every request in one compaction. Default 36000; 0 disables grading. */
+  maxTotalTokens?: number;
+  /** Maximum requests in one compaction. Default 2; 0 disables grading. */
+  maxRequests?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
 }
@@ -113,6 +118,8 @@ export interface ResolvedCompactOptions {
   preserveRecentMessages: number;
   maxStateTokens: number;
   maxRequestTokens: number;
+  maxTotalTokens: number;
+  maxRequests: number;
   truncateHeadChars: number;
 }
 
@@ -192,6 +199,8 @@ export interface JevResponse {
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
   [key: string]: unknown;
 }

@@ -8,7 +8,7 @@
  * plan; key by session once every host passes a session id to its MCP servers.
  */
 import type { Plan, StopBook } from "../types/index.d.ts"
-import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runCheck, runPicked, stopVerdict, withDecided } from "../hooks/plan.ts"
+import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, planPage, gateReason, openLine, reminder, runAutoChecks, runPicked, stopBudgetReason, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
@@ -18,6 +18,7 @@ import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
 import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
 import { VAULT_TOOLS } from "../hooks/vault.ts"
 import { CHANGELOG_TOOLS } from "../hooks/changelog.ts"
+import { selectTools, TOOL_GROUPS_SPEC } from "../hooks/tool-groups.ts"
 const ALL_PLAN_TOOLS = { ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS }
 
 export { schemaOf }
@@ -39,9 +40,12 @@ const EDIT_TOOLS = new Set([
 const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
 
 /** Every overwatch tool a host can offer: the commands and the plan, by short name. */
-export const TOOLS: Record<string, ToolSpec> = Object.fromEntries(
+const ALL_TOOLS: Record<string, ToolSpec> = Object.fromEntries(
   [...Object.entries(COMMAND_TOOLS), ...Object.entries(ALL_PLAN_TOOLS)].map(([n, t]) => [n, { description: t.description, properties: t.properties, required: t.required }]),
 )
+ALL_TOOLS.tool_groups = TOOL_GROUPS_SPEC
+const selection = selectTools(ALL_TOOLS, process.env.OVERWATCH_TOOL_GROUPS)
+export const TOOLS = selection.specs
 
 /** Text written for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
 const plain = (s: string) => s.replaceAll(TOOL_PREFIX, "")
@@ -69,12 +73,18 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
   const root = await projectRoot(io)
   const at: Io = { ...io, cwd: root }
   try {
+    if (name === "tool_groups") return { text: selection.report() }
+    const disabled = selection.refusal(name)
+    if (disabled) return { text: disabled, error: true }
     const cmd = COMMAND_TOOLS[name]
-    if (cmd) return { text: await cmd.run(at, args) }
-    if (name === "plan_show") return withState(io, root, (s) => [s, { text: plain(detail(s.plan, CLEAN)) }])
+    if (cmd) {
+      const result = await cmd.run(at, args)
+      return { text: typeof result === "string" ? result : JSON.stringify(result) }
+    }
+    if (name === "plan_show") return await withState(io, root, (s) => [s, { text: JSON.stringify(planPage(s.plan, CLEAN, args)) }])
     if (name === "guard_check") {
       return withState(io, root, async (s) => {
-        const out = await runPicked(s.plan, args.guard_id, args.tier, io.run, root)
+        const out = await runPicked(s.plan, args.guard_id, args.tier, io.run, root, args.timeout_ms)
         if (typeof out === "string") return [s, { text: out, error: true }]
         return [{ ...s, plan: withDecided(s.plan, out.decided) }, { text: out.report }]
       })
@@ -106,8 +116,8 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   switch (e.kind) {
     case "start": {
       // Once per session: the gardener's ask, earlier sessions' lessons and, until git ignores the state folder, the line asking for it.
-      const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), fullNotice(at).then(plain, () => "")])
-      return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
+      const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), selection.enabled.includes("maintenance") ? fullNotice(at).then(plain, () => "") : ""])
+      return withState(io, root, (s) => [{ ...s, told: false }, { context: [selection.error, hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
     }
     case "prompt":
       return withState(io, root, (s) => [
@@ -123,10 +133,13 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
     }
     case "stop": {
       const out = await withState(io, root, async (s): Promise<[State, Outcome]> => {
+        const exhausted = stopBudgetReason(s.stops)
+        if (exhausted) return [s, { notify: exhausted }]
         // Judged guards need the turn's transcript, which each host shapes differently: they fail open here (ceiling: read transcript_path where a host gives one).
-        const decided = await Promise.all(openGuards(s.plan.guards).filter((g) => g.check).map((g) => runCheck(io.run, g, root)))
+        const open = s.plan.tasks.some((t) => t.status !== "done") ? [] : openGuards(s.plan.guards)
+        const decided = await runAutoChecks(io.run, open, root)
         const plan = withDecided(s.plan, decided)
-        const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops)
+        const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops, HOST_CONTRACT)
         const out: Outcome = verdict.kind === "pass" ? {} : verdict.kind === "block" ? { block: plain(verdict.reason) } : { notify: plain(verdict.reason) }
         return [{ ...s, plan, stops: next }, out]
       })

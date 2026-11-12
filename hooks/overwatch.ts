@@ -9,6 +9,7 @@ import { PLAN_TOOLS } from "./plan.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
 import { planReminder, register as plan, startPlan } from "./plan-hooks.ts"
+import { selectTools, TOOL_GROUPS_SPEC } from "./tool-groups.ts"
 
 // The plugin's one hooks module. Each part (followline, compaction, commands, plan)
 // registers its own hooks, all matched or on an event of its own. The engine takes one
@@ -45,11 +46,18 @@ export const register: Register = async (on, options) => {
   hinted = false
   diskAt = 0
   diskTold = false
-  const full = typeof options.diskFullPercent === "number" ? options.diskFullPercent : FULL_PERCENT
   const compacting = compactionEnabled(options)
-  const cat = catalog({ ...COMMAND_TOOLS, ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS, ...(compacting ? COMPACTION_TOOLS : {}) })
+  const all = { ...COMMAND_TOOLS, ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS, ...(compacting ? COMPACTION_TOOLS : {}), tool_groups: TOOL_GROUPS_SPEC }
+  const selection = selectTools(all, options.toolGroups)
+  const full = selection.enabled.includes("maintenance") ? (typeof options.diskFullPercent === "number" ? options.diskFullPercent : FULL_PERCENT) : 0
+  const cat = catalog(selection.specs)
+  let configNotice = selection.error
   // First: a stale call is refused before any part sees it.
-  for (const name of Object.keys(cat.specs)) on("tool.call", { tool: TOOL_PREFIX + name }, ($, e, next) => guardCall(cat, $, e, next))
+  for (const name of Object.keys(all)) on("tool.call", { tool: TOOL_PREFIX + name }, ($, e, next) => {
+    const deny = selection.refusal(name)
+    return deny ? { deny } : guardCall(cat, $, e, next)
+  })
+  on("tool.call", { tool: TOOL_PREFIX + "tool_groups" }, async () => ({ result: selection.report() }))
   // followline before the other parts, so its $.followline.put exists before a part publishes a slot.
   await followline(on, options)
 
@@ -70,7 +78,8 @@ export const register: Register = async (on, options) => {
 
   // Beside every prompt: the one-off notices, then the plan.
   on("prompt.submit", async ($, e: any, next) => {
-    const parts = await Promise.all([takeIgnoreHint($), takeDiskNotice($, full), takeNotice($), takeEvaluation($), planReminder($, e)])
+    const parts = await Promise.all([takeIgnoreHint($), takeDiskNotice($, full), takeNotice($), takeEvaluation($), planReminder($, e), configNotice])
+    configNotice = undefined
     return next({ ...e, context: [...(e.context ?? []), ...parts.filter(Boolean)] })
   })
 

@@ -1,6 +1,6 @@
 import { test, expect } from "claude-code/testing"
 import { session } from "./test-session.ts"
-import { memIo, type Io } from "./io.ts"
+import { memIo, today, type Io } from "./io.ts"
 import { asBlock, discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, surface, tally } from "./surface.ts"
 import { EVALUATE_AFTER_CALLS } from "./commands.ts"
 
@@ -17,7 +17,7 @@ function io(files: Record<string, string> = {}, onPath = ["ls"]): Io & { files: 
     run: async (argv) => ({ code: 0, stdout: argv.slice(4).filter((b) => onPath.includes(b)).join("\n"), stderr: "" }),
   }
 }
-const ledger = (counts: Record<string, number>, triggers: Record<string, string> = {}) => ({ counts, verdicts: {}, triggers, drawn: null })
+const ledger = (counts: Record<string, number>, triggers: Record<string, string> = {}) => ({ counts, verdicts: Object.fromEntries(Object.keys(triggers).map((n) => [n, { verdict: "useful" as const, reason: "observed", at: today() }])), triggers, drawn: null })
 
 test("scan: parameterised just recipes are seen, and verify supersedes raw cargo", async () => {
   const m = io({ "/repo/Cargo.toml": "[package]\n", "/repo/justfile": 'target := "x"\nbuild:\n\tcargo build\ntest *args:\n\tcargo test\nverify rev="HEAD":\n\techo\n' })
@@ -81,6 +81,60 @@ test("ledger: tally adds a turn's fires; rate refuses a useful verdict without a
   expect(draw(await load(m), ["WebFetch"])).toBeNull()
 })
 
+test("learned triggers: only recent useful verdicts qualify; other verdicts suspend without deleting history", async () => {
+  const m = io()
+  const day = (age: number) => today(new Date(Date.parse(today()) - age * 86400000))
+  const entries = ["fresh", "boundary", "future", "invalid", "missing", "situational", "dead"]
+  const st: any = ledger({}, Object.fromEntries(entries.map((n) => [n, `${n} trigger`])))
+  for (const n of entries) st.verdicts[n] = { verdict: "useful", reason: "observed", at: day(29) }
+  st.verdicts.boundary.at = day(30)
+  st.verdicts.future.at = day(-1)
+  st.verdicts.invalid.at = "not a date"
+  delete st.verdicts.missing
+  st.verdicts.situational.verdict = "situational"
+  st.verdicts.dead.verdict = "dead"
+  await save(m, st)
+  const block = asBlock((await surface(m, entries)).sections)
+  expect(block).toContain("fresh trigger")
+  for (const n of entries.slice(1)) expect(block).not.toContain(`${n} trigger`)
+  await rate(m, "fresh", "situational", "no current need")
+  expect(asBlock((await surface(m, entries)).sections)).not.toContain("fresh trigger")
+  expect((await load(m)).triggers.fresh).toBe("fresh trigger")
+  await rate(m, "fresh", "dead", "no remaining need")
+  expect((await load(m)).triggers.fresh).toBe("fresh trigger")
+  await rate(m, "fresh", "useful", "needed again", "renewed trigger")
+  expect(asBlock((await surface(m, entries)).sections)).toContain("renewed trigger")
+})
+
+test("learned triggers: the whole section is bounded, recent first, and instructions are never sliced", async () => {
+  const m = io()
+  const names = Array.from({ length: 100 }, (_, i) => `tool${String(i).padStart(3, "0")}`)
+  const st: any = ledger({}, Object.fromEntries(names.map((n) => [n, `${n} ${"x".repeat(300)}`])))
+  for (const n of names) st.verdicts[n] = { verdict: "useful", reason: "observed", at: today() }
+  st.triggers.tool000 = "oversize " + "z".repeat(10000)
+  await save(m, st)
+  const sections = (await surface(m, names)).sections
+  const end = sections.findIndex((s, i) => i > 0 && s.startsWith("## "))
+  const block = sections.slice(0, end < 0 ? undefined : end).join("\n")
+  expect(block.length).toBeLessThanOrEqual(2048)
+  expect(block.split("\n").filter((s) => s.startsWith("- ")).length).toBeLessThanOrEqual(8)
+  expect(block).not.toContain("oversize")
+  expect(block).toContain(st.triggers.tool001)
+  expect(block).toContain(".overwatch/surface.json")
+  expect((await load(m)).triggers.tool000).toBe(st.triggers.tool000)
+  for (const n of names) {
+    st.triggers[n] = `${n} complete instruction`
+    st.verdicts[n].at = today(new Date(Date.parse(today()) - 86400000))
+  }
+  st.verdicts.tool099.at = today()
+  await save(m, st)
+  const short = (await surface(m, names)).sections
+  expect(short.filter((s) => s.startsWith("- "))).toHaveLength(8)
+  expect(short[1]).toBe("- tool099 complete instruction")
+  expect(short[2]).toBe("- tool000 complete instruction")
+  expect(short.join("\n").length).toBeLessThanOrEqual(2048)
+})
+
 test("surface: the block without the question, the drawn tool returned with it; evaluation() names it", async () => {
   const m = io()
   await save(m, ledger({ Bash: 9, Read: 3 }))
@@ -105,8 +159,14 @@ session("session: rating held back while the session is unused, asked once after
   on("tool.call", async () => ({ result: "ok" }) as any)
   on("turn.complete", async () => ({ text: "" }) as any)
   const compose = async () => JSON.stringify((await ($.prompt.compose as any)({ model: "m", promptModel: "m", surfaces: [], tools: ["Bash", "Read"], outputStyle: null, traits: [] })).sections)
-  expect(await compose()).toContain("Used most in this project")
+  const first = await compose()
+  expect(first).toContain("Used most in this project")
   expect(await compose()).not.toContain("Evaluation due")
+  const changed = JSON.parse(files["/repo/.overwatch/surface.json"]!)
+  changed.triggers = { Read: "new trigger waits for the next session" }
+  changed.verdicts = { Read: { verdict: "useful", reason: "observed", at: today() } }
+  files["/repo/.overwatch/surface.json"] = JSON.stringify(changed)
+  expect(await compose()).toBe(first)
   const submit = async () => JSON.stringify(await $.prompt.submit({ text: "hi" } as any))
   expect(await submit()).not.toContain("Evaluation due")
   // Real work: main-thread tool calls, folded in when the turn completes.

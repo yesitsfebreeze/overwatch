@@ -8,7 +8,7 @@ Long-form detail behind the [README](../README.md). Per-host install steps live 
 |---|---|
 | catch | Refused: an edit before the plan has tasks and guards, a stop with work open, a call that does not fit a tool's schema. Noticed: a turn's failed tool calls. |
 | record | One entry per catch in `.overwatch/incidents.json`: counts per day for 30 days, the newest 40 entries. `mistake` adds a lesson by hand. |
-| improve | A kind caught 3 times in 30 days puts its one-line lesson into every later session's prompt, beside the newest 5 mistakes and the learned tool triggers. It drops out as its days leave the window. |
+| improve | A kind caught 3 times in 30 days puts its one-line lesson into every later session's prompt, beside up to five recent distinct mistakes within the reminder budget and the learned tool triggers. It drops out as its days leave the window. |
 
 ## Parts
 
@@ -26,6 +26,8 @@ Long-form detail behind the [README](../README.md). Per-host install steps live 
 
 ## Tools
 
+The default catalog contains core planning, checks and feedback, including `mistakes`. `tool_groups` lists optional capabilities and configuration instructions. Enable `vault`, `prd` (includes vault), `maintenance`, `background` or `changelog` through native `toolGroups` or portable `OVERWATCH_TOOL_GROUPS`, then restart. `all` restores the complete catalog. The tables below cover every group. Native compaction retrieval remains available whenever compaction is enabled. Invalid configuration reports an error and keeps core enforcement active.
+
 Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and opencode, and the short `<name>` in every other host. A refusal says what to do next.
 
 ### Plan
@@ -38,12 +40,14 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 | `task_complete` | `task_id` | finishes a task |
 | `task_replace` | `task_id`, `title` | retires the old task for a new one |
 | `task_remove` | `task_id` | drops a task |
-| `guard_add` | `question`, `check?`, `files?`, `tier?` | adds a guard; tier is `fast`, `unit` or `milestone` |
-| `guard_check` | `guard_id?`, `tier?` | runs the checks now, all or one tier, records the outcome |
+| `guard_add` | `question`, `check?`, `files?`, `tier?`, `timeout_ms?` | adds a guard; tier is `fast`, `unit` or `milestone` |
+| `guard_check` | `guard_id?`, `tier?`, `timeout_ms?` | runs the checks now, all or one tier, records the outcome |
 | `guard_drop` | `guard_id` | removes a guard, on the user's word only |
-| `plan_show` | | tasks, guards with last outcome, review state |
+| `plan_show` | `id?`, `offset?`, `limit?` | exact pages of all tasks, completed history, guards with evidence, and review state |
 | `plan_clear` | | empties the plan |
 | `changelog` | `what_changed?`, `version?`, `backfill?`, `file?`, `date?`, `lts?` | adds a bullet under the current version; `backfill` groups every commit by the version it saw; no arguments reports current, LTS and each version |
+
+Routine reminders show counts and up to three open task and guard previews; completed titles and check commands stay in `plan_show`. Its response is `{id, offset, text, next_offset, total_chars}`. Append `text` unchanged and request the next page with the returned `id` and `offset: next_offset` until `next_offset` is `null`. Offsets count UTF-16 code units. The default limit is 6000 characters; escaped JSON pages remain below 7800 characters. A changed content revision refuses continuation: restart at offset 0 without `id`. Pages may split a command, so assemble the complete text before using it.
 
 ### Spec vault
 
@@ -77,11 +81,12 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 
 | tool | takes | does |
 |---|---|---|
-| `decompress` | `id` | reads back a cut or folded message |
+| `decompress` | `id`, optional `offset`, `limit` | reads an exact bounded page; concatenate `text` and follow `next_offset` until null |
 | `search_context` | `query` | searches every cut or folded message this session |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
 | `checks` | `tier?` | frozen checks plus mistakes: run before saying "done" |
-| `mistake` | `text` | records a lesson for every later session here |
+| `mistake` | `text` | records a distinct lesson for bounded recent reminders |
+| `mistakes` | `offset?`, `limit?`, `id?` | exact pages of the full original mistake history |
 | `status` | | git state, checks, catch counts, memory hogs |
 | `report` | | tool usage, verdicts, triggers, newest catches |
 | `rate` | `name`, `verdict`, `reason`, `trigger?` | rates the tool the "Evaluation due" question named |
@@ -100,7 +105,7 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 ## Tasks and guards
 
 - **Plan first.** Every prompt reminds the model to add tasks and at least one guard: a yes/no question, decided by a shell `check` (exit 0 = upheld) or, without one, judged by Jev. The edit tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, git-fs `write`/`edit`) are refused until both exist.
-- **Stop.** On Claude Code, refused while a task is open, a guard is not upheld, or the review pass is due: 10+ changed lines without `/simplify`, 50+ without `/code-review` before it. A whole-file write or replace_all counts as 10+. Edits during the pass do not reopen it; new work does, sized by the lines changed since each skill last ran.
+- **Stop.** On Claude Code, refused while a task is open, a guard is not upheld, or the review pass is due: 10+ changed lines without `/simplify`, 50+ without `/code-review` before it. Counts use actual net file differences, including whole-file writes and replace_all. Failed calls without changes add nothing; unmeasurable changes conservatively require both passes. Edits during the pass do not reopen it; new work does, sized by the lines changed since each skill last ran.
 - **No loops.** Three refusals with nothing changed, or eight refused stops in one prompt (the ninth stop is let through). Background work or a cron pauses the check.
 - **Limits.** Writes through Bash or kern `fs` are not seen. `plan_clear`, `guard_drop` and `task_remove` are open to the model: "only the user drops a guard" is not enforced. Checks run from the session's start directory.
 
@@ -126,7 +131,7 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 
 ## Disk gardener
 
-- **Watch.** One `df` at most every 5 minutes. From `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space.
+- **Watch.** With maintenance enabled, one `df` at most every 5 minutes. From `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space.
 - **Proof.** `node_modules` needs its `package.json`, `target` its `CACHEDIR.TAG` or manifest, `.venv` its `pyvenv.cfg`; `dist`, `build`, `out`, `coverage` only where git ignores the folder and tracks nothing in it.
 - **Classes.** Leftover: an idle temp entry, or output of a project whose last commit is 30 days old. Rebuildable: proven output of a live project. In use: changed in the last 2 hours, or a process works there. Unverified: everything else. Only the first two are deleted.
 - **Deleting.** `disk_clean` refuses links and open files, then runs `rm -rf --`. Caches go only through their owner's command.
@@ -144,7 +149,8 @@ Plain files in `.overwatch/` in the working directory, beside `incidents.json`; 
 | `plan.json` | tasks and guards outside Claude Code |
 | `evidence/<unit>.json` | the last `unit_record` run: commit, guards, outputs |
 | `context/<session>/` | originals of cut and folded messages |
-| `status/<session>.json` | compaction's status, read by kern's turn deck |
+| `status/<session>.json` | compaction status, estimated context removed, and sidecar usage snapshot |
+| `usage/<session>.json` | shared Jev request counts and provider-reported usage, including guard-only sessions |
 
 Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `status`) and the shared Jev dataset `~/.jev/log/`.
 
@@ -153,8 +159,28 @@ Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `stat
 - `bun`: compaction and `bin/overwatch`.
 - `TYPESAFE_API_KEY`: judged guards need it in the shell; compaction also reads the settings `env` map. Without it only guards with a `check` hold the stop.
 - `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`: the hooks module.
+- `maxJudgeTokens`: maximum estimated tokens in one complete serialized guard judgment request, default 18,000. Oversized input is not sent; its guards remain unverified with instructions to narrow the evidence. Invalid nonpositive or nonfinite values use the default. File excerpts explicitly mark truncation.
+- Automatic guard evaluation waits until all tasks are complete and stops before evaluating after eight refused stops. `guard_check` always runs the selected shell checks explicitly. Valid judgments reuse one identical serialized request within a user turn; changed evidence or a new user prompt requires a fresh judgment. Shell checks remain fresh while automatic verification is allowed.
 - `slots`: followline gauges and their order, default `componion,plan,kern`.
 - Compaction: `toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, ….
+
+`liveResultMaxChars` bounds the complete serialized text output, including errors,
+many text blocks, and Overwatch reports; the minimum is 512 characters. Outer
+status, error flags and context are preserved. Exact file tools (Read, Edit,
+Write, MultiEdit, NotebookEdit) and native media/document/file blocks are exempt.
+Without a safe original id or a successful archive write, output stays unchanged.
+`decompress` returns `{id, offset, text, next_offset, total_chars}`. Pages include
+their JSON escaping and metadata in the bound. Offsets count JavaScript string
+characters (UTF-16 code units); stored JSON and whitespace are returned exactly.
+
+Scheduled folds consolidate older indexes into one `maxFrozenIndexChars` block
+(default 16,000 characters). The first prompt and existing user/assistant summary
+lines stay unchanged; recent tool heads use the remaining space. Full indexes
+(`index-fN`), cumulative paths (`paths-fN`), short messages and tool aliases remain
+available through `decompress`. Fold IDs are reserved on disk and survive reloads.
+If mandatory lines exceed the limit or archival fails, the context is retained
+and no grading request is sent. Arbitrary durable history is not silently dropped
+to force a bound.
 
 ## Layout
 
@@ -178,3 +204,46 @@ bin/overwatch hygiene --selftest
 bun test ./host/host.check.ts  # the core other agents run
 claude --plugin-dir . -p hi --debug-file ow.log; grep "did not load" ow.log
 ```
+
+### Guard timeouts
+
+Plan shell guards default to 60000 ms. Set `timeout_ms` on `guard_add`, or on `guard_check` to update all selected guards and retry. Values must be integers from 1 to 600000. A transport timeout stays unmet and pauses automatic retries; an explicit `guard_check` retries it. Ordinary failures and successful checks are still rerun at later stops to detect regressions. Natural exit code 124 is a failure, not proof of a transport timeout.
+
+Refresh installed command-hook adapters to get their 660-second outer Stop budget (Gemini: 660000 ms). This exceeds the maximum guard budget with startup overhead. Vault closeout checks (`unit_record`, `unit_verify` reruns, `prd_collect`) remain fresh explicit checks with the default 60000 ms; they do not inherit plan-guard overrides.
+
+### Learned trigger budget
+
+Only active tools and binaries on PATH with a valid useful verdict from the last 30 days enter the learned-trigger section. At exactly 30 days a verdict expires; missing, invalid, future-dated, situational and dead verdicts do not qualify. The section contains at most eight whole lines within 2,048 characters, including headings and omission notices, ordered by newest verdict then tool name. Oversized or multiline triggers and entries beyond the budget remain in `.overwatch/surface.json`, with an explicit retrieval hint. Ratings away from useful suspend their stored trigger without deleting it. The native session caches its surface block, so ratings affect the next session and do not rewrite the current prompt prefix.
+
+### Mistake history and checklist budgets
+
+Routine prompts and checklists show at most five recent distinct whole mistake records, within a 2,048-character serialized section. The full lessons block stays within 4,096 characters; checklists stay within 8,000 serialized characters (normally 7,800, or the smaller native output setting). Frozen commands are included whole or explicitly omitted with a `.overwatch/checks.json` retrieval instruction. An empty tier does not print other tiers.
+
+`mistake` normalizes new text to one line and does not append an exact whitespace-normalized duplicate, ignoring its generated date. Existing history is never deduplicated or rewritten by reading it. Legacy multiline records are omitted whole from routine reminders and remain exact in the paged reader. `mistakes` returns structured `{id, offset, text, next_offset, total_chars}` pages of the original markdown, with exact UTF-16 string offsets. Continue with the returned id and next_offset; a changed history requires restarting. Native pages fit the configured live-output cap before compaction, including 512-character caps. Portable tools and the CLI serialize at the boundary. Terminal usage: `overwatch mistakes [offset] [limit] [id]`.
+
+### Grading transport failures
+
+Each compaction grading request is sent once. A connection rejection, lost response, HTTP error, or invalid answer uses deterministic fallback heads; the next batch does not run. An ambiguous failure can still have incurred provider usage, so no automatic retry or billing assumption is made. Per-fold request and estimated input budgets still apply.
+
+### Jev usage accounting
+
+`status` reads the shared usage snapshots even with compaction disabled. Each actual
+HTTP invocation is counted once, with operation (`compaction` or `guard`), a session
+operation id, batch number, attempt number, outcome, and estimated serialized input.
+Reused guard judgments and local preflight rejection create no request record. Provider cache hits within an HTTP request are still recorded. Retries are zero.
+Successful compaction dataset rows retain `client: componion` and their existing
+state/questions/answers/model fields; guard and failure rows contain metadata only.
+Rows append to `~/.jev/log/YYYY-MM-DD.jsonl` and include the new accounting fields.
+
+Provider-returned `input_tokens`, `output_tokens`, `cache_read_input_tokens`, and
+`cache_creation_input_tokens` are recorded independently, including on HTTP errors
+and invalid answers. Only finite nonnegative numbers count. Missing fields are
+`null`, with snapshot coverage `{total, reported, unknown}` for each field; a known
+zero is distinct from unknown usage. Transport failure may have incurred provider
+usage despite having no returned counts. Logging failures never change a grade.
+Snapshots serialize concurrent updates, persist across reload, and are independent
+of compaction registration. Malformed report snapshots display unavailable.
+
+The legacy `saved`/`lastFold` values estimate context tokens removed; `savedKind`
+labels that meaning explicitly. They do not measure billed savings or offset Jev
+usage. No prices, net savings, or unreported main-agent usage are inferred.

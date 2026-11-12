@@ -8,6 +8,12 @@
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
+    "maxJudgeTokens": {
+      "type": "number",
+      "title": "Guard judge: maximum estimated input tokens",
+      "description": "Bounds the complete serialized guard judgment request. Oversized input remains unverified and blocks completion with instructions to narrow it. Invalid values use the default.",
+      "default": 18000
+    },
     "enabled": {
       "type": "boolean",
       "title": "Enabled",
@@ -29,7 +35,7 @@
     "liveResultMaxChars": {
       "type": "number",
       "title": "Live tool result max chars",
-      "description": "A fresh tool result (not Read/Edit/Write) is minified and cut to this many characters before the model reads it.",
+      "description": "Aggregate serialized text-result budget, including errors and reports (minimum 512). Exact file tools and native media are preserved. Shortening requires a stored original; decompress returns exact bounded pages.",
       "default": 8000
     },
     "keepThreshold": {
@@ -56,28 +62,46 @@
       "description": "Upper bound on one Jev request; a larger fold is graded in several requests.",
       "default": 18000
     },
+    "maxTotalTokens": {
+      "type": "number",
+      "title": "Fold: total grader input budget (tokens)",
+      "description": "Maximum estimated input across all requests in one fold. Over-budget folds use deterministic heads. 0 disables paid grading.",
+      "default": 36000
+    },
+    "maxRequests": {
+      "type": "number",
+      "title": "Fold: maximum grader requests",
+      "description": "Maximum requests per fold. Batches run sequentially; failed requests are not retried. 0 disables paid grading.",
+      "default": 2
+    },
     "keepRecentTokens": {
       "type": "number",
       "title": "Recent tokens kept whole",
       "description": "Newest tokens (chars/4) a fold leaves as they are; the cut moves back to a turn start.",
       "default": 6000
     },
+    "maxFrozenIndexChars": {
+      "type": "number",
+      "title": "Fold: maximum consolidated index characters",
+      "description": "One index keeps durable summary lines and recent tool heads. If mandatory lines cannot fit, folding is skipped and context retained. Originals and full indexes stay archived.",
+      "default": 16000
+    },
     "compactEveryTokens": {
       "type": "number",
       "title": "Context growth between folds",
-      "description": "A fold rewrites the prompt cache once; it runs after the context grew this many tokens since the last fold.",
+      "description": "Growth heuristic: consider a fold after context grows this many tokens. Cache effects and grading usage depend on the host and provider.",
       "default": 20000
     },
     "cacheTtlMinutes": {
       "type": "number",
       "title": "Prompt cache TTL (minutes)",
-      "description": "Idle this long, the prompt cache is cold; a fold then costs no cache rewrite, so one runs.",
+      "description": "Idle heuristic: consider a fold after this interval plus 30 seconds. This does not establish cache expiry or zero grading cost.",
       "default": 60
     },
     "foldFromTokens": {
       "type": "number",
       "title": "Context before the first fold",
-      "description": "A fold makes the next request write every message to the prompt cache again; it only pays on a big context. No fold below this many tokens.",
+      "description": "Minimum context for the growth-triggered fold heuristic. Idle or explicitly requested folds may run earlier; net savings are not guaranteed.",
       "default": 50000
     },
     "diskFullPercent": {
@@ -91,6 +115,12 @@
       "title": "Gauges above the prompt",
       "description": "Comma-separated slot ids in draw order; a published slot not listed is not drawn. `plan` is the tasks-and-guards gauge.",
       "default": "componion,plan,kern"
+    },
+    "toolGroups": {
+      "type": "string",
+      "title": "Optional tool groups",
+      "description": "Comma-separated vault, prd (includes vault), maintenance, background, changelog; all enables every tool. Empty keeps core planning, checks and feedback. Restart the host after changing.",
+      "default": ""
     }
   }
 }

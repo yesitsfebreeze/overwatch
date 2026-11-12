@@ -1,3 +1,4 @@
+import { usageReport } from "./usage.ts"
 /**
  * The tool-surface ledger and a repo's verification checks, over `Io` so the hooks and bin/overwatch run the same code.
  *
@@ -11,11 +12,15 @@
  */
 import { cmp, type Io, join, onPath, readJson, state } from "./io.ts"
 import { today } from "./io.ts"
+import { hash } from "./catalog.ts"
+import { originalPage } from "./paging.ts"
 import { CHECK_TIERS, checkTier, isTier } from "./guards.ts"
 import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./incidents.ts"
 
 const PROMOTE_AT = 3 // a "rare" tool that fires this often is mislabelled
 const VERDICT_TTL_DAYS = 30 // a verdict this old is stale: the surface moved
+const TRIGGER_CHARS = 2048
+const TRIGGER_COUNT = 8
 export const VERDICTS = ["useful", "situational", "dead"] as const
 type Verdict = (typeof VERDICTS)[number]
 const TOP_N = 8
@@ -78,7 +83,34 @@ export async function tally(io: Io, fired: Record<string, number>): Promise<void
   await save(io, st)
 }
 
-const fresh = (v: { at?: string } | undefined) => !!v?.at && (Date.parse(today()) - Date.parse(v.at)) / 86_400_000 < VERDICT_TTL_DAYS
+const fresh = (v: { at?: string } | undefined) => {
+  if (!v?.at || !/^\d{4}-\d{2}-\d{2}$/.test(v.at)) return false
+  const stamp = Date.parse(v.at)
+  if (!Number.isFinite(stamp) || today(new Date(stamp)) !== v.at) return false
+  const age = (Date.parse(today()) - stamp) / 86_400_000
+  return age >= 0 && age < VERDICT_TTL_DAYS
+}
+
+/** Whole recent instructions only; retained ledger entries are not a promise of prompt inclusion. */
+function triggerSection(st: Ledger, alive: Set<string>): string[] {
+  const eligible = Object.entries(st.triggers)
+    .filter(([n, t]) => typeof t === "string" && t.trim() && alive.has(n) && st.verdicts[n]?.verdict === "useful" && fresh(st.verdicts[n]))
+    .sort(([a], [b]) => cmp(st.verdicts[b]!.at, st.verdicts[a]!.at) || cmp(a, b))
+  if (!eligible.length) return []
+  const head = "## Learned triggers — recent useful tools (30 days)"
+  const notice = (n: number) => `${n} additional trigger(s) omitted; full text: .overwatch/surface.json.`
+  const selected: string[] = []
+  // Reserve the largest possible omission notice, including its separator.
+  let used = head.length + 1 + notice(eligible.length).length
+  for (const [, trigger] of eligible) {
+    const line = `- ${trigger}`
+    if (selected.length >= TRIGGER_COUNT || /[\r\n]/.test(trigger) || used + 1 + line.length > TRIGGER_CHARS) continue
+    selected.push(line)
+    used += 1 + line.length
+  }
+  const omitted = eligible.length - selected.length
+  return [head, ...selected, ...(omitted ? [notice(omitted)] : [])]
+}
 
 /** One tool from the cold half of the table; a new name has no count, so it sorts coldest. */
 export function draw(st: Ledger, names: string[], rnd = Math.random): Ledger["drawn"] {
@@ -106,9 +138,7 @@ export async function surface(io: Io, active?: readonly string[]): Promise<{ sec
   st.drawn = draw(st, [...alive].filter((n) => n in st.counts || seeds.includes(n)).sort())
   const saved = save(io, st)
 
-  const out: string[] = []
-  const triggers = Object.entries(st.triggers).filter(([n, t]) => t && alive.has(n)).map(([, t]) => t).sort()
-  if (triggers.length) out.push("## Learned triggers — situations that earned a tool", ...triggers.map((t) => `- ${t}`))
+  const out: string[] = triggerSection(st, alive)
   const counts = Object.entries(st.counts).filter(([n]) => alive.has(n))
   const toolCounts = counts.filter(([n]) => !n.startsWith("sh:"))
   const hot = top(toolCounts)
@@ -152,10 +182,9 @@ export async function rate(io: Io, name: string, verdict: string, reason: string
   const st = await load(io)
   st.verdicts[name] = { verdict: verdict as Verdict, reason, at: today() }
   if (verdict === "useful") st.triggers[name] = trigger!.trim()
-  if (verdict === "dead") delete st.triggers[name]
   if (st.drawn?.name === name) st.drawn = null
   await save(io, st)
-  const tail = { useful: "trigger recorded — it ships in the surface block from the next session", dead: "candidate for removal from the seed list", situational: "correct to sit idle" }[verdict as Verdict]
+  const tail = { useful: "trigger recorded — eligible next session for 30 days within the prompt budget", dead: "trigger suspended; candidate for removal from the seed list", situational: "correct to sit idle; trigger suspended" }[verdict as Verdict]
   return `overwatch: ${name} rated ${verdict} — ${tail}`
 }
 
@@ -215,18 +244,60 @@ const frozen = async (io: Io): Promise<string[]> => (await frozenDoc(io)).checks
 const tierOf = (tiers: Record<string, string>, c: string) => tiers[c] ?? checkTier(c)
 
 /** The recorded mistakes, or undefined when there are none. */
-const mistakes = async (io: Io) => (await io.read(state(io, "mistakes.md")))?.trim() || undefined
+const readMistakes = async (io: Io) => (await io.read(state(io, "mistakes.md"))) ?? ""
 
 const LEARNED_MISTAKES = 5
+const normalized = (text: string) => text.replace(/\s+/g, " ").trim()
+const mistakeKey = (line: string) => normalized(line).replace(/^- /, "").replace(/ \(\d{4}-\d{2}-\d{2}\)$/, "")
+const mistakeLines = (raw: string): string[] => {
+  const records: string[] = []
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("- ")) records.push(line)
+    else if (records.length) records[records.length - 1] += "\n" + line
+  }
+  return records.map((record) => record.trimEnd())
+}
+const outputSize = (text: string) => JSON.stringify({ result: text }).length
 
-/** What earlier sessions taught, for the prompt: one lesson per kind caught repeatedly here (incidents.ts) and the newest recorded mistakes. Empty when there are none. */
+/** Recent whole records; deduplication never rewrites the source history. */
+function recentMistakes(raw: string, budget = 2048): string {
+  const lines = mistakeLines(raw)
+  if (!lines.length) return ""
+  const seen = new Set<string>(), recent: string[] = []
+  for (const line of [...lines].reverse()) {
+    const key = mistakeKey(line)
+    if (!seen.has(key)) { seen.add(key); recent.push(line) }
+    if (recent.length === LEARNED_MISTAKES) break
+  }
+  const head = "## Recent mistakes to avoid"
+  const hint = "Some records omitted; full history: mistakes {offset:0}."
+  const selected: string[] = []
+  for (const line of recent)
+    if (!/[\r\n]/.test(line) && outputSize([head, ...selected, line, hint].join("\n")) <= budget) selected.push(line)
+  return [head, ...selected, ...(selected.length < lines.length ? [hint] : [])].join("\n")
+}
+
+/** Exact, revision-checked pages of the untouched markdown history. */
+export async function mistakesPage(io: Io, args: { id?: unknown; offset?: unknown; limit?: unknown } = {}, maxChars = 7800) {
+  const raw = await readMistakes(io)
+  const id = `mistakes-${hash(raw)}`
+  if (args.offset !== undefined && args.offset !== 0 && !args.id) throw new Error("continue with the first page's id")
+  if (args.id !== undefined && args.id !== id) throw new Error("mistakes changed; restart at offset 0")
+  return originalPage(raw, id, args.offset as number | undefined, args.limit as number | undefined, maxChars)
+}
+
+/** Incident lessons plus bounded recent mistakes; the raw history remains retrievable. */
 export async function learned(io: Io): Promise<string> {
-  const [caught, mist] = await Promise.all([loadIncidents(io), mistakes(io)])
+  const [caught, mist] = await Promise.all([loadIncidents(io), readMistakes(io)])
   const habits = lessons(caught)
-  const recorded = (mist ?? "").split("\n").filter((l) => l.startsWith("- ")).slice(-LEARNED_MISTAKES)
+  const recorded = recentMistakes(mist)
   const out: string[] = []
-  if (habits.length) out.push("## Caught repeatedly in earlier sessions — do not repeat", ...habits)
-  if (recorded.length) out.push("## Mistakes recorded in this repo", ...recorded)
+  if (habits.length) {
+    out.push("## Caught repeatedly in earlier sessions — do not repeat")
+    for (const habit of habits)
+      if (outputSize(["# Lessons (overwatch)", ...out, habit, recorded].filter(Boolean).join("\n")) <= 4096) out.push(habit)
+  }
+  if (recorded) out.push(recorded)
   return out.length ? ["# Lessons (overwatch)", ...out].join("\n") : ""
 }
 
@@ -240,29 +311,34 @@ export async function scan(io: Io): Promise<string> {
 }
 
 /** The frozen checks, one tier when named; an unknown tier is an error. */
-export async function checklist(io: Io, tier?: string): Promise<string> {
+export async function checklist(io: Io, tier?: string, maxChars = 7800): Promise<string> {
   if (tier && !isTier(tier)) throw new Error(`tier must be one of ${CHECK_TIERS.join(", ")}`)
   const doc = await frozenDoc(io)
   const all = doc.checks ?? []
   if (!all.length) return "no checks frozen — run scan (`overwatch scan`) first"
   const tiers = doc.tiers ?? {}
   const checks = tier ? all.filter((c) => tierOf(tiers, c) === tier) : all
-  const [body, mist] = await Promise.all([
-    Promise.resolve(checks.length
-      ? checks.map((c) => `- [${tierOf(tiers, c)}] ${c}`).join("\n")
-      : `no ${tier} checks frozen; all frozen checks: ${all.join(", ")}`),
-    mistakes(io),
-  ])
+  const mist = recentMistakes(await readMistakes(io), Math.min(2048, Math.floor(maxChars / 3)))
   const head = tier ? `# verification plan (${tier} tier)` : "# verification plan"
-  return `${head}\nrun these, in order, before calling the change done:\n${body}\n\n# mistakes to avoid\n${mist ?? "(none recorded)"}`
+  const render = (lines: string[]) => [head, "Run the complete commands before calling the change done:", ...lines,
+    ...(lines.length < checks.length ? [`${checks.length - lines.length} command(s) omitted; retrieve .overwatch/checks.json before completion.`] : []),
+    ...(!checks.length ? [`no ${tier ?? "matching"} checks frozen`] : []), mist].filter(Boolean).join("\n")
+  const selected: string[] = []
+  for (const c of checks) {
+    const line = `- [${tierOf(tiers, c)}] ${c}`
+    if (outputSize(render([...selected, line])) <= maxChars) selected.push(line)
+  }
+  return render(selected)
 }
 
 export async function mistake(io: Io, text: string): Promise<string> {
-  if (!text.trim()) throw new Error("usage: overwatch mistake <what went wrong>")
+  const lesson = normalized(text)
+  if (!lesson) throw new Error("usage: overwatch mistake <what went wrong>")
   const path = state(io, "mistakes.md")
   const old = (await io.read(path)) ?? "# Mistakes to fold into every plan\n"
-  await io.write(path, `${old}- ${text.trim()} (${today()})\n`)
-  return `recorded: ${text.trim()}`
+  if (mistakeLines(old).some((line) => mistakeKey(line) === mistakeKey(lesson))) return "already recorded; full history: mistakes {offset:0}"
+  await io.write(path, `${old}${old.endsWith("\n") ? "" : "\n"}- ${lesson} (${today()})\n`)
+  return outputSize(`recorded: ${lesson}`) <= 512 ? `recorded: ${lesson}` : "recorded; full text: mistakes {offset:0}"
 }
 
 async function guardBlocks(io: Io): Promise<string> {
@@ -287,23 +363,25 @@ async function memory(io: Io): Promise<string> {
 }
 
 export async function status(io: Io): Promise<string> {
-  const [git, checks, mist, guard, mem, st, caught] = await Promise.all([
+  const [git, checks, mist, guard, mem, st, caught, usage] = await Promise.all([
     io.run(["git", "status", "--porcelain"]).then((r) => (r.code === 0 ? r.stdout.trimEnd().split("\n").filter(Boolean) : [])),
     frozen(io),
-    mistakes(io),
+    readMistakes(io),
     guardBlocks(io),
     memory(io),
     load(io),
     loadIncidents(io),
+    usageReport(io).catch(() => "Jev usage: unavailable; provider usage unknown."),
   ])
   const fires = Object.values(st.counts)
   return [
     "# overwatch",
     git.length ? `git: dirty, ${git.length} path(s)\n${git.slice(0, 10).map((d) => `  ${d}`).join("\n")}` : "git: clean",
     checks.length ? `checks: ${checks.join(", ")}` : "checks: none frozen (run scan)",
-    mist ? `mistakes: ${mist.split("\n").length - 1} recorded` : "mistakes: none recorded",
+    mist ? `mistakes: ${mistakeLines(mist).length} recorded` : "mistakes: none recorded",
     guard,
     tallyLine(caught),
+    usage,
     mem,
     `tools fired: ${fires.length}, total fires: ${fires.reduce((a, c) => a + c, 0)}`,
   ].join("\n")

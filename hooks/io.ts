@@ -6,9 +6,9 @@
  */
 /** The environment variables overwatch reads; a new one is added here and in engineEnv. */
 type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HYGIENE_TRANSCRIPTS" | "TMPDIR"
-export type Run = { code: number; stdout: string; stderr: string }
+export type Run = { code: number; stdout: string; stderr: string; timedOut?: boolean }
 export type Entry = { name: string; kind: "file" | "dir" | "other"; mtimeMs: number }
-/** Runs argv; never rejects: a failure to start is code 127, a timeout 124. */
+/** Runs argv; never rejects: a failure to start is code 127, a timeout has timedOut=true (code 124 is not proof of timeout). */
 export type Runner = (argv: readonly string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number; env?: Record<string, string> }) => Promise<Run>
 
 export type Io = {
@@ -91,7 +91,10 @@ export function engineRun($: any): Runner {
   return (argv, init = {}) =>
     $.process.run(argv, init).then(
       (r: any) => ({ code: r.exitCode ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }),
-      (err: any) => ({ code: /timed? ?out/i.test(String(err?.message)) ? 124 : 127, stdout: "", stderr: String(err?.message ?? err) }),
+      (err: any) => {
+        const timedOut = err?.code === "ETIMEDOUT" || /timed? ?out/i.test(String(err?.message))
+        return { code: timedOut ? 124 : 127, stdout: "", stderr: String(err?.message ?? err), timedOut }
+      },
     )
 }
 

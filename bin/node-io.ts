@@ -22,8 +22,9 @@ export function fromNode(cwd = process.cwd()): Io {
     exists: async (p) => existsSync(at(p)),
     run: async (argv, init = {}) => {
       const r = spawnSync(argv[0]!, argv.slice(1), { cwd: init.cwd ? at(init.cwd) : cwd, input: init.stdin, timeout: init.timeoutMs ?? 30_000, encoding: "utf8", env: { ...process.env, ...init.env }, maxBuffer: 64 << 20 })
-      const code = r.error ? ((r.error as any).code === "ETIMEDOUT" ? 124 : 127) : (r.status ?? 1)
-      return { code, stdout: r.stdout ?? "", stderr: r.stderr ?? String(r.error?.message ?? "") }
+      const timedOut = (r.error as any)?.code === "ETIMEDOUT"
+      const code = r.error ? (timedOut ? 124 : 127) : (r.status ?? 1)
+      return { code, stdout: r.stdout ?? "", stderr: r.stderr ?? String(r.error?.message ?? ""), timedOut }
     },
     env: async (n) => process.env[n],
     cwd,
