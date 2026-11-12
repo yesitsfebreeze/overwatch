@@ -105,6 +105,8 @@ declare module "claude-code" {
       plan: Plan
       verify: Verify
       stop: StopBook
+      /** Exact guard request and validated probabilities cached within one user turn. */
+      judgment: { body: string; probabilities: Record<string, number> }
       root: string
       /** The full plan reminder went out this session; later prompts carry one line. */
       told: boolean
