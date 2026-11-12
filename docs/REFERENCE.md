@@ -77,7 +77,7 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 
 | tool | takes | does |
 |---|---|---|
-| `decompress` | `id` | reads back a cut or folded message |
+| `decompress` | `id`, optional `offset`, `limit` | reads an exact bounded page; concatenate `text` and follow `next_offset` until null |
 | `search_context` | `query` | searches every cut or folded message this session |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
 | `checks` | `tier?` | frozen checks plus mistakes: run before saying "done" |
@@ -157,6 +157,15 @@ Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `stat
 - Automatic guard evaluation waits until all tasks are complete and stops before evaluating after eight refused stops. `guard_check` always runs the selected shell checks explicitly. Valid judgments reuse one identical serialized request within a user turn; changed evidence or a new user prompt requires a fresh judgment. Shell checks remain fresh while automatic verification is allowed.
 - `slots`: followline gauges and their order, default `componion,plan,kern`.
 - Compaction: `toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, ….
+
+`liveResultMaxChars` bounds the complete serialized text output, including errors,
+many text blocks, and Overwatch reports; the minimum is 512 characters. Outer
+status, error flags and context are preserved. Exact file tools (Read, Edit,
+Write, MultiEdit, NotebookEdit) and native media/document/file blocks are exempt.
+Without a safe original id or a successful archive write, output stays unchanged.
+`decompress` returns `{id, offset, text, next_offset, total_chars}`. Pages include
+their JSON escaping and metadata in the bound. Offsets count JavaScript string
+characters (UTF-16 code units); stored JSON and whitespace are returned exactly.
 
 ## Layout
 

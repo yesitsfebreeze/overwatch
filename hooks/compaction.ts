@@ -15,6 +15,7 @@ import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
 import { STATE_DIR } from './io.ts';
 import { today } from './io.ts';
 import { incident } from './incidents.ts';
+import { originalPage } from './paging.ts';
 
 type Limits = { keepRecentTokens: number; toolResultMaxChars: number; outcomeMaxChars: number; cutUserChars?: number };
 
@@ -33,22 +34,23 @@ const FILE_TOOLS: Record<string, 'read' | 'modified'> = {
 };
 // Tools whose output the model copies back verbatim (Edit's old_string): never minified.
 const VERBATIM = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-const SKIP_KEYS = new Set(['data', 'base64', 'source']);
 const MAX_TOOLS = 8;
 export const FOLD_TAG = '[overwatch fold';
 
 export const tokens = (chars: number) => Math.ceil(chars / 4);
 
 export function cut(text: string, max: number, id?: string): string {
+  max = Number.isFinite(max) ? Math.max(0, Math.floor(max)) : 0;
   if (text.length <= max) return text;
-  const half = Math.max(0, Math.floor((max - 80) / 2));
-  const tail = id ? `; decompress id=${id}` : '';
-  return `${text.slice(0, half)}\n[… overwatch cut ${text.length - 2 * half} chars${tail} …]\n${text.slice(-half)}`;
+  const notice = `\n[… overwatch cut${id ? `; decompress id=${id}` : ''} …]\n`;
+  if (notice.length >= max) return notice.slice(0, max);
+  const head = Math.ceil((max - notice.length) / 2), tail = max - notice.length - head;
+  return text.slice(0, head) + notice + (tail ? text.slice(-tail) : '');
 }
 
 // Loss-free for reading: ANSI colour, progress-bar overwrites, trailing blanks, blank-line runs and repeated lines go.
 export function minify(text: string, maxChars: number, id?: string): string {
-  if (text.length < 200) return text;
+  if (text.length < 200) return cut(text, maxChars, id);
   const lines = text
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\r\n/g, '\n')
@@ -64,22 +66,37 @@ export function minify(text: string, maxChars: number, id?: string): string {
   return cut(out.join('\n'), maxChars, id);
 }
 
-export function minifyDeep(value: unknown, maxChars: number, id?: string, key = ''): unknown {
-  if (typeof value === 'string') return SKIP_KEYS.has(key) ? value : minify(value, maxChars, id);
+export function minifyDeep(value: unknown, maxChars: number, id?: string): unknown {
+  if (typeof value === 'string') return minify(value, maxChars, id);
   if (Array.isArray(value)) return value.map((v) => minifyDeep(v, maxChars, id));
   if (value && typeof value === 'object')
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, minifyDeep(v, maxChars, id, k)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, minifyDeep(v, maxChars, id)]));
   return value;
 }
 
-// A stored Bash result is its JSON object; its escaped \n and \" cost ~7% more than the words (measured).
-function plainShell(text: string): string {
-  if (!text.startsWith('{"stdout":')) return text;
-  try {
-    const o = JSON.parse(text);
-    if (typeof o.stdout !== 'string') return text;
-    return [o.stdout, o.stderr, o.interrupted ? '[interrupted]' : ''].filter(Boolean).join('\n');
-  } catch { return text; }
+const safeId = (id: unknown): id is string => typeof id === 'string' && /^[\w.-]{1,160}$/.test(id);
+const hasMedia = (v: any): boolean => !!v && typeof v === 'object' && (
+  v.isImage === true || /^(?:image|image_url|audio|input_audio|video|document|file|blob)$/.test(v.type ?? '') ||
+  (v.type === 'base64' && typeof v.data === 'string') || (typeof v.blob === 'string' && typeof (v.mimeType ?? v.mime_type) === 'string') ||
+  /^(?:image|audio|video)\//.test(v.mimeType ?? v.mime_type ?? '') ||
+  Object.values(v).some(hasMedia)
+);
+
+function boundedValue(value: unknown, max: number, id: string, error: boolean): unknown {
+  const small = minifyDeep(value, max, id);
+  if (JSON.stringify(small).length <= max && (!error || JSON.stringify(value).length <= max)) return small;
+  let text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  if (error) {
+    const evidence = text.split(/\n|\\n/).filter((line) => /\b(error|fail(?:ed|ure)?|assertion|panic|traceback)\b/i.test(line)).slice(0, 4).map((line) => cut(line, 200)).join('\n');
+    if (evidence) text = evidence + '\n' + text;
+  }
+  let low = 0, high = Math.min(text.length, max);
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (JSON.stringify(cut(text, mid, id)).length <= max) low = mid;
+    else high = mid - 1;
+  }
+  return cut(text, low, id);
 }
 
 const stripRecap = (text: string) => text.replace(/<recap>[\s\S]*?<\/recap>\s*/g, '');
@@ -221,11 +238,14 @@ async function dir($: EngineInterface, s: State) {
   return (s.home ||= `${await $.session.cwd()}/${STATE_DIR}/context/${await $.session.id()}`);
 }
 
-async function keepOriginal($: EngineInterface, s: State, id: string, text: string, ext = 'txt') {
+async function keepOriginal($: EngineInterface, s: State, id: string, text: string, ext = 'txt'): Promise<boolean> {
+  if (!safeId(id)) return false;
   try {
     const path = `${await dir($, s)}/${id}.${ext}`;
-    if (!(await $.fs.exists(path))) await $.fs.write(path, text);
-  } catch { /* recall is best effort */ }
+    if (await $.fs.exists(path)) return typeof await $.fs.read(path) === 'string';
+    await $.fs.write(path, text);
+    return true;
+  } catch { return false; }
 }
 
 // CONTRACT §8 dataset: one line per answered Jev call. $.fs has no append or mkdir, so a child does both;
@@ -280,8 +300,8 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
 /** Compaction's tools, declared through overwatch's catalog (catalog.ts) when compaction is on. */
 export const COMPACTION_TOOLS: Record<string, ToolSpec> = {
   decompress: {
-    description: 'Read back the full original of a message or tool result that was cut or folded out of the context. Pass the id from a "decompress id=…" marker or a fold index line (#toolu_… or fN.k).',
-    properties: { id: { type: 'string' } },
+    description: 'Read an exact page of a stored original. Pass the id from a cut marker or fold index. Follow next_offset until null; concatenated text pages reproduce the stored original exactly. Offsets count JavaScript string characters.',
+    properties: { id: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1 } },
     required: ['id'],
   },
   search_context: {
@@ -305,7 +325,7 @@ function session(options: Record<string, unknown>): Session {
   const n = (k: string, d: number) => (typeof options[k] === 'number' ? (options[k] as number) : d);
   return {
     limits: { keepRecentTokens: n('keepRecentTokens', 6000), toolResultMaxChars: n('toolResultMaxChars', 2000), outcomeMaxChars: n('outcomeMaxChars', 120) },
-    liveMax: n('liveResultMaxChars', 8000),
+    liveMax: Math.max(512, Number.isFinite(n('liveResultMaxChars', 8000)) ? Math.floor(n('liveResultMaxChars', 8000)) : 8000),
     // After a fold every message is written to the prompt cache again (measured on logged request bodies:
     // Claude Code merges the fold block into the first user message). That pays only once the context is
     // big, so a fold waits for `foldFromTokens`, then runs every `compactEveryTokens` (bench/replay.ts
@@ -335,18 +355,29 @@ export async function compactToolCall($: EngineInterface, e: any, next: (e: any)
   const r = await next(e);
   if (r.deny !== undefined) return r;
   if (r.isError && !e.agentId) c.fails.push({ tool: e.tool, text: String(r.text ?? JSON.stringify(r.result)) });
-  // overwatch's own tools print tables and originals meant to be read as-is (loadout, report, decompress).
-  if (VERBATIM.has(e.tool) || e.tool.startsWith(TOOL_PREFIX) || r.isError || r.result === undefined) return r;
+  if (VERBATIM.has(e.tool) || hasMedia(r) || e.tool === TOOL_PREFIX + 'decompress') return r;
   try {
     const id = e.tool_use_id;
-    const result = minifyDeep(r.result, c.liveMax, id);
-    const before = JSON.stringify(r.result);
-    const k = before.length - JSON.stringify(result).length;
+    if (!safeId(id)) return r;
+    const payload: Record<string, unknown> = {};
+    if (r.result !== undefined) payload.result = r.result;
+    if (typeof r.text === 'string') payload.text = r.text;
+    const before = JSON.stringify(payload);
+    if (!Object.keys(payload).length) return r;
+    if (r.result?.next_offset !== undefined && typeof r.result?.total_chars === 'number' && before.length <= c.liveMax) return r;
+    let budget = c.liveMax - 32;
+    const entries = Object.entries(payload).sort((a, b) => JSON.stringify(a[1]).length - JSON.stringify(b[1]).length);
+    const limited: Record<string, unknown> = {};
+    entries.forEach(([key, value], i) => {
+      limited[key] = boundedValue(value, Math.floor(budget / (entries.length - i)), id, !!r.isError);
+      budget -= JSON.stringify(limited[key]).length;
+    });
+    const k = before.length - JSON.stringify(limited).length;
     if (k <= 0) return r;
+    const original = Object.keys(payload).length > 1 ? before : typeof Object.values(payload)[0] === 'string' ? Object.values(payload)[0] as string : JSON.stringify(Object.values(payload)[0]);
+    if (!await keepOriginal($, c.state, id, original)) return r;
     c.saved += tokens(k);
-    if (id) await keepOriginal($, c.state, id, typeof r.result === 'string' ? r.result : before);
-    // The context hooks below attached must ride on: the engine skips a hook that drops it.
-    return { result, ...(r.context ? { context: r.context } : {}) };
+    return { ...r, ...limited };
   } catch {
     return r;
   }
@@ -380,15 +411,17 @@ export async function compactTurnEnd($: EngineInterface, e: { agentId?: string }
 }
 
 /** decompress: the exact original by id. */
-async function decompress($: EngineInterface, e: { id?: unknown }) {
+async function decompress($: EngineInterface, e: { id?: unknown; offset?: unknown; limit?: unknown }) {
   const id = String(e.id ?? '').replace(/^#/, '');
   const home = await dir($, c.state);
   // Exact id: a suffix match would read f11.1 back for f1.1.
-  const read = async (x: string, ext: string) => (/^[\w.-]+$/.test(x) ? $.fs.read(`${home}/${x}.${ext}`).catch(() => undefined) : undefined);
+  const read = async (x: string, ext: string) => (safeId(x) ? $.fs.read(`${home}/${x}.${ext}`).catch(() => undefined) : undefined);
   // A fold's short id for a call is a .ref naming its toolu original.
   const ref = await read(id, 'ref');
   const text = await read(ref?.trim() ?? id, 'txt');
-  return text !== undefined ? { result: plainShell(text) } : { result: `no original stored for ${id}`, isError: true as const };
+  if (text === undefined) return { result: `no original stored for ${id}`, isError: true as const };
+  try { return { result: originalPage(text, id, e.offset === undefined ? 0 : Number(e.offset), e.limit === undefined ? 6000 : Number(e.limit), c.liveMax - 16) }; }
+  catch (err) { return { result: String(err), isError: true as const }; }
 }
 
 /** search_context: matching lines over every stored original, each with its decompress id. */

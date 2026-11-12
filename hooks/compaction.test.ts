@@ -1,8 +1,9 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { session } from './test-session.ts'
-import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './compaction.ts';
+import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads, compactToolCall } from './compaction.ts';
 import { compact, resolveOptions } from '../jev/compact.ts';
 import { estimateTokens } from '../jev/state.ts';
+import { originalPage } from './paging.ts';
 
 // The fs engine resolves a path before a hook sees it (win32: 'C:\h\x' for '/h/x'); back to the mocks' POSIX keys.
 const norm = (p: unknown) => String(p).replace(/\\/g, '/').replace(/^[A-Za-z]:/, '');
@@ -102,6 +103,45 @@ test('cut point never splits a call from its result', () => {
   expect(keepFrom(transcript, 5)).toBe(3);
 });
 
+test('tiny cuts and short strings honor their complete character budget', () => {
+  for (const max of [0, 1, 20, 79, 80]) {
+    expect(cut('x'.repeat(500), max, 'toolu_1').length).toBeLessThanOrEqual(max);
+    expect(minify('x'.repeat(100), max).length).toBeLessThanOrEqual(max);
+  }
+});
+
+test('live output shares one serialized budget, keeps middle errors and all metadata', async () => {
+  const files = new Map<string, string>();
+  const $ = { session: { cwd: async () => '/h', id: async () => 'live' }, fs: {
+    exists: async () => false, write: async (path: string, text: string) => { files.set(path, text); },
+  } } as never;
+  const r = { result: Array.from({ length: 200 }, (_, i) => ({ type: 'text', data: `${i}:` + '\\"'.repeat(90) })),
+    text: 'start\n' + Array.from({ length: 1000 }, (_, i) => `ordinary line ${i}\n`).join('') + 'ERROR unique-middle-evidence\n' + Array.from({ length: 1000 }, (_, i) => `another ordinary line ${i}\n`).join('') + 'end',
+    isError: true, exitCode: 7, context: ['keep this context'], extra: { trace: 'keep' } };
+  const out = await compactToolCall($, { tool: 'mcp__overwatch__report', tool_use_id: 'toolu_live' }, async () => r);
+  expect(JSON.stringify({ result: out.result, text: out.text }).length).toBeLessThanOrEqual(8000);
+  expect(out.text).toContain('ERROR unique-middle-evidence');
+  expect(out.isError).toBe(true);
+  expect(out.exitCode).toBe(7);
+  expect(out.context).toBe(r.context);
+  expect(out.extra).toBe(r.extra);
+  expect([...files.values()][0]).toBe(JSON.stringify({ result: r.result, text: r.text }));
+});
+
+test('unarchivable, exact-file and native media results remain unchanged', async () => {
+  const r = { result: 'x'.repeat(20000), context: ['unchanged'] };
+  const $ = { session: { cwd: async () => '/h', id: async () => 'live' }, fs: { exists: async () => false, write: async () => { throw new Error('disk full'); } } } as never;
+  for (const id of [undefined, '../unsafe', 'toolu_disk']) expect(await compactToolCall($, { tool: 'Bash', tool_use_id: id }, async () => r)).toBe(r);
+  let writes = 0;
+  const writable = { session: { cwd: async () => '/h', id: async () => 'live' }, fs: { exists: async () => false, write: async () => { writes++; } } } as never;
+  for (const tool of ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']) expect(await compactToolCall(writable, { tool, tool_use_id: 'toolu_file' }, async () => r)).toBe(r);
+  for (const type of ['image', 'document']) {
+    const media = { result: [{ type, source: { type: 'base64', media_type: type === 'document' ? 'application/pdf' : 'image/png', data: 'x'.repeat(20000) } }] };
+    expect(await compactToolCall(writable, { tool: 'media', tool_use_id: 'toolu_media' }, async () => media)).toBe(media);
+  }
+  expect(writes).toBe(0);
+});
+
 test('older messages are slimmed, recent ones kept whole', () => {
   const out = slim(transcript, limits);
   expect(out[1].text).toBe('reading');
@@ -123,7 +163,7 @@ test('minify drops noise, keeps words', () => {
   const out = minify(noisy, 20_000);
   expect(out).toContain('ok\nsame [×50]\n\n100% done');
   expect(out).not.toContain('\x1b');
-  expect(minifyDeep({ stdout: noisy, data: noisy }, 20_000)).toEqual({ stdout: out, data: noisy });
+  expect(minifyDeep({ stdout: noisy, data: noisy }, 20_000)).toEqual({ stdout: out, data: out });
 });
 
 test('rolling fold: index in order, frozen prefix and tail untouched, ids kept', () => {
@@ -178,32 +218,55 @@ test('status payload matches CONTRACT §2', () => {
 });
 
 session('a minified tool result keeps the context an inner hook added', async ($, on) => {
+  let archived = '';
+  on('session.cwd', async () => ({ value: '/h' }));
+  on('session.id', async () => ({ value: 'sid' }));
+  on('fs.exists', async () => ({ value: false }));
+  on('fs.write', async (_: unknown, e: { text: string }) => { archived = e.text; return { value: undefined }; });
   on('tool.call', async () => ({ result: 'same\n'.repeat(50), context: ['kern: nudge'] }));
   const r = await $.tool.call({ tool: 'Bash', command: 'rg x', tool_use_id: 'toolu_t' } as any);
   expect(String(r.result)).toContain('same [×50]');
   expect(r.context).toEqual(['kern: nudge']);
+  expect(archived).toBe('same\n'.repeat(50));
 });
 
 session('decompress reads the exact id back, never a longer one ending the same', async ($, on) => {
   const decompress = stored($, on, { 'f11.1.txt': 'eleventh', 'f1.1.txt': 'first' });
-  expect((await decompress('f1.1')).result).toBe('first');
-  expect((await decompress('#f11.1')).result).toBe('eleventh');
+  expect((await decompress('f1.1')).result.text).toBe('first');
+  expect((await decompress('#f11.1')).result.text).toBe('eleventh');
   expect((await decompress('../x')).isError).toBe(true);
 });
 
 session('decompress resolves a fold short id through its alias, and still an old toolu id', async ($, on) => {
   const decompress = stored($, on, { 'toolu_x.txt': 'out', 'f2.3.ref': 'toolu_x' });
-  expect((await decompress('f2.3')).result).toBe('out');
-  expect((await decompress('#toolu_x')).result).toBe('out');
+  expect((await decompress('f2.3')).result.text).toBe('out');
+  expect((await decompress('#toolu_x')).result.text).toBe('out');
   expect((await decompress('f2.4')).isError).toBe(true);
 });
 
-session('decompress of a stored Bash result returns its plain output, not escaped JSON', async ($, on) => {
+session('decompress preserves stored Bash JSON exactly', async ($, on) => {
   const bash = JSON.stringify({ stdout: 'a "q"\nb', stderr: 'warn', interrupted: false, isImage: false, noOutputExpected: false });
   const decompress = stored($, on, { 't1.txt': bash, 't2.txt': '{"k":1}', 't3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) });
-  expect((await decompress('t1')).result).toBe('a "q"\nb\nwarn');
-  expect((await decompress('t2')).result).toBe('{"k":1}');
-  expect((await decompress('t3')).result).toBe('x\n[interrupted]');
+  expect((await decompress('t1')).result.text).toBe(bash);
+  expect((await decompress('t2')).result.text).toBe('{"k":1}');
+  expect((await decompress('t3')).result.text).toBe(JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }));
+});
+
+test('exact pages fit the serialized envelope and reconstruct escaped originals', () => {
+  const original = '\\"\n\t😀'.repeat(4000);
+  let offset = 0, restored = '', pages = 0;
+  do {
+    const page = originalPage(original, 'toolu_page', offset, 1000000, 8000);
+    expect(JSON.stringify(page).length).toBeLessThanOrEqual(8000);
+    restored += page.text; pages++;
+    if (page.next_offset === null) break;
+    expect(page.next_offset).toBeGreaterThan(offset);
+    offset = page.next_offset;
+  } while (true);
+  expect(restored).toBe(original);
+  expect(pages).toBeGreaterThan(1);
+  for (const offset of [-1, 0.5, NaN, original.length + 1]) expect(() => originalPage(original, 'x', offset)).toThrow();
+  for (const limit of [0, -1, Infinity]) expect(() => originalPage(original, 'x', 0, limit)).toThrow();
 });
 
 session('after a fold the SessionStart re-run adds no second copy; after a summary it does', async ($, on) => {

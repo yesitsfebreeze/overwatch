@@ -35,7 +35,7 @@
     "liveResultMaxChars": {
       "type": "number",
       "title": "Live tool result max chars",
-      "description": "A fresh tool result (not Read/Edit/Write) is minified and cut to this many characters before the model reads it.",
+      "description": "Aggregate serialized text-result budget, including errors and reports (minimum 512). Exact file tools and native media are preserved. Shortening requires a stored original; decompress returns exact bounded pages.",
       "default": 8000
     },
     "keepThreshold": {
