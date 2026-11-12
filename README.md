@@ -43,16 +43,21 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 | `task_complete` | `task_id` | finishes a task |
 | `task_replace` | `task_id`, `title` | retires the old task for a new one |
 | `task_remove` | `task_id` | drops a task |
-| `guard_add` | `question`, `check?`, `files?` | adds a guard |
-| `guard_check` | `guard_id?` | runs the checks now, records the outcome |
+| `guard_add` | `question`, `check?`, `files?`, `tier?` | adds a guard; tier is `fast`, `unit` or `milestone` |
+| `guard_check` | `guard_id?`, `tier?` | runs the checks now, all or one tier, records the outcome |
 | `guard_drop` | `guard_id` | removes a guard, on the user's word only |
 | `plan_show` | | tasks, guards with last outcome, review state |
 | `plan_clear` | | empties the plan |
 | `vault_init` | | creates the spec vault `.overwatch/vault` (Obsidian, git-tracked); never overwrites |
 | `vault_plan` | | wave plan from the spec notes; regenerates Plan Tasks.md and Plan Data.json |
 | `unit_new` | `title`, `category`, `tasks[]`, `summary?`, `depends?`, `checks?`, `paths?` | adds a spec note |
-| `unit_load` | `unit` | the unit's open Plan items become tasks, its `checks` guards |
-| `unit_record` | `summary`, `limitations`, `partial?` | closes the loaded unit: tasks done, checks re-run, tree committed; writes proof to the note |
+| `unit_load` | `unit`, `owner?` | the unit's open Plan items become tasks, its `checks` guards; `owner` claims it |
+| `unit_record` | `summary`, `limitations`, `partial?` | closes the loaded unit: tasks done, checks re-run, tree committed; writes proof and an evidence run |
+| `unit_claim` | `unit`, `owner`, `takeover?` | claims a unit; a 15-minute-old claim, or one with no `since`, is stale and needs `takeover` |
+| `unit_release` | `unit`, `owner` | releases the claim; only its owner may |
+| `unit_next` | `owner` | loads and claims the first unit that can start now |
+| `unit_verify` | `unit?`, `rerun?` | compares a recorded run with HEAD; `rerun` re-runs its checks |
+| `vault_status` | | progress, claims, ready units, clashes, warnings |
 | `prd_scan` | | every PRD in `02 PRDs`: state, acceptance boxes, units, review gate, why it is held |
 | `prd_next` | `limit?` | the PRDs ready now, most important first |
 | `prd_brief` | `prd` | one PRD's contract, needs, units, review gate and next step |
@@ -61,10 +66,11 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 | `prd_set` | `prd`, `state`, `reason?` | open, question, refine, specced (needs a unit), blocked (needs a reason), failed |
 | `prd_review` | `prd`, `score`, `reviewer`, `findings?` | records a review round bound to the current contract digest |
 | `prd_collect` | `prd`, `summary?` | verifies every gate, then writes done, proof and the Collection receipt |
+
 | `decompress` | `id` | reads back a cut or folded message |
 | `search_context` | `query` | searches every cut or folded message this session |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
-| `checks` | | frozen checks plus mistakes: run before saying "done" |
+| `checks` | `tier?` | frozen checks plus mistakes: run before saying "done" |
 | `mistake` | `text` | records a lesson for every later session here |
 | `status` | | git state, checks, catch counts, memory hogs |
 | `report` | | tool usage, verdicts, triggers, newest catches |
@@ -86,10 +92,14 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 ## Spec vault
 
 - **Units outlive the session.** `.overwatch/vault` is an Obsidian vault git tracks (ignore `.overwatch/*` and re-include `!.overwatch/vault/`). One note per unit under `01 Specs`: frontmatter `status`, `category`, `depends`, `checks`, `paths`, `prio`; a `## Plan` checklist of test-sized items. `00 Meta/Plan.md` documents the fields.
+- **Dashboard.** Dataview and Plan View ship enabled in the scaffold. `00 Meta/Dashboard.md` is a dataviewjs overview: completion tiles, completion and friction by area, highest friction, ready units, claims and held units, computed from the spec notes like mosaic's dashboard.
 - **Plan.** A unit's wave is one more than its latest unfinished prerequisite's. Cycles, missing or excluded prerequisites, `blocked`, `deferred`, a claim (`owner`) and a note with every Plan item already ticked hold a unit, so `[start now]` means `unit_load` accepts it. The Plan View plugin (shipped in the vault) renders `Plan Data.json`: effort on x, overlap is parallel work. Two units that can start now clash when one path covers the other (`src/a` and `src/a/lex.ts`) or differs only in case; held units never clash.
-- **Closeout.** `unit_record` refuses while unit tasks are open, a unit check fails or the tree is dirty outside `.overwatch/` (checked from the repository root, not the session's directory); the proof line names the commit and each check's outcome. The check commands are the ones `unit_load` kept from the note, so removing the plan's guards does not skip them.
+- **Closeout.** `unit_record` refuses while unit tasks are open, a unit check fails or the tree is dirty outside `.overwatch/` (checked from the repository root, not the session's directory); the proof line names the commit and each check's outcome. The check commands are the ones `unit_load` kept from the note, so removing the plan's guards does not skip them. It also writes `.overwatch/evidence/<unit>.json`: run id, commit, status, summary, limitations and each guard's command, tier and output. `unit_verify` compares that run with HEAD and can re-run its checks without writing a new run.
+- **Claims.** `unit_claim`, `unit_load {owner}` and `unit_next` write `owner` and `since` into the note; `unit_record` releases it. A live claim, a shared path or a waiting prerequisite refuses the claim; a claim older than 15 minutes, or one with no `since`, is stale and `takeover: true` takes it. `owner` is required and is not defaulted, so two sessions never share one identity.
+- **Checks.** `scan` freezes commands with a tier (`fast`, `unit`, `milestone`); `checks --tier` and `guard_check --tier` run one weight at a time.
 - **Plan items.** An item is matched to its task by its text with surrounding whitespace trimmed; two open items with the same text are refused, since one task cannot stand for both.
-- **Limits.** Dependencies are explicit `depends` only (the workflow kit also inferred them). Claims are read, not taken: two sessions can load the same unit.
+- **Limits.** Dependencies are explicit `depends` only (the workflow kit also inferred them). A claim has no separate heartbeat: `since` is written once, so a long run must renew it with `unit_claim` before 15 minutes.
+
 
 ## PRDs
 
@@ -118,6 +128,7 @@ Plain files in `.overwatch/` in the working directory, beside `incidents.json`; 
 | `checks.json`, `mistakes.md` | frozen checks, recorded mistakes |
 | `disk.json` | last survey per scope, deletions, the user's `keep` and `owners` lists |
 | `plan.json` | tasks and guards outside Claude Code |
+| `evidence/<unit>.json` | the last `unit_record` run: commit, guards, outputs |
 | `context/<session>/` | originals of cut and folded messages |
 | `status/<session>.json` | compaction's status, read by kern's turn deck |
 

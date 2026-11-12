@@ -73,7 +73,7 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
     if (name === "plan_show") return withState(io, root, (s) => [s, { text: plain(detail(s.plan, CLEAN)) }])
     if (name === "guard_check") {
       return withState(io, root, async (s) => {
-        const pick = pickChecks(s.plan, args.guard_id)
+        const pick = pickChecks(s.plan, args.guard_id, args.tier)
         if (typeof pick === "string") return [s, { text: pick, error: true }]
         const decided = await Promise.all(pick.map((g) => runCheck(io.run, g, root)))
         return [{ ...s, plan: withDecided(s.plan, decided) }, { text: checkReport(decided) }]

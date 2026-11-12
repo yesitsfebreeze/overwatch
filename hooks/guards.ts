@@ -3,7 +3,7 @@
  * work, decided by a shell command where one can, else judged by Jev (TypeSafe)
  * from the recorded turn. Pure: the hooks module does the I/O.
  */
-import type { Guard } from "../types/index.d.ts"
+import type { CheckTier, Guard } from "../types/index.d.ts"
 
 // ── the turn, reduced to what a judge reads ──────────────────────────
 const MAX_RESULTS = 12
@@ -172,8 +172,21 @@ export function cannotFail(check: string): boolean {
   return BARE.test(c) || OR_ALWAYS.test(c) || PIPED_AWAY.test(c) || (LAST_ALWAYS.test(c) && !ENDS_EARLIER.test(c))
 }
 
+/** The check tiers a guard may name: cheap, unit-level, or the full milestone gate. */
+export const CHECK_TIERS = ["fast", "unit", "milestone"] as const
+
+/** Whether a value is a tier; the one place the list is checked. */
+export const isTier = (t: unknown): t is CheckTier => typeof t === "string" && (CHECK_TIERS as readonly string[]).includes(t)
+
+/** A command's weight from its name: a build or a project verify is the milestone gate, tests are unit, the rest fast. */
+export function checkTier(command: string): CheckTier {
+  if (/\b(build|e2e|verify|accept|milestone)\b/.test(command)) return "milestone"
+  if (/\b(test|spec)s?\b|pytest|vitest|jest|mocha|nextest|cargo test/.test(command)) return "unit"
+  return "fast"
+}
+
 /** A new guard, or the reason it is refused. */
-export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[]): Guard | string {
+export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[], tier?: string): Guard | string {
   const q = question.trim().replace(/\s+/g, " ")
   if (q.length < 15) return "a guard is one yes/no question of at least 15 characters"
   const c = check?.trim()
@@ -181,8 +194,11 @@ export function makeGuard(taken: Guard[], question: string, check?: string, file
   if (c && cannotFail(c)) return `check cannot fail: \`${c}\`; give a command whose exit code decides the question`
   const taste = !c && q.replace(/`[^`]*`/g, "").match(UNCHECKABLE)
   if (taste) return `taste words cannot be judged: ${taste[0]}`
+  const t = tier?.trim()
+  if (t && !isTier(t)) return `tier must be one of ${CHECK_TIERS.join(", ")}`
   const g: Guard = { id: guardId(q, taken.map((x) => x.id)), question: q }
   if (c) g.check = c
+  if (t) g.tier = t as Guard["tier"]
   if (files?.length) g.files = files
   return g
 }

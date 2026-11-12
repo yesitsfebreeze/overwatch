@@ -34,7 +34,7 @@ const record = async ($: any, decided: Guard[]): Promise<Plan> => {
 
 async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: string }> {
   const [s, root] = await Promise.all([read($, PLAN), read($, ROOT)])
-  const pick = pickChecks(s, e.guard_id)
+  const pick = pickChecks(s, e.guard_id, e.tier)
   if (typeof pick === "string") return { deny: pick }
   const decided = await Promise.all(pick.map((g) => runCheck(engineRun($), g, root || undefined)))
   await record($, decided)

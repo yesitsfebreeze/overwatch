@@ -14,7 +14,7 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
 
   overwatch status                 git state, frozen checks, guard blocks, memory hogs
   overwatch scan                   discover this repo's checks and freeze them
-  overwatch checks                 the frozen checks plus the mistakes to avoid
+  overwatch checks [tier]          the frozen checks plus the mistakes; tier is fast, unit or milestone
   overwatch mistake <text>         record one mistake, folded into every later checklist
   overwatch report                 tool-surface usage, verdicts, learned triggers
   overwatch index [--active]       the tool-surface block; --active reads a JSON list of tool names on stdin
@@ -50,19 +50,7 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
       if (args[0] === "init") return ok(await vaultInit(io))
       if (args[0] === "plan") return ok(await vaultPlan(io))
       return { text: "usage: overwatch vault init|plan", code: 2 }
-    case "prd": {
-      const [op = "scan", ...a] = args
-      if (op === "scan") return ok(await prdScan(io))
-      if (op === "next") return ok(await prdNext(io, Number(a[0]) || 10))
-      if (op === "add" && a[0]) return ok(await prdAdd(io, { title: a[0], summary: a.slice(1).join(" ") }))
-      if (op === "refine" && a[0] && a[1]) return ok(await prdRefine(io, { prd: a[0], children: a.slice(1) }))
-      if (op === "brief" && a[0]) return ok(await prdBrief(io, a[0]))
-      if (op === "state" && a[0] && a[1]) return ok(await prdSet(io, { prd: a[0], state: a[1], reason: a.slice(2).join(" ") }))
-      if (op === "review" && a[0] && a[1] && a[2]) return ok(await prdReview(io, { prd: a[0], score: Number(a[1]), reviewer: a[2], findings: a.slice(3).join(" ") }))
-      if (op === "collect" && a[0]) return ok(await prdCollect(io, { prd: a[0], summary: a.slice(1).join(" ") }))
-      return { text: "usage: overwatch prd scan|next [n]|add <title> [summary]|refine <prd> <child>...|brief <prd>|state <prd> <state> [reason]|review <prd> <score> <reviewer> [findings]|collect <prd> [summary]", code: 2 }
-    }
-    case "checks": return ok(await checklist(io))
+    case "checks": return ok(await checklist(io, args[0] || undefined))
     case "mistake": return ok(await mistake(io, rest))
     case "report": return ok(await report(io))
     case "loadout": return ok(await loadout(io))

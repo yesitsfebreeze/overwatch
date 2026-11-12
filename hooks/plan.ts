@@ -1,6 +1,6 @@
 import type { FollowlineSlot, Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
 import { TOOL_PREFIX } from "./catalog.ts"
-import { guardMark, makeGuard } from "./guards.ts"
+import { CHECK_TIERS, guardMark, isTier, makeGuard } from "./guards.ts"
 import { shellArgv, type Io, type Runner } from "./io.ts"
 
 // The plan's pure logic: tools, reminder, gate and stop verdict. No engine import:
@@ -113,12 +113,16 @@ export const withDecided = (s: Plan, decided: Guard[]): Plan => {
   return { ...s, guards: s.guards.map((g) => byId.get(g.id) ?? g) }
 }
 
-/** guard_check's pick: the guards with a check (only `guard_id` when given), or the refusal when there are none. */
-export const pickChecks = (s: Plan, guard_id: unknown): Guard[] | string => {
+/** guard_check's pick: the guards with a check (only `guard_id` and `tier` when given), or the refusal when there are none. */
+export const pickChecks = (s: Plan, guard_id: unknown, tier?: unknown): Guard[] | string => {
   const id = typeof guard_id === "string" && guard_id ? guard_id : undefined
-  const pick = s.guards.filter((g) => g.check && (!id || g.id === id))
+  const t = typeof tier === "string" && tier ? tier : undefined
+  if (t && !isTier(t)) return `tier must be one of ${CHECK_TIERS.join(", ")}`
+  const pick = s.guards.filter((g) => g.check && (!id || g.id === id) && (!t || g.tier === t))
   if (pick.length) return pick
-  return id ? `no guard "${id}" with a check; plan_show lists the guard ids` : "no guard has a check; judged guards are decided at the stop"
+  return id ? `no guard "${id}" with a check; plan_show lists the guard ids`
+    : t ? `no guard has a "${t}" check; plan_show lists the guard tiers`
+    : "no guard has a check; judged guards are decided at the stop"
 }
 
 export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n")
@@ -141,7 +145,7 @@ export const reviewLine = (v: Verify): string => {
 export const detail = (s: Plan, v: Verify): string =>
   [
     ...s.tasks.map((t) => `#${t.id} ${taskState(t)}: ${t.title}`),
-    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}`),
+    ...s.guards.map((g) => `guard ${g.id} [${guardMark(g)}]${g.tier ? ` ${g.tier}` : ""}${g.check ? ` check \`${g.check}\`` : " judged"}: ${g.question}`),
     s.tasks.length || s.guards.length ? `${overall(s)}% overall.` : "No tasks, no guards.",
     reviewLine(v),
   ].join("\n")
@@ -308,10 +312,11 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
       question: { type: "string", description: "One yes/no question about the finished work, at least 15 characters, e.g. \"Do the parser tests pass?\"." },
       check: { type: "string", description: "Shell command that decides it, exit 0 = upheld, e.g. \"bun test hooks/\". Leave out only when no command can decide it." },
       files: { type: "array", items: { type: "string" }, description: "Files (relative to the project) whose current content the judge reads; for guards without a check." },
+      tier: { type: "string", enum: [...CHECK_TIERS], description: "How heavy the check is, so guard_check can run one tier at a time." },
     },
     required: ["question"],
     run: (s, e) => {
-      const g = makeGuard(s.guards, e.question ?? "", e.check, e.files)
+      const g = makeGuard(s.guards, e.question ?? "", e.check, e.files, e.tier)
       if (typeof g === "string") return refuse(s, g)
       return { state: { ...s, guards: [...s.guards, g] }, text: `Guard ${g.id}${g.check ? ` (check: ${g.check})` : " (judged)"}: ${g.question} (${s.guards.length + 1} guards)` }
     },
@@ -328,7 +333,10 @@ export const PLAN_TOOLS: Record<string, PlanTool> = {
   },
   guard_check: {
     description: "Run the guards' shell checks now and record the outcome, instead of waiting for the stop. Use after a fix to confirm a guard holds before stopping. Only guards with a check run here; judged guards are decided at the stop. Returns each guard upheld or failing with its exit code and output tail.",
-    properties: { guard_id: { type: "string", description: "Run only this guard's check; leave out to run every guard that has one." } },
+    properties: {
+      guard_id: { type: "string", description: "Run only this guard's check; leave out to run every guard that has one." },
+      tier: { type: "string", enum: [...CHECK_TIERS], description: "Run only checks of this tier." },
+    },
   },
   plan_show: {
     description: "Show the whole plan: every task with its number, progress and status; every guard with its id, question, check and last outcome; and whether /code-review and /simplify are due on the changed files. Read-only.",

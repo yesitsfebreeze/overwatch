@@ -5,8 +5,9 @@
 // The wave plan is computed here and projected to "00 Meta/Plan Data.json" (the Plan View
 // plugin's data) and "00 Meta/Plan Tasks.md". Ported from the workflow kit's vault and plan note.
 import type { Plan } from "../types/index.d.ts"
-import { checkReport, PLAN_TOOLS, refuse, runChecks, trimmed, type PlanTool, type Result } from "./plan.ts"
-import { cmp, join, state, STATE_DIR, VAULT_DIR, type Io } from "./io.ts"
+import { checkTier } from "./guards.ts"
+import { checkReport, PLAN_TOOLS, refuse, runCheck, runChecks, trimmed, type PlanTool, type Result } from "./plan.ts"
+import { cmp, join, readJson, state, STATE_DIR, VAULT_DIR, type Io } from "./io.ts"
 
 const SPECS = "01 Specs"
 /** The path spelling comparisons start from: separators and trailing slashes normalize away, case is kept. */
@@ -20,6 +21,10 @@ export const PLAN_TASKS = "00 Meta/Plan Tasks.md"
 const TEMPLATE = "00 Meta/Spec Template.md"
 /** The scaffold shipped in the plugin, copied by vaultInit. */
 const SCAFFOLD = "data/vault"
+/** A claim older than this is stale and may be taken over with an explicit takeover. */
+const CLAIM_TTL_MS = 15 * 60_000
+/** Recorded unit_record runs: what was checked, at which commit, with what output. */
+const EVIDENCE_DIR = "evidence"
 
 /** Statuses that make a note a unit of work; the rest are navigation or provenance. */
 const UNIT_STATUSES = new Set(["implemented", "partial", "target", "proposed", "deferred", "open-question"])
@@ -219,7 +224,7 @@ export function specsOf(notes: Map<string, string>): Spec[] {
 type Row = {
   name: string; path: string; category: string; status: string; owner: string; since: string; blocked: string
   effort: number; start: number; end: number; wave: number; after: string[]; paths: string[]
-  held: string; mark: string; open: number
+  held: string; mark: string; open: number; stale: boolean
 }
 type Done = { name: string; path: string; category: string; effort: number; proven: boolean; updated: string }
 type PlanData = {
@@ -230,6 +235,13 @@ type PlanData = {
   rows: Row[]
   done: Done[]
   warnings: string[]
+}
+
+/** Whether an owner's claim is stale: undated claims cannot be waited out, so they are stale. */
+export const claimStale = (since: string, now = Date.now()): boolean => {
+  if (!since) return true
+  const at = Date.parse(since)
+  return !Number.isFinite(at) || now - at > CLAIM_TTL_MS
 }
 
 /** Friction units (kit Plan.md): each issue and open question 2, the status weight, more than one proposal 1; at least 1. */
@@ -273,7 +285,7 @@ export function computePlan(all: Spec[]): PlanData {
     const after = s.depends.filter((d) => openNames.has(d))
     const missing = s.depends.filter((d) => !byName.has(d))
     const excluded = s.depends.filter((d) => byName.has(d) && byName.get(d)!.status !== "implemented" && !openNames.has(d))
-    const owner = str(s.fields.owner), blocked = str(s.fields.blocked)
+    const owner = str(s.fields.owner), since = str(s.fields.since), blocked = str(s.fields.blocked)
     const open = openItems(s), rep = repeatedItem(open)
     const held = s.depends.includes(s.name) ? "self dependency" : cyclic.has(s.name) ? "cycle" : missing.length ? `missing ${missing.join(", ")}`
       : excluded.length ? `waiting on excluded ${excluded.join(", ")}` : s.status === "deferred" ? "deferred" : blocked ? "blocked" : after.length ? "waiting" : owner ? "claimed" : !open.length ? "no open Plan items" : rep ? `repeats the Plan item "${rep}"` : ""
@@ -282,9 +294,9 @@ export function computePlan(all: Spec[]): PlanData {
     const start = Math.max(0, ...after.map((d) => ends.get(d) ?? 0))
     ends.set(s.name, start + e)
     rows.push({
-      name: s.name, path: s.path, category: s.category, status: s.status, owner, since: str(s.fields.since), blocked,
+      name: s.name, path: s.path, category: s.category, status: s.status, owner, since, blocked,
       effort: e, start, end: start + e, wave: wave.get(s.name)!, after, paths: s.paths,
-      held, mark: PRIO_MARK[str(s.fields.prio)] ?? "", open: open.length,
+      held, mark: PRIO_MARK[str(s.fields.prio)] ?? "", open: open.length, stale: claimStale(since),
     })
   }
 
@@ -387,14 +399,16 @@ export async function vaultPlan(io: Io): Promise<string> {
   return planReport(data, wrote)
 }
 
+/** The one progress line every vault view prints. */
+const progressLine = (d: PlanData) => `${d.progress.implemented}/${d.progress.total} implemented (${d.progress.proven} with proof) · ${d.progress.open} open · ${d.progress.ready} ready · ${d.parallel} parallel · ${d.critical}u critical`
+
 function planReport(d: PlanData, wrote: string[] = []): string {
-  const p = d.progress
-  const out = [`${p.implemented}/${p.total} implemented (${p.proven} with proof) · ${p.open} open · ${p.ready} ready · ${d.critical}u critical${wrote.length ? ` · wrote ${wrote.join(", ")}` : ""}`]
+  const out = [`${progressLine(d)}${wrote.length ? ` · wrote ${wrote.join(", ")}` : ""}`]
   for (const w of d.warnings) out.push(`warning: ${w}`)
   for (const w of waves(d)) {
     out.push(`wave ${w.wave} · ${w.rows.length} units · ${w.effort}u`)
     for (const r of w.rows)
-      out.push(`  ${r.mark ? r.mark + " " : ""}${r.name} (${r.effort}u, ${r.open} open item(s))${r.held ? ` [${r.held}]` : " [start now]"}${r.after.length ? ` after ${r.after.join(", ")}` : ""}`)
+      out.push(`  ${r.mark ? r.mark + " " : ""}${r.name} (${r.effort}u, ${r.open} open item(s))${r.held ? ` [${r.held}${r.stale ? ", stale claim" : ""}]` : " [start now]"}${r.after.length ? ` after ${r.after.join(", ")}` : ""}`)
   }
   return out.join("\n")
 }
@@ -423,7 +437,7 @@ export async function vaultInit(io: Io): Promise<string> {
   const { wrote } = await writePlan(io)
   const rel = (p: string) => p.slice(root.length + 1)
   return added.length || wrote.length
-    ? `vault at ${root}: added ${added.length} file(s)${added.length ? ` (${added.map(rel).join(", ")})` : ""}${wrote.length ? `; wrote ${wrote.join(", ")}` : ""}. Open the folder as an Obsidian vault; the Plan View plugin renders the plan.`
+    ? `vault at ${root}: added ${added.length} file(s)${added.length ? ` (${added.map(rel).join(", ")})` : ""}${wrote.length ? `; wrote ${wrote.join(", ")}` : ""}. Open the folder as an Obsidian vault; Plan View and Dataview ship enabled, and 00 Meta/Dashboard renders the overview.`
     : `vault at ${root} is complete; nothing added`
 }
 
@@ -459,7 +473,7 @@ export async function unitNew(io: Io, e: { title?: unknown; category?: unknown; 
   return `Added ${SPECS}/${title}.md (${tasks.length} Plan item(s), wave ${row?.wave ?? "?"}${row?.held ? `, held: ${row.held}` : ""}). unit_load loads it into the session plan.`
 }
 
-type Closeout = { done: string[]; commit: string; guards: string[]; summary: string; limitations: string }
+type Closeout = { done: string[]; commit: string; guards: string[]; summary: string; limitations: string; run?: string }
 
 /**
  * Writes a unit's closeout into its note: ticks the finished Plan items, sets status
@@ -469,24 +483,54 @@ export function closeNote(text: string, c: Closeout): { text: string; status: st
   let next = tickItems(text, new Set(c.done))
   const status = planItems(next).some((i) => !i.done) ? "partial" : "implemented"
   const proof = `${c.commit} guards: ${c.guards.join("; ") || "none"}; limitations: ${c.limitations || "none"}`
-  next = patchFrontmatter(next, { status, proof, updated: new Date().toISOString().slice(0, 10), owner: null, since: null })
+  next = patchFrontmatter(next, { status, proof, evidence: c.run, updated: new Date().toISOString().slice(0, 10), owner: null, since: null })
   if (c.summary) next = replaceSection(next, "Status", c.summary)
   return { text: next, status }
 }
 
 // --- the unit in the session plan (unit_load, unit_record) ---
 
-/** Adds a unit's open Plan items as tasks and its `checks` as guards; loading it again adds only new items. */
-export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<Result> {
-  const name = trimmed(e.unit)
-  if (!name) return refuse(s, "unit_load needs the unit's note name; vault_plan lists them")
+/** Why this owner cannot claim the unit, or undefined when it can. One rule set for every claim path. */
+const claimBlock = (row: Row, owner: string, takeover = false): string | undefined => {
+  if (row.held && row.held !== "claimed") return `"${row.name}" is held: ${row.held}`
+  if (!row.owner || row.owner === owner) return undefined
+  const age = row.since ? ` since ${row.since}` : ""
+  if (!row.stale) return `"${row.name}" is held: claimed by ${row.owner}${age}; release it there or wait for the claim to go stale`
+  if (!takeover) return `"${row.name}" is held: claimed by ${row.owner}${age} (stale); pass takeover: true to take it`
+  return undefined
+}
+
+/** Writes an owner's claim into the note when the unit can be taken; the plan is passed in, never recomputed. */
+async function takeClaim(io: Io, data: PlanData, spec: Spec, owner: string, takeover = false): Promise<Row | string> {
+  const row = data.rows.find((r) => r.name === spec.name)
+  if (!row) return `"${spec.name}" cannot be claimed: it is not in the plan`
+  const why = claimBlock(row, owner, takeover)
+  if (why) return why
+  const shared = data.rows.filter((r) => r.name !== spec.name && r.owner && !r.stale && r.paths.some((p) => row.paths.includes(p)))
+  if (shared.length) return `"${spec.name}" shares paths with claimed unit(s) ${shared.map((r) => r.name).join(", ")}; release one first`
+  await io.write(vaultPath(io, spec.path), patchFrontmatter(spec.text, { owner, since: new Date().toISOString() }))
+  // Not a lock: a read-back catches the common race where another session wrote between read and write.
+  const back = str(frontmatter((await io.read(vaultPath(io, spec.path))) ?? "").fields.owner)
+  return back === owner ? row : `"${spec.name}" was claimed by ${back || "another session"} while writing; retry`
+
+}
+
+/** A unit's spec and every spec beside it, read once. */
+async function unitSpec(io: Io, name: string): Promise<{ spec: Spec; specs: Spec[] } | string> {
   const specs = specsOf(await readVault(io))
   const spec = findSpec(io, specs, name)
-  if (typeof spec === "string") return refuse(s, spec)
+  return typeof spec === "string" ? spec : { spec, specs }
+}
+
+/** Adds a unit's open Plan items as tasks and its `checks` as guards; with `owner`, claims it. Loading it again adds only new items. */
+async function loadUnit(io: Io, s: Plan, spec: Spec, specs: Spec[], data: PlanData, owner: string): Promise<Result> {
   if (s.unit && s.unit.name !== spec.name) return refuse(s, `unit "${s.unit.name}" is loaded; unit_record closes it first`)
-  const row = computePlan(specs).rows.find((r) => r.name === spec.name)
+  const row = data.rows.find((r) => r.name === spec.name)
   if (!row) return refuse(s, `"${spec.name}" is ${spec.status === "implemented" ? "implemented" : "left out of the plan"}; nothing to load`)
-  if (row.held) return refuse(s, `"${spec.name}" is held: ${row.held}${row.held === "claimed" ? ` by ${row.owner}; clear its owner to take it` : ""}`)
+  if (row.held && !(owner && row.owner === owner)) {
+    const why = claimBlock(row, owner)
+    return refuse(s, why ?? `"${spec.name}" is held: ${row.held}`)
+  }
   const open = openItems(spec)
   if (!open.length) return refuse(s, `${spec.path} has no open "## Plan" items; add test-sized ones first`)
   const unit = { name: spec.name, tasks: { ...(s.unit?.tasks ?? {}) }, guards: [...(s.unit?.guards ?? [])], checks: [...new Set([...(s.unit?.checks ?? []), ...spec.checks])] }
@@ -505,13 +549,18 @@ export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<
   for (const c of spec.checks) {
     const same = next.guards.find((g) => g.check === c)
     if (same) { if (!unit.guards.includes(same.id)) unit.guards.push(same.id); continue }
-    const r = PLAN_TOOLS.guard_add.run!(next, { question: `Does \`${c}\` pass for unit ${spec.name}?`, check: c })
+    const r = PLAN_TOOLS.guard_add.run!(next, { question: `Does \`${c}\` pass for unit ${spec.name}?`, check: c, tier: checkTier(c) })
     if (r.warn) return refuse(s, `${spec.path} checks: ${r.text}`)
     next = r.state
     unit.guards.push(next.guards[next.guards.length - 1].id)
     lines.push(r.text)
   }
   if (next === s && s.unit) return refuse(s, `"${spec.name}" is loaded and has nothing new`)
+  if (owner) {
+    const claimed = await takeClaim(io, data, spec, owner)
+    if (typeof claimed === "string") return refuse(s, claimed)
+    lines.push(`Claimed "${spec.name}" as ${owner} (wave ${claimed.wave})`)
+  }
   if (!spec.checks.length) lines.push("The note has no `checks`; add guards for what the unit must deliver.")
   return { state: { ...next, unit }, text: lines.join("\n"), work: true }
 }
@@ -527,6 +576,15 @@ const openItems = (s: Spec) => s.items.filter((i) => !i.done).map((i) => i.text)
 
 /** The first open Plan item text that appears twice, or undefined. */
 const repeatedItem = (open: string[]) => open.find((t, i, all) => all.indexOf(t) !== i)
+
+/** unit_load: read the vault once, then load the named unit. */
+export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown; owner?: unknown }): Promise<Result> {
+  const name = trimmed(e.unit)
+  if (!name) return refuse(s, "unit_load needs the unit's note name; vault_plan lists them")
+  const found = await unitSpec(io, name)
+  if (typeof found === "string") return refuse(s, found)
+  return loadUnit(io, s, found.spec, found.specs, computePlan(found.specs), trimmed(e.owner))
+}
 
 /** Git's view of the work: HEAD and the changed paths outside .overwatch. */
 export async function gitState(io: Io): Promise<{ commit: string; dirty: string[] } | string> {
@@ -569,31 +627,147 @@ export async function unitRecord(io: Io, s: Plan, e: { summary?: unknown; limita
   const checks = [...new Set([...(unit.checks ?? []), ...spec.checks])]
   const decided = await runChecks(io.run, checks, io.cwd)
   // The plan's guards learn the outcome when their command is one of the unit's checks.
-  const state: Plan = { ...s, guards: s.guards.map((g) => decided.find((d) => d.check === g.check) ?? g) }
+  const decidedPlan: Plan = { ...s, guards: s.guards.map((g) => decided.find((d) => d.check === g.check) ?? g) }
   const failing = decided.filter((g) => !g.met)
-  if (failing.length) return refuse(state, `unit checks failing, nothing recorded:\n${checkReport(failing)}`)
+  if (failing.length) return refuse(decidedPlan, `unit checks failing, nothing recorded:
+${checkReport(failing)}`)
   const done = Object.entries(unit.tasks).filter(([id]) => byId.get(Number(id))?.status === "done").map(([, text]) => text)
+  const guards = decided.map((g) => ({ id: g.id, question: g.question, check: g.check ?? "", tier: g.tier ?? "", met: g.met === true, exit: g.last?.exit ?? null, out: g.last?.out ?? "" }))
+  // The run id names exactly what was checked: the commit and each guard's command and outcome.
+  const run = (await sha256(JSON.stringify({ unit: spec.name, commit: git.commit, guards: guards.map((g) => [g.id, g.check, g.exit]) }))).slice(0, 16)
   const { text, status } = closeNote(spec.text, {
     done,
     commit: git.commit,
     guards: decided.map((g) => `\`${g.check ?? g.id}\` exit 0`),
     summary,
     limitations,
+    run,
   })
   await io.write(vaultPath(io, spec.path), text)
+  await io.write(state(io, EVIDENCE_DIR, `${spec.name}.json`), JSON.stringify({ run, unit: spec.name, commit: git.commit, recorded: new Date().toISOString(), status, summary, limitations, guards }, null, 2) + "\n")
   const { wrote } = await writePlan(io)
-  const { unit: _, ...rest } = state
+  const { unit: _, ...rest } = decidedPlan
   return {
     state: rest,
-    text: `Recorded "${spec.name}" as ${status} at ${git.commit.slice(0, 12)}; ${done.length} Plan item(s) ticked${wrote.length ? `; wrote ${wrote.join(", ")}` : ""}. Commit the note: git add .overwatch/vault && git commit -m "spec: record ${spec.name}"`,
+    text: `Recorded "${spec.name}" as ${status} at ${git.commit.slice(0, 12)} (run ${run}); ${done.length} Plan item(s) ticked${wrote.length ? `; wrote ${wrote.join(", ")}` : ""}. Commit the note: git add .overwatch/vault && git commit -m "spec: record ${spec.name}"`,
   }
+}
+
+/** Claims a unit for an owner; a live claim is refused, a stale one needs takeover. */
+export async function unitClaim(io: Io, s: Plan, e: { unit?: unknown; owner?: unknown; takeover?: unknown }): Promise<Result> {
+  const name = trimmed(e.unit)
+  if (!name) return refuse(s, "unit_claim needs the unit's note name; vault_plan lists them")
+  const owner = trimmed(e.owner)
+  if (!owner) return refuse(s, "unit_claim needs owner: who holds it")
+  const found = await unitSpec(io, name)
+  if (typeof found === "string") return refuse(s, found)
+  if (found.spec.status === "implemented") return refuse(s, `"${found.spec.name}" is implemented; nothing to claim`)
+  const row = await takeClaim(io, computePlan(found.specs), found.spec, owner, e.takeover === true)
+  if (typeof row === "string") return refuse(s, row)
+  return { state: s, text: `Claimed "${found.spec.name}" as ${owner} (wave ${row.wave}, ${row.open} open item(s))`, work: true }
+}
+
+/** Releases a unit's claim; only the recording owner may release it. */
+export async function unitRelease(io: Io, s: Plan, e: { unit?: unknown; owner?: unknown }): Promise<Result> {
+  const name = trimmed(e.unit)
+  if (!name) return refuse(s, "unit_release needs the unit's note name")
+  const owner = trimmed(e.owner)
+  if (!owner) return refuse(s, "unit_release needs owner: the claim holder releasing it")
+  const found = await unitSpec(io, name)
+  if (typeof found === "string") return refuse(s, found)
+  const spec = found.spec
+  const current = str(spec.fields.owner)
+  if (!current) return refuse(s, `"${spec.name}" is not claimed`)
+  if (current !== owner) return refuse(s, `"${spec.name}" is claimed by ${current}; pass owner: "${current}" to release it`)
+  await io.write(vaultPath(io, spec.path), patchFrontmatter(spec.text, { owner: null, since: null }))
+  return { state: s, text: `Released "${spec.name}" (was ${current})`, work: true }
+}
+
+/** Loads the first unit that can start now (lowest wave, no live claim), claiming it for the owner. */
+export async function unitNext(io: Io, s: Plan, e: { owner?: unknown }): Promise<Result> {
+  const owner = trimmed(e.owner)
+  if (!owner) return refuse(s, "unit_next needs owner: who takes the claim")
+  const specs = specsOf(await readVault(io))
+  const data = computePlan(specs)
+  const ready = data.rows.filter((r) => !r.held)
+  if (!ready.length) {
+    const held = data.rows.filter((r) => r.held).map((r) => `${r.name} (${r.held}${r.stale ? ", stale claim" : ""})`)
+    return refuse(s, `no unit can start now${held.length ? `; held: ${held.join(", ")}` : ""}`)
+  }
+  const spec = findSpec(io, specs, ready[0].name)
+  if (typeof spec === "string") return refuse(s, spec)
+  return loadUnit(io, s, spec, specs, data, owner)
+}
+
+type Evidence = {
+  run?: string; unit?: string; commit?: string; recorded?: string; status?: string; summary?: string; limitations?: string
+  guards?: { id: string; question?: string; check?: string; tier?: string; met?: boolean; exit?: number | null; out?: string }[]
+}
+
+/** Reads the recorded run for a unit and compares it with HEAD; rerun re-runs its checks. */
+export async function unitVerify(io: Io, s: Plan, e: { unit?: unknown; rerun?: unknown }): Promise<Result> {
+  const name = trimmed(e.unit) || s.unit?.name
+  if (!name) return refuse(s, "unit_verify needs a unit; unit_load loads one or pass unit")
+  const specs = specsOf(await readVault(io))
+  const spec = findSpec(io, specs, name)
+  if (typeof spec === "string") return refuse(s, spec)
+  const ev = await readJson<Evidence | undefined>(io, state(io, EVIDENCE_DIR, `${spec.name}.json`), undefined)
+  if (!ev?.run) return refuse(s, `no recorded run for "${spec.name}"; unit_record writes one`)
+  const git = await gitState(io)
+  if (typeof git === "string") return refuse(s, git)
+  const guards = Array.isArray(ev.guards) ? ev.guards : []
+  // Current means the recorded commit plus no code changes: a later note-only commit still covers the tree.
+  let current = ev.commit === git.commit && !git.dirty.length
+  let noteOnly = false
+  if (!current && ev.commit && !git.dirty.length) {
+    const diff = await io.run(["git", "diff", "--name-only", `${ev.commit}..HEAD`, "--", ".", ":(exclude).overwatch"], { cwd: io.cwd, timeoutMs: 20_000 })
+    noteOnly = diff.code === 0 && !diff.stdout.trim()
+    current = noteOnly
+  }
+  const known = guards.filter((g) => typeof g.met === "boolean").length
+  const upheld = guards.filter((g) => g.met === true).length
+  const unknown = guards.length - known
+  const lines = [
+    `unit "${spec.name}" run ${ev.run}: ${current ? `current${noteOnly ? " (notes only since)" : ""}` : "stale"} — recorded at ${String(ev.commit ?? "?").slice(0, 12)}${ev.recorded ? ` on ${ev.recorded}` : ""}, HEAD ${git.commit.slice(0, 12)}${git.dirty.length ? `; ${git.dirty.length} uncommitted path(s)` : ""}`,
+    `${upheld}/${guards.length} guard(s) upheld when recorded${unknown ? `; ${unknown} unknown` : ""}${ev.status ? `; status ${ev.status}` : ""}`,
+  ]
+  if (ev.summary) lines.push(`summary: ${ev.summary}`)
+  if (ev.limitations) lines.push(`limitations: ${ev.limitations}`)
+  if (e.rerun === true) {
+    const checks = guards.filter((g) => g.check)
+    if (!checks.length) lines.push("no recorded checks to re-run")
+    else {
+      const decided = await Promise.all(checks.map((g) => runCheck(io.run, { id: g.id, question: g.question ?? g.id, check: g.check! }, io.cwd)))
+      lines.push(checkReport(decided))
+    }
+  } else if (!current) {
+    lines.push("record it again with unit_record after the work, or pass rerun: true to re-run the recorded checks")
+  }
+  return { state: s, text: lines.join("\n") }
+}
+
+/** The vault ledger: progress, live and stale claims, ready units, clashes and warnings. Read-only. */
+export async function vaultStatus(io: Io): Promise<string> {
+  const data = computePlan(specsOf(await readVault(io)))
+  const p = data.progress
+  const lines = [`${p.implemented}/${p.total} implemented (${p.proven} with proof) · ${p.open} open · ${p.ready} ready · ${data.parallel} parallel · ${data.critical}u critical`]
+  const claims = data.rows.filter((r) => r.owner)
+  lines.push(...(claims.length ? ["claims:", ...claims.map((r) => `  ${r.name} by ${r.owner}${r.since ? ` since ${r.since}` : ""}${r.stale ? " (stale)" : ""}`)] : ["claims: none"]))
+  const ready = data.rows.filter((r) => !r.held)
+  lines.push(ready.length ? `ready: ${ready.map((r) => r.name).join(", ")}` : "ready: none")
+  if (data.clashes.length) lines.push(`path clashes: ${data.clashes.map((c) => c.join(" / ")).join("; ")}`)
+  for (const w of data.warnings) lines.push(`warning: ${w}`)
+  return lines.join("\n")
 }
 
 /** The plan tools that read and write the vault; each host merges them with PLAN_TOOLS. */
 export const VAULT_TOOLS: Record<string, PlanTool> = {
   unit_load: {
     description: "Bring a vault unit (a spec note in .overwatch/vault/01 Specs) into the session plan: each open item of its \"## Plan\" checklist becomes a task, each command in its `checks` frontmatter a guard. Refused while the unit is held (waiting on unfinished units, a cycle, blocked, deferred, claimed) or another unit is loaded. vault_plan lists the units and which can start now.",
-    properties: { unit: { type: "string", description: "The spec note's name, e.g. \"Parser Recovery\"." } },
+    properties: {
+      unit: { type: "string", description: "The spec note's name, e.g. \"Parser Recovery\"." },
+      owner: { type: "string", description: "Claim the unit for this owner as it loads; unit_record releases it." },
+    },
     required: ["unit"],
     act: unitLoad,
   },
@@ -606,5 +780,42 @@ export const VAULT_TOOLS: Record<string, PlanTool> = {
     },
     required: ["summary", "limitations"],
     act: unitRecord,
+  },
+  unit_claim: {
+    description: "Claim a unit for an owner so two sessions cannot take it: writes owner and since into the note. Refused while a live claim or a waiting prerequisite holds it; a claim older than 15 minutes is stale and needs takeover: true. Refused when the unit shares paths with another live claim.",
+    properties: {
+      unit: { type: "string", description: "The spec note's name." },
+      owner: { type: "string", description: "Who holds the claim, e.g. \"claude@session\"." },
+      takeover: { type: "boolean", description: "Take over a stale claim from another owner; refused for a live one." },
+    },
+    required: ["unit", "owner"],
+    act: unitClaim,
+  },
+  unit_release: {
+    description: "Release a unit's claim, clearing owner and since. Only the recording owner may release it; unit_record releases it itself.",
+    properties: {
+      unit: { type: "string", description: "The spec note's name." },
+      owner: { type: "string", description: "The owner releasing it; must match the recorded owner." },
+    },
+    required: ["unit", "owner"],
+    act: unitRelease,
+  },
+  unit_next: {
+    description: "Load the first unit that can start now (lowest wave, not held), claiming it for the owner. A stale claim is not taken automatically: unit_claim takeover: true is explicit. One call replaces reading vault_plan and naming the unit: its Plan items become tasks and its checks guards.",
+    properties: { owner: { type: "string", description: "Who takes the claim, e.g. \"claude@session\"." } },
+    required: ["owner"],
+    act: unitNext,
+  },
+  unit_verify: {
+    description: "Read a unit's recorded run and compare it with HEAD: current means the evidence covers the tree, stale means the commit moved. rerun: true re-runs the recorded checks now, without writing a new run. Read-only.",
+    properties: {
+      unit: { type: "string", description: "The spec note's name; the loaded unit when omitted." },
+      rerun: { type: "boolean", description: "Re-run the recorded check commands and report their outcomes." },
+    },
+    act: unitVerify,
+  },
+  vault_status: {
+    description: "The vault ledger in one read: progress counts, live and stale claims, units ready to start, path clashes and dependency warnings. Read-only.",
+    act: async (io: Io, s: Plan) => ({ state: s, text: await vaultStatus(io) }),
   },
 }

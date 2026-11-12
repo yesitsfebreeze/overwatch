@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing"
 import type { Plan } from "../types/index.d.ts"
 import { memIo, type Runner } from "./io.ts"
 import { EMPTY } from "./plan.ts"
-import { closeNote, computePlan, frontmatter, parseSpec, patchFrontmatter, planItems, PLAN_DATA, PLAN_TASKS, serialize, tickItems, unitLoad, unitNew, unitRecord, vaultInit } from "./vault.ts"
+import { claimStale, closeNote, computePlan, frontmatter, parseSpec, patchFrontmatter, planItems, PLAN_DATA, PLAN_TASKS, serialize, tickItems, unitClaim, unitLoad, unitNew, unitNext, unitRecord, unitRelease, unitVerify, vaultInit, vaultStatus } from "./vault.ts"
 
 const V = "/p/.overwatch/vault"
 const TEMPLATE = "---\ntitle: {{title}}\ncategory:\nstatus: target\nupdated: {{date}}\n---\n\n# {{title}}\n\n## Summary\n\nOne paragraph.\n\n## Plan\n\n- [ ] placeholder\n\n## Status\n\nNothing yet.\n\n## Open questions\n\n-\n"
@@ -193,4 +193,61 @@ test("Plan items match by trimmed text, and a repeated item is refused", async (
   expect(planItems(tickItems(text, new Set(["run tests"])))[0].done).toBe(true)
   const x = io({ ...spec("R", "", "- [ ] same\n- [ ] same") })
   expect((await unitLoad(x, EMPTY, { unit: "R" })).text).toContain("repeats the Plan item")
+})
+
+test("claims: live claim refused, stale claim needs takeover, only the owner releases", async () => {
+  const x = io(spec("A", ""))
+  expect(claimStale("2000-01-01T00:00:00Z")).toBe(true)
+  expect(claimStale(new Date().toISOString())).toBe(false)
+  const note = () => x.files[`${V}/01 Specs/A.md`]
+  expect((await unitClaim(x, EMPTY, { unit: "A", owner: "a@1" })).warn).toBeUndefined()
+  expect(frontmatter(note()).fields.owner).toBe("a@1")
+  expect((await unitClaim(x, EMPTY, { unit: "A", owner: "b@1" })).text).toContain("claimed by a@1")
+  x.files[`${V}/01 Specs/A.md`] = note().replace(/^since: .*$/m, "since: 2000-01-01T00:00:00Z")
+  expect((await unitClaim(x, EMPTY, { unit: "A", owner: "c@1" })).text).toContain("stale")
+  expect((await unitClaim(x, EMPTY, { unit: "A", owner: "c@1", takeover: true })).warn).toBeUndefined()
+  expect((await unitRelease(x, EMPTY, { unit: "A", owner: "a@1" })).text).toContain("claimed by c@1")
+  expect((await unitRelease(x, EMPTY, { unit: "A", owner: "c@1" })).warn).toBeUndefined()
+  expect(frontmatter(note()).fields.owner).toBeUndefined()
+})
+
+test("evidence: unit_record writes a run, unit_verify compares it with HEAD, rerun re-runs its checks", async () => {
+  let head = "a".repeat(40)
+  const ran: string[] = []
+  const run: Runner = async (argv) => {
+    ran.push(argv.join(" "))
+    if (argv[0] === "git" && argv[1] === "rev-parse") return { code: 0, stdout: `${head}
+`, stderr: "" }
+    if (argv[0] === "git" && argv[1] === "status") return { code: 0, stdout: "", stderr: "" }
+    return { code: 0, stdout: "ok", stderr: "" }
+  }
+  const x = io({}, run)
+  await unitNew(x, { title: "A", category: "behavior", tasks: ["one"], checks: ["bun test"] })
+  const s = (await unitLoad(x, EMPTY, { unit: "A", owner: "d@1" })).state
+  expect(frontmatter(x.files[`${V}/01 Specs/A.md`]).fields.owner).toBe("d@1")
+  const done = { ...s, tasks: s.tasks.map((t) => ({ ...t, status: "done" as const, progress: 100 })) }
+  const rec = await unitRecord(x, done, { summary: "One works.", limitations: "none" })
+  expect(rec.text).toContain("run ")
+  const ev = x.files["/p/.overwatch/evidence/A.json"]!
+  expect(ev).toContain('"commit": "' + head + '"')
+  expect(ev).toContain("bun test")
+  expect((await unitVerify(x, EMPTY, { unit: "A" })).text).toContain("current")
+  head = "b".repeat(40)
+  expect((await unitVerify(x, EMPTY, { unit: "A" })).text).toContain("stale")
+  expect((await unitVerify(x, EMPTY, { unit: "A", rerun: true })).text).toContain("upheld")
+  expect(frontmatter(x.files[`${V}/01 Specs/A.md`]).fields.owner).toBeUndefined()
+})
+
+test("unit_next loads the first startable unit and vault_status lists claims and readiness", async () => {
+  const x = io({ ...spec("A", ""), ...spec("B", "depends: [A]\n"), ...spec("C", "owner: x@1\nsince: 2099-01-01T00:00:00Z\n") })
+  const next = await unitNext(x, EMPTY, { owner: "d@1" })
+  expect(next.warn).toBeUndefined()
+  expect(next.state.unit?.name).toBe("A")
+  expect(frontmatter(x.files[`${V}/01 Specs/A.md`]).fields.owner).toBe("d@1")
+  const again = await unitNext(x, next.state, { owner: "e@1" })
+  expect(again.text).toContain("no unit can start now")
+  const ledger = await vaultStatus(x)
+  expect(ledger).toContain("claims:")
+  expect(ledger).toContain("C by x@1")
+  expect(ledger).toContain("ready: none")
 })

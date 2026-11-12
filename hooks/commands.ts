@@ -7,6 +7,7 @@ import { GATE_ROUNDS, GATE_SCORE, prdAdd, prdBrief, prdCollect, prdNext, prdRefi
 import { loadout } from "./loadout.ts"
 import { launch, launched } from "./launch.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
+import { CHECK_TIERS } from "./guards.ts"
 import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
 /** One tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
@@ -109,8 +110,9 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: (io, e) => prdCollect(io, e),
   },
   checks: {
-    description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. Run from the repo root. Read-only. Empty until scan froze the checks.",
-    run: checklist,
+    description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. tier filters to fast, unit or milestone. Run from the repo root. Read-only. Empty until scan froze the checks.",
+    properties: { tier: { type: "string", enum: [...CHECK_TIERS], description: "Show only checks of this tier." } },
+    run: (io, e) => checklist(io, text(e.tier) || undefined),
   },
   scan: {
     description: "Discover this repo's test/lint/build commands (package.json scripts, Cargo.toml, go.mod, Makefile, justfile, pyproject.toml) and freeze them into .overwatch/checks.json for checks. A discovery pass, not law: a wrong guess is fixed by editing checks.json.",

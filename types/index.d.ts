@@ -31,12 +31,17 @@ export type Task = {
   status: "todo" | "active" | "done"
 }
 
+/** How heavy a check is: cheap lint/typecheck, unit tests, or the full milestone gate. */
+export type CheckTier = "fast" | "unit" | "milestone"
+
 /** One yes/no question about the finished work. */
 export type Guard = {
   id: string
   question: string
   /** Shell command that decides it: exit 0 is upheld. Re-run at every stop, so a regression reopens it. */
   check?: string
+  /** How heavy the check is, so guard_check can run one tier without the rest. */
+  tier?: CheckTier
   /** Files whose current content the judge sees, relative to the project. */
   files?: string[]
   /** Whether the last decision upheld it. A judged guard, once upheld, is retired. */

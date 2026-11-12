@@ -10,6 +10,7 @@
  * State: .overwatch/ in the working directory (surface.json, checks.json, mistakes.md).
  */
 import { cmp, type Io, join, onPath, readJson, state } from "./io.ts"
+import { CHECK_TIERS, checkTier, isTier } from "./guards.ts"
 import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./incidents.ts"
 
 const PROMOTE_AT = 3 // a "rare" tool that fires this often is mislabelled
@@ -177,6 +178,7 @@ export async function report(io: Io): Promise<string> {
 // ── checks: a repo's verification commands and its mistakes ledger ──────────
 
 const CHECK_RE = /test|lint|check|build|verify|typecheck|fmt/
+
 // Language servers and toolchains that outlive their editor and eat swap.
 const ORPHAN_RE = /rust-analyzer|language-server|langserver|tsserver|gopls|pyright|clangd/
 
@@ -208,7 +210,10 @@ export async function discover(io: Io): Promise<string[]> {
   return [...new Set(checks)].sort()
 }
 
-const frozen = async (io: Io): Promise<string[]> => (await readJson<any>(io, state(io, "checks.json"), {}))?.checks ?? []
+const frozenDoc = async (io: Io): Promise<{ checks?: string[]; tiers?: Record<string, string> }> => await readJson<any>(io, state(io, "checks.json"), {})
+const frozen = async (io: Io): Promise<string[]> => (await frozenDoc(io)).checks ?? []
+/** A command's tier: the frozen override, else the name heuristic. */
+const tierOf = (tiers: Record<string, string>, c: string) => tiers[c] ?? checkTier(c)
 
 /** The recorded mistakes, or undefined when there are none. */
 const mistakes = async (io: Io) => (await io.read(state(io, "mistakes.md")))?.trim() || undefined
@@ -228,16 +233,29 @@ export async function learned(io: Io): Promise<string> {
 
 export async function scan(io: Io): Promise<string> {
   const checks = await discover(io)
+  const tiers = Object.fromEntries(checks.map((c) => [c, checkTier(c)]))
   const path = state(io, "checks.json")
-  await io.write(path, JSON.stringify({ checks, at: new Date().toISOString() }, null, 2) + "\n")
+  await io.write(path, JSON.stringify({ checks, tiers, at: new Date().toISOString() }, null, 2) + "\n")
   if (!checks.length) return "no checks discovered — add them to .overwatch/checks.json by hand"
-  return `froze ${checks.length} checks to ${path}:\n${checks.map((c) => `- ${c}`).join("\n")}`
+  return `froze ${checks.length} checks to ${path}:\n${checks.map((c) => `- [${tiers[c]}] ${c}`).join("\n")}`
 }
 
-export async function checklist(io: Io): Promise<string> {
-  const checks = await frozen(io)
-  if (!checks.length) return "no checks frozen — run scan (`overwatch scan`) first"
-  return `# verification plan\nrun these, in order, before calling the change done:\n${checks.map((c) => `- ${c}`).join("\n")}\n\n# mistakes to avoid\n${(await mistakes(io)) ?? "(none recorded)"}`
+/** The frozen checks, one tier when named; an unknown tier is an error. */
+export async function checklist(io: Io, tier?: string): Promise<string> {
+  if (tier && !isTier(tier)) throw new Error(`tier must be one of ${CHECK_TIERS.join(", ")}`)
+  const doc = await frozenDoc(io)
+  const all = doc.checks ?? []
+  if (!all.length) return "no checks frozen — run scan (`overwatch scan`) first"
+  const tiers = doc.tiers ?? {}
+  const checks = tier ? all.filter((c) => tierOf(tiers, c) === tier) : all
+  const [body, mist] = await Promise.all([
+    Promise.resolve(checks.length
+      ? checks.map((c) => `- [${tierOf(tiers, c)}] ${c}`).join("\n")
+      : `no ${tier} checks frozen; all frozen checks: ${all.join(", ")}`),
+    mistakes(io),
+  ])
+  const head = tier ? `# verification plan (${tier} tier)` : "# verification plan"
+  return `${head}\nrun these, in order, before calling the change done:\n${body}\n\n# mistakes to avoid\n${mist ?? "(none recorded)"}`
 }
 
 export async function mistake(io: Io, text: string): Promise<string> {
