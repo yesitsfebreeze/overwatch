@@ -93,7 +93,7 @@ const SURFACE = { plugin: "overwatch", key: "surface" } as const
 export async function surfaceBlock($: any, offered: readonly string[]): Promise<string> {
   const { value } = await $.state.get(SURFACE)
   if (typeof value === "string") return value
-  const [listed, at]: [string[], Awaited<ReturnType<typeof io>>] = await Promise.all([$.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => []), io($)])
+  const [listed, at]: [string[], Io] = await Promise.all([$.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => []), io($)])
   const parts = await Promise.all([surface(at, [...new Set([...offered, ...listed])]), learned(at)]).catch(() => undefined)
   if (parts === undefined) return "" // a failed build is retried on the next request, not cached
   const [{ sections, drawn }, lessons] = parts

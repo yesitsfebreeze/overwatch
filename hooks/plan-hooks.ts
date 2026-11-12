@@ -1,8 +1,8 @@
 import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
-import { GUARD_MET, JUDGE_URL, checkScript, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
+import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { shellArgv, type Runner } from "./io.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
@@ -33,7 +33,7 @@ const engineRun = ($: any): Runner => (argv, init = {}) =>
 /** Runs one guard's check from the session root; a check past CHECK_TIMEOUT_MS counts as not upheld. */
 const runCheck = async ($: any, g: Guard, cwd?: string): Promise<Guard> => {
   try {
-    const r = await engineRun($)([...await shellArgv(engineRun($)), "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+    const r = await engineRun($)([...await shellArgv(engineRun($)), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
     return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
   } catch (err: any) {
     return checked(g, null, `[check did not finish: ${err?.message ?? err}]`)
@@ -95,15 +95,16 @@ export const register: Register = (on) => {
       let out!: Result
       const plan = await update($, PLAN, (s) => (out = run(s, e)).state)
       // New work ends a review pass: the next edit marks the change dirty again.
-      await Promise.all([show($, plan), out.work && update($, VERIFY, (v) => ({ ...v, review: false, simplify: false }))])
+      await Promise.all([show($, plan), out.work && update($, VERIFY, newWork)])
       return out.warn ? { deny: out.text } : { result: out.text }
     })
   }
 
   // The gate: no file change before the plan has tasks and guards. The first edit
   // marks the change dirty and voids a pass run before it; later edits (fixes the
-  // pass asks for) keep the pass. Every edit adds its lines to the change's size,
-  // which decides whether /code-review is due. New work through the task tool ends the pass.
+  // pass asks for) keep the pass. Every edit adds its lines to the counts since
+  // /simplify and since /code-review, which decide whether each is due. New work
+  // through the task tool ends the pass and starts the count of each skill that ran from 0.
   for (const tool of EDIT_TOOLS)
     on("tool.call", { tool }, async ($, e, next) => {
       const why = gateReason(await read($, PLAN))
@@ -112,7 +113,7 @@ export const register: Register = (on) => {
         return { deny: why }
       }
       const n = changedLines(e)
-      await update($, VERIFY, (v) => (v.dirty ? { ...v, lines: (v.lines || 0) + n } : { ...CLEAN, dirty: true, lines: n }))
+      await update($, VERIFY, (v) => edited(v, n))
       return next(e)
     })
 

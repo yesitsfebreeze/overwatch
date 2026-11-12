@@ -55,11 +55,13 @@ export type Plan = {
 
 /**
  * Whether changed code went through /code-review and /simplify. `dirty` is set
- * by the first file edit, which voids a pass run before it; `lines` sums the
- * lines the edit tools touched and decides whether /code-review is asked for
- * on top of /simplify. A stop that passes clears all of it.
+ * by the first file edit, which voids a pass run before it. `lines` sums the
+ * lines the edit tools touched since /simplify last covered them and decides
+ * whether /simplify is asked for; `unreviewed` is the same since /code-review.
+ * New work after a skill ran starts that skill's count from 0. A stop that
+ * passes clears all of it.
  */
-export type Verify = { dirty: boolean; review: boolean; simplify: boolean; lines: number }
+export type Verify = { dirty: boolean; review: boolean; simplify: boolean; lines: number; unreviewed: number }
 
 /** The stop bookkeeping: what the next stop compares against. */
 export type StopBook = {

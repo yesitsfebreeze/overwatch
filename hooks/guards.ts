@@ -145,22 +145,25 @@ const ALWAYS = String.raw`(?:true|:|exit\s+0|(?:echo|printf)(?:[ \t][^|;&\n]*)?)
 const BARE = new RegExp(`^(?:${ALWAYS}|exit)$`)
 const OR_ALWAYS = new RegExp(String.raw`\|\|\s*${ALWAYS}$`)
 const LAST_ALWAYS = new RegExp(String.raw`[;\n]\s*${ALWAYS}$`)
-const ENDS_EARLIER = /\bexit\s+[1-9]|\bset\s+-[a-z]*e/
+const PIPED_AWAY = new RegExp(String.raw`(?:^|[^|])\|&?\s*(?:(?:tail|head|tee|cat)\b[^|;&\n]*|${ALWAYS})$`)
+const ENDS_EARLIER = /\bexit\s+[1-9]|\bset\s+(?:-[a-z]*e|-o\s+errexit)/
 
 /**
- * Whether a check exits 0 whatever happened: a bare true/:/exit/echo, anything ending in `|| true`, or a
- * last `; true` / `; echo done` with no earlier `exit N` or `set -e` that could end it first. Trailing
- * comments, `;` and wrapping parens are looked through. A pipe into tail/head/tee is not one: checkScript
- * runs with pipefail.
+ * Whether a check's exit code says nothing about the work: a bare always-0 command (true, :, exit 0, echo,
+ * printf), anything ending in `|| <always-0>`, a last `; <always-0>` with no earlier `exit N`, `set -e` or
+ * `set -o errexit` that could end it first, or a last pipe into tail/head/tee/cat or an always-0 command (sh takes the pipe's status
+ * from its last command). Quoted text, comments, parens and trailing `;` are looked through.
  */
 export function cannotFail(check: string): boolean {
-  let c = check.replace(/[ \t]+#[^\n'"]*$/, "").replace(/[;\s]+$/, "").trim()
-  while (/^\(.*\)$/s.test(c)) c = c.slice(1, -1).trim()
-  return BARE.test(c) || OR_ALWAYS.test(c) || (LAST_ALWAYS.test(c) && !ENDS_EARLIER.test(c))
+  const c = check
+    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''") // quoted text can neither end nor join commands
+    .replace(/(^|[ \t])#.*$/gm, "$1")
+    .replace(/[()]/g, " ")
+    .replace(/[;\s]+$/, "")
+    .trim()
+  return BARE.test(c) || OR_ALWAYS.test(c) || PIPED_AWAY.test(c) || (LAST_ALWAYS.test(c) && !ENDS_EARLIER.test(c))
 }
 
-/** The script a check runs as under `sh -c`: with pipefail where the shell has it, so `cmd | tail` fails with cmd. */
-export const checkScript = (check: string) => `(set -o pipefail) 2>/dev/null && set -o pipefail\n${check}`
 
 /** A new guard, or the reason it is refused: a question the judge cannot decide. */
 export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[]): Guard | string {

@@ -8,7 +8,7 @@ import { guardMark, makeGuard } from "./guards.ts"
 /** A registered tool's full name: `mcp__<plugin>__<name>`. */
 export const tool = (name: string) => TOOL_PREFIX + name
 export const EMPTY: Plan = { tasks: [], nextId: 1, guards: [] }
-export const CLEAN: Verify = { dirty: false, review: false, simplify: false, lines: 0 }
+export const CLEAN: Verify = { dirty: false, review: false, simplify: false, lines: 0, unreviewed: 0 }
 export const FRESH: StopBook = { sig: "", stalls: 0, rounds: 0 }
 
 /** Refused stops with nothing changed before the stop is let through and the user told. */
@@ -33,19 +33,30 @@ const lineCount = (s: unknown) => {
   for (let i = s.indexOf("\n"); i !== -1 && i < s.length - 1; i = s.indexOf("\n", i + 1)) n++
   return n
 }
-/**
- * Lines one edit-tool call touches: the larger of the replaced and the new text, summed over `edits` and git-fs `items`.
- * A call whose size the input cannot show (a whole-file write, whose replaced text is unseen; a replace_all) counts as
- * at least SMALL_CHANGE_LINES, so it never slips under the small-change exemption.
- */
-export const changedLines = (i: any): number => {
-  const parts = [i?.edits, i?.items].filter(Array.isArray).flat()
-  if (parts.length) return parts.reduce((n: number, x: unknown) => n + changedLines(x), 0)
-  const old = i?.old_string ?? i?.old ?? i?.oldText
-  const whole = i?.content ?? i?.text
-  const n = Math.max(lineCount(old), lineCount(i?.new_string ?? i?.new ?? i?.newText ?? whole ?? i?.new_source))
-  return i?.replace_all === true || (old === undefined && whole !== undefined) ? Math.max(n, SMALL_CHANGE_LINES) : n
+const parts = (i: any): unknown[] => [i?.edits, i?.items].filter(Array.isArray).flat()
+const oldText = (i: any) => i?.old_string ?? i?.old ?? i?.oldText
+const wholeText = (i: any) => i?.content ?? i?.text
+const newText = (i: any) => i?.new_string ?? i?.new ?? i?.newText ?? wholeText(i) ?? i?.new_source
+
+/** Lines the input shows: the larger of the replaced and the new text, summed over `edits` and git-fs `items`. */
+const shownLines = (i: any): number => {
+  const ps = parts(i)
+  if (ps.length) return ps.reduce((n: number, x) => n + shownLines(x), 0)
+  return Math.max(lineCount(oldText(i)), lineCount(newText(i)))
 }
+
+/** Whether the input hides text the call replaces: a whole-file write, a replace_all, a notebook cell replace or delete. */
+const hidesReplaced = (i: any): boolean =>
+  parts(i).some(hidesReplaced) ||
+  i?.replace_all === true ||
+  (oldText(i) === undefined && wholeText(i) !== undefined) ||
+  (i?.notebook_path !== undefined && i?.edit_mode !== "insert")
+
+/**
+ * Lines one edit-tool call touches. A call that hides what it replaces counts as at least SMALL_CHANGE_LINES, once
+ * per call (not per item), so it never slips under the small-change exemption and a few new files stay small.
+ */
+export const changedLines = (i: any): number => Math.max(shownLines(i), hidesReplaced(i) ? SMALL_CHANGE_LINES : 0)
 
 /** One gauge on followline's line, as `$.followline.put` takes it (followline's own type, kept local: no dependency). */
 export type Slot = { id: string; label?: string; pct: number; color?: "green" | "yellow" | "red"; detail?: string }
@@ -69,11 +80,22 @@ const withTask = (s: Plan, e: any, f: (t: Task, tasks: Task[]) => Result): Resul
   return t ? f(t, tasks) : refuse(s, `no task #${e.task_id}; plan_show lists the task numbers`)
 }
 
-/** The review passes still due on a dirty change: none for a small one, /simplify from SMALL_CHANGE_LINES, /code-review first for a large one. */
-export const due = (v: Verify): string[] => {
-  const lines = v.lines || 0
-  return [lines >= LARGE_CHANGE_LINES && !v.review && "/code-review", lines >= SMALL_CHANGE_LINES && !v.simplify && "/simplify"].filter((x): x is string => !!x)
-}
+/**
+ * The review passes still due on a dirty change, each judged by the lines changed since it last ran: /simplify
+ * from SMALL_CHANGE_LINES, /code-review first from LARGE_CHANGE_LINES.
+ */
+export const due = (v: Verify): string[] =>
+  [(v.unreviewed || 0) >= LARGE_CHANGE_LINES && !v.review && "/code-review", (v.lines || 0) >= SMALL_CHANGE_LINES && !v.simplify && "/simplify"].filter((x): x is string => !!x)
+
+/** One edit of `n` lines: the first marks the change dirty and voids a pass run before it; later ones add to both counts and keep the pass. */
+export const edited = (v: Verify, n: number): Verify =>
+  v.dirty ? { ...v, lines: (v.lines || 0) + n, unreviewed: (v.unreviewed || 0) + n } : { ...CLEAN, dirty: true, lines: n, unreviewed: n }
+
+/**
+ * New work ends a review pass. Each skill that ran covered every line so far, so its count starts again from 0
+ * and the fix for a finding is judged by its own size, not the reviewed change's; a skill that did not run keeps its count.
+ */
+export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: false, lines: v.simplify ? 0 : v.lines, unreviewed: v.review ? 0 : v.unreviewed })
 
 /** A task's state as every view prints it: `done`, or `45%` / `45% active`. */
 const taskState = (t: Task) => (t.status === "done" ? "done" : `${t.progress}%${t.status === "active" ? " active" : ""}`)
@@ -108,10 +130,10 @@ export const openLine = (reason: string): string => reason.split("\n").filter((l
 /** Where the review pass stands: what plan_show reports beside the plan. */
 export const reviewLine = (v: Verify): string => {
   if (!v.dirty) return "Review: no file changes since the last passed stop."
-  const lines = v.lines || 0
+  const lines = Math.max(v.lines || 0, v.unreviewed || 0)
   const left = due(v)
   if (lines < SMALL_CHANGE_LINES) return `Review: ${lines} changed line(s) (small); no review pass needed.`
-  return `Review: ${lines} changed line(s)${lines >= LARGE_CHANGE_LINES ? " (large)" : ""}; ${left.length ? `due once tasks and guards are clear: ${left.join(", then ")}` : "review pass done"}.`
+  return `Review: ${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; ${left.length ? `due once tasks and guards are clear: ${left.join(", then ")}` : "review pass done"}.`
 }
 
 /** The plan in full for plan_show: tasks, each guard with its question and last outcome, the review state. */

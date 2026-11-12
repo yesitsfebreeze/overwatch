@@ -11,7 +11,7 @@
  */
 import type { Guard, Plan, StopBook } from "../types/index.d.ts"
 import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, stopVerdict, withDecided } from "../hooks/plan.ts"
-import { checkScript, openGuards } from "../hooks/guards.ts"
+import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
 import { fullNotice } from "../hooks/gardener.ts"
@@ -64,7 +64,7 @@ export async function withState<T>(io: Io, root: string, f: (s: State) => Promis
 }
 
 const runCheck = async (io: Io, g: Guard, cwd: string): Promise<Guard> => {
-  const r = await io.run([...await shellArgv(io.run), "-c", checkScript(g.check!)], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+  const r = await io.run([...await shellArgv(io.run), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
   return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
 }
 

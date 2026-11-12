@@ -104,11 +104,6 @@ export function draw(st: Ledger, names: string[], rnd = Math.random): Ledger["dr
 const top = (pairs: [string, number][]) => pairs.sort((a, b) => b[1] - a[1]).slice(0, TOP_N).map(([n, c]) => `${n} ${c}`).join(" · ")
 
 /**
- * The block the prompt carries: evidence, triggers, one question. `active` is the
- * session's tool names; given, a tool outside it is left out everywhere (counts
- * outlive a removed plugin). A shell binary shows only when it is on PATH.
- */
-/**
  * The tool-surface sections (asBlock joins them) without the rating question, the tool drawn for rating, and the ledger write of that
  * draw (not awaited here, so a prompt does not wait on it). The caller gets `drawn` from here, never by
  * re-reading the ledger, which may not hold the draw yet.

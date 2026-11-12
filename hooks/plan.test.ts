@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing"
-import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, reminder, reviewLine, slot, stopVerdict, tool } from "./plan.ts"
+import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, edited, newWork, reminder, reviewLine, slot, stopVerdict, tool } from "./plan.ts"
 import { fitResults, guardId, lastTurn, makeGuard, openGuards, selectResults } from "./guards.ts"
 import type { Guard, Plan } from "../types/index.d.ts"
 
@@ -45,12 +45,14 @@ test("guards: ids from telling words, taste words refused unless a check decides
 test("guard: a no-op check that cannot fail is refused", () => {
   const q = "Do the parser tests pass?"
   const never = ["true", ":", "exit", "exit 0", "true;", "echo done", "printf ok", "bun test || true", "bun test; exit 0", "bun test ;  true",
-    "bun test || echo failed", "bun test; echo done", "bun test || true;", "bun test || true # flaky", "(bun test || true)"]
+    "bun test || echo failed", "bun test; echo done", "bun test || true;", "bun test || true # flaky", "(bun test || true)",
+    "bun test || true\n# flaky", "bun test || true # it's flaky", "bun test || echo 'a|b'", "(bun test) || (true)", "bun test; echo \"exit 1 means fail\"",
+    "bun test 2>&1 | tail -20", "bun test | head -5", "bun test |& tee log.txt", "bun test | cat", "bun test | true", "bun test | echo x"]
   for (const c of never) expect([c, makeGuard([], q, c)]).toEqual([c, expect.stringContaining("check cannot fail")])
   const can = ["bun test", "test -f out.txt", "echo x | grep -q x", "grep -q true config.json", "true && bun test", "echo running tests\nbun test",
-    "set -e; bun test; true", "test -f out.txt || exit 1; exit 0", "echo-server --selftest", "bun test 2>&1 | tail -20"]
+    "set -e; bun test; true", "test -f out.txt || exit 1; exit 0", "echo-server --selftest", "bun test | grep -q '0 fail'", "bun test || tail -5 log.txt",
+    "set -o errexit; bun test; true", "grep -q '#' notes.md"]
   for (const c of can) expect(makeGuard([], q, c)).toMatchObject({ check: c })
-  // A pipe into tail/head/tee is not refused here: checkScript runs every check with pipefail.
 })
 
 test("lastTurn: from the last human message, tool calls numbered, results paired", () => {
@@ -94,7 +96,7 @@ test("stopVerdict: open tasks and failing guards refuse the stop, named in the r
 test("verify: a large change is refused until code-review and simplify both ran", () => {
   const g = G("tests", { check: "bun test" })
   const plan = P([DONE], [g])
-  const dirty = { ...CLEAN, dirty: true, lines: LARGE_CHANGE_LINES }
+  const dirty = edited(CLEAN, LARGE_CHANGE_LINES)
   const none = reasonOf(stopVerdict(plan, [met(g, true)], dirty, FRESH))
   expect(none).toContain("run /code-review, then run /simplify")
   const half = reasonOf(stopVerdict(plan, [met(g, true)], { ...dirty, review: true }, FRESH))
@@ -125,17 +127,17 @@ test("stopVerdict: unchanged refusals stall to the cap, progress resets it", () 
 test("verify: a mid-size change needs only simplify", () => {
   const g = G("tests", { check: "bun test" })
   const plan = P([DONE], [g])
-  const mid = { ...CLEAN, dirty: true, lines: LARGE_CHANGE_LINES - 1 }
+  const mid = edited(CLEAN, LARGE_CHANGE_LINES - 1)
   const r = reasonOf(stopVerdict(plan, [met(g, true)], mid, FRESH))
   expect(r).toContain("run /simplify")
   expect(r).not.toContain("run /code-review")
   expect(stopVerdict(plan, [met(g, true)], { ...mid, simplify: true }, FRESH).verdict.kind).toBe("pass")
-  expect(reasonOf(stopVerdict(plan, [met(g, true)], { ...CLEAN, dirty: true, lines: SMALL_CHANGE_LINES }, FRESH))).toContain("run /simplify")
+  expect(reasonOf(stopVerdict(plan, [met(g, true)], edited(CLEAN, SMALL_CHANGE_LINES), FRESH))).toContain("run /simplify")
 })
 
 test("verify: a small change needs no review pass", () => {
   const g = G("tests", { check: "bun test" })
-  const small = { ...CLEAN, dirty: true, lines: SMALL_CHANGE_LINES - 1 }
+  const small = edited(CLEAN, SMALL_CHANGE_LINES - 1)
   expect(stopVerdict(P([DONE], [g]), [met(g, true)], small, FRESH).verdict.kind).toBe("pass")
   expect(reviewLine(small)).toContain("no review pass needed")
   // Still held by open tasks and unmet guards.
@@ -155,6 +157,12 @@ test("changedLines: an unmeasurable call is never a small change", () => {
   for (const i of [{ content: "a" }, { path: "f", text: "a\nb" }, { items: [{ path: "f", text: "x" }] }, { old_string: "a", new_string: "b", replace_all: true }])
     expect(changedLines(i)).toBeGreaterThanOrEqual(SMALL_CHANGE_LINES)
   expect(changedLines({ content: "x\n".repeat(400) })).toBe(400)
+  // A notebook cell replace or delete hides the old cell; an insert shows everything it adds.
+  expect(changedLines({ notebook_path: "n.ipynb", edit_mode: "replace", new_source: "x = 1" })).toBe(SMALL_CHANGE_LINES)
+  expect(changedLines({ notebook_path: "n.ipynb", edit_mode: "delete" })).toBe(SMALL_CHANGE_LINES)
+  expect(changedLines({ notebook_path: "n.ipynb", edit_mode: "insert", new_source: "x = 1" })).toBe(1)
+  // The floor is per call: five one-line new files are one small change, not five.
+  expect(changedLines({ items: Array.from({ length: 5 }, (_, k) => ({ path: `f${k}`, text: "x" })) })).toBe(SMALL_CHANGE_LINES)
 })
 
 // ── the flat tools ───────────────────────────────────────────────────
@@ -179,13 +187,35 @@ test("tools: task_add takes every title or none; by-id tools refuse an unknown n
   expect(run("task_progress", s.state, { task_id: 9, progress: 5 }).text).toContain("plan_show lists the task numbers")
 })
 
+test("verify: new work counts lines only since each skill last ran", () => {
+  const big = edited(CLEAN, 3 * LARGE_CHANGE_LINES)
+  expect(newWork({ ...big, review: true, simplify: true })).toEqual({ ...CLEAN, dirty: true })
+  // A skill that did not run keeps its count: those lines never went through it.
+  expect(newWork({ ...big, review: true })).toEqual({ ...CLEAN, dirty: true, lines: big.lines })
+  expect(newWork({ ...big, simplify: true })).toEqual({ ...CLEAN, dirty: true, unreviewed: big.lines })
+  expect(newWork(big)).toEqual(big)
+  // The fix for a /code-review finding, added as a task: /code-review is not asked for again, /simplify still is.
+  const g = G("tests", { check: "bun test" })
+  const fix = edited(newWork({ ...big, review: true }), 3)
+  expect(fix).toMatchObject({ lines: big.lines + 3, unreviewed: 3 })
+  const r = reasonOf(stopVerdict(P([DONE], [g]), [met(g, true)], fix, FRESH))
+  expect(r).toContain("run /simplify")
+  expect(r).not.toContain("run /code-review")
+  // After /simplify too, a small fix needs no pass at all; a large one is reviewed again.
+  const after = newWork({ ...fix, simplify: true })
+  expect(stopVerdict(P([DONE], [g]), [met(g, true)], edited(after, 3), FRESH).verdict.kind).toBe("pass")
+  expect(reasonOf(stopVerdict(P([DONE], [g]), [met(g, true)], edited(after, LARGE_CHANGE_LINES), FRESH))).toContain("run /code-review, then run /simplify")
+  // The first edit after a passed stop voids a pass run before it.
+  expect(edited({ ...CLEAN, review: true, simplify: true }, 2)).toEqual({ ...CLEAN, dirty: true, lines: 2, unreviewed: 2 })
+})
+
 test("plan_show: tasks, guard questions and the review state", () => {
-  const text = detail(P([OPEN], [G("tests", { check: "bun test", met: true })]), { ...CLEAN, dirty: true, lines: SMALL_CHANGE_LINES })
+  const text = detail(P([OPEN], [G("tests", { check: "bun test", met: true })]), edited(CLEAN, SMALL_CHANGE_LINES))
   expect(text).toContain("#1 45% active: fix the parser")
   expect(text).toContain("guard tests [upheld] check `bun test`: Does tests hold after the change?")
   expect(text).toContain("due once tasks and guards are clear: /simplify")
   expect(reviewLine(CLEAN)).toContain("no file changes")
-  expect(reviewLine({ dirty: true, review: true, simplify: true, lines: LARGE_CHANGE_LINES })).toContain("review pass done")
+  expect(reviewLine({ ...edited(CLEAN, LARGE_CHANGE_LINES), review: true, simplify: true })).toContain("review pass done")
   expect(detail(EMPTY, CLEAN)).toContain("No tasks, no guards.")
 })
 
