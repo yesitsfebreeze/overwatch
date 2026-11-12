@@ -8,12 +8,42 @@ import { join } from "node:path"
 import { fromNode } from "../bin/node-io.ts"
 import { callTool, onEvent } from "./core.ts"
 import { hook } from "./hooks.ts"
+import { memIo } from "../hooks/io.ts"
 
 const sandbox = () => {
   const dir = mkdtempSync(join(tmpdir(), "ow-"))
   process.env.OVERWATCH_PROJECT = dir
   return { dir, io: fromNode(dir) }
 }
+
+test("automatic checks: open work waits, the ninth stop spends nothing, explicit checks stay fresh", async () => {
+  let checks = 0
+  let exit = 1
+  const io = memIo({}, "/guard-evaluation", async (argv) => {
+    const check = argv.at(-1) === "guard-probe"
+    if (check) checks++
+    return { code: check ? exit : 0, stdout: "", stderr: "" }
+  })
+  process.env.OVERWATCH_PROJECT = io.cwd
+  await callTool(io, "task_add", { titles: ["Finish work"] })
+  await callTool(io, "guard_add", { question: "Does the guard probe pass?", check: "guard-probe" })
+  await onEvent(io, { kind: "stop", cwd: io.cwd })
+  expect(checks).toBe(0)
+  await callTool(io, "guard_check")
+  expect(checks).toBe(1)
+  await callTool(io, "task_complete", { task_id: 1 })
+  await onEvent(io, { kind: "prompt", cwd: io.cwd, person: true })
+  for (exit = 1; exit <= 8; exit++) expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toBeTruthy()
+  expect(checks).toBe(9)
+  expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).notify).toContain("unverified")
+  expect(checks).toBe(9)
+  exit = 0
+  await callTool(io, "guard_check")
+  expect(checks).toBe(10)
+  await onEvent(io, { kind: "prompt", cwd: io.cwd, person: true })
+  expect(await onEvent(io, { kind: "stop", cwd: io.cwd })).toEqual({})
+  expect(checks).toBe(11)
+})
 
 test("plan: edits wait for tasks and guards; the stop holds until the check passes", async () => {
   const { dir, io } = sandbox()

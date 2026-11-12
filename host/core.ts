@@ -8,7 +8,7 @@
  * plan; key by session once every host passes a session id to its MCP servers.
  */
 import type { Plan, StopBook } from "../types/index.d.ts"
-import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runCheck, runPicked, stopVerdict, withDecided } from "../hooks/plan.ts"
+import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runCheck, runPicked, stopBudgetReason, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
@@ -123,8 +123,11 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
     }
     case "stop": {
       const out = await withState(io, root, async (s): Promise<[State, Outcome]> => {
+        const exhausted = stopBudgetReason(s.stops)
+        if (exhausted) return [s, { notify: exhausted }]
         // Judged guards need the turn's transcript, which each host shapes differently: they fail open here (ceiling: read transcript_path where a host gives one).
-        const decided = await Promise.all(openGuards(s.plan.guards).filter((g) => g.check).map((g) => runCheck(io.run, g, root)))
+        const open = s.plan.tasks.some((t) => t.status !== "done") ? [] : openGuards(s.plan.guards)
+        const decided = await Promise.all(open.filter((g) => g.check).map((g) => runCheck(io.run, g, root)))
         const plan = withDecided(s.plan, decided)
         const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops, HOST_CONTRACT)
         const out: Outcome = verdict.kind === "pass" ? {} : verdict.kind === "block" ? { block: plain(verdict.reason) } : { notify: plain(verdict.reason) }

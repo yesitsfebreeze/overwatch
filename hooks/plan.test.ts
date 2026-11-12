@@ -313,10 +313,11 @@ session("session: gate, plan, large edit, stop refused until checks pass and cod
   const stop = async () => JSON.stringify(await $.classic.Stop({ stop_hook_active: false, last_assistant_message: "x" } as any))
   let r = await stop()
   expect(r).toContain('task #1 \\"the work\\"')
-  expect(r).toContain("exit 1")
-  expect(slots.at(-1)?.plan).toMatchObject({ id: "plan", color: "red" })
+  expect(r).not.toContain("exit 1") // automatic checks wait for completed tasks
+  expect(slots.at(-1)?.plan.color).toBeUndefined()
   // guard_check runs the checks now, before any stop.
   expect(JSON.stringify(await $.tool.call({ tool: tool("guard_check") } as any))).toContain("tests-pass-bun: failing (exit 1)")
+  expect(slots.at(-1)?.plan).toMatchObject({ id: "plan", color: "red" })
   await $.tool.call({ tool: tool("task_complete"), task_id: 1 } as any)
   exitCode = 0
   expect(JSON.stringify(await $.tool.call({ tool: tool("guard_check"), guard_id: "tests-pass-bun" } as any))).toContain("tests-pass-bun: upheld")

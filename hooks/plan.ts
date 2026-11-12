@@ -15,6 +15,9 @@ export const FRESH: StopBook = { sig: "", stalls: 0, rounds: 0 }
 export const MAX_STALLS = 3
 /** Refused stops per user prompt before the same. */
 const MAX_ROUNDS = 8
+export const stopBudgetReason = (book: StopBook): string | undefined => book.rounds >= MAX_ROUNDS
+  ? `overwatch: automatic verification budget exhausted after ${MAX_ROUNDS} refused stops. Work remains unverified; no new checks or judgments ran. Run guard_check explicitly or ask the user how to continue.`
+  : undefined
 /** A check past this is killed and counts as not upheld. */
 export const CHECK_TIMEOUT_MS = 60_000
 /** `/review` is the older name of `/code-review`. */

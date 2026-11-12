@@ -2,7 +2,7 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeFile, judgeRequest, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopBudgetReason, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
@@ -11,6 +11,8 @@ import { measured, trackEdit } from "./review.ts"
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
 const STOPS = atom({ plugin: "overwatch", key: "stop" } as const, FRESH)
+const NO_JUDGMENT = { body: "", probabilities: {} as Record<string, number> }
+const JUDGMENT = atom({ plugin: "overwatch", key: "judgment" } as const, NO_JUDGMENT)
 /** Where the session started: guard checks run from here, not from wherever a `cd` left the shell. */
 const ROOT = atom({ plugin: "overwatch", key: "root" } as const, "")
 /** Whether a prompt already carried the full reminder; later ones carry one line. */
@@ -52,7 +54,10 @@ export async function planReminder($: any, e: any): Promise<string> {
   const [plan, told] = await Promise.all([
     read($, PLAN),
     read($, TOLD),
-    PERSON.has(e.origin?.kind ?? "composer") && update($, STOPS, (b) => ({ ...FRESH, nokeyTold: b.nokeyTold })),
+    PERSON.has(e.origin?.kind ?? "composer") && Promise.all([
+      update($, STOPS, (b) => ({ ...FRESH, nokeyTold: b.nokeyTold })),
+      update($, JUDGMENT, () => NO_JUDGMENT),
+    ]),
   ])
   if (!told) await update($, TOLD, () => true)
   return reminder(plan, told)
@@ -105,8 +110,13 @@ export const register: Register = (on, options) => {
     // Paused, not stopped: background work or a cron wakes the session on its own.
     if (e.background_tasks?.length || e.session_crons?.length) return result
     const [s, book, root, v] = await Promise.all([read($, PLAN), read($, STOPS), read($, ROOT), read($, VERIFY)])
+    const exhausted = stopBudgetReason(book)
+    if (exhausted) {
+      await incident($, "stalled", exhausted)
+      return { ...result, additionalContext: [exhausted] }
+    }
     const cwd = root || e.cwd || undefined
-    const open = openGuards(s.guards)
+    const open = s.tasks.some((t) => t.status !== "done") ? [] : openGuards(s.guards)
     let nokeyTold = book.nokeyTold
 
     // Judged guards fail open: without a key or a judge they are left undecided and cannot hold the stop.
@@ -126,13 +136,19 @@ export const register: Register = (on, options) => {
         ])
         const request = judgeRequest(lastTurn(messages as Msg[]), judged, Object.fromEntries(files), options.maxJudgeTokens)
         if (request.error) return judged.map((g) => ({ ...g, met: false, last: { error: request.error } }))
-        const res = await $.http.fetch(JUDGE_URL, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-          body: request.body,
-        } as any)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const ps = judgeProbs(JSON.parse(res.text ?? "{}")?.answers, judged)
+        const cached = await read($, JUDGMENT)
+        let ps = cached.probabilities
+        if (cached.body !== request.body) {
+          const res = await $.http.fetch(JUDGE_URL, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+            body: request.body,
+          } as any)
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          ps = judgeProbs(JSON.parse(res.text ?? "{}")?.answers, judged)
+          if (!Object.values(ps).every((p) => Number.isFinite(p) && p >= 0 && p <= 1)) throw new Error("incomplete or invalid judgment")
+          await update($, JUDGMENT, () => ({ body: request.body, probabilities: ps }))
+        }
         return judged.map((g) => ({ ...g, met: ps[g.id]! >= GUARD_MET, last: { p: ps[g.id]! || 0 } }))
       } catch (err: any) {
         $.ui.toast(`overwatch: judge unavailable (${err?.message ?? err}); judged guards not decided this stop`)

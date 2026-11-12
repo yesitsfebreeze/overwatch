@@ -154,6 +154,7 @@ Outside it: search-guard's `<XDG_STATE_HOME>/overwatch/guard.log` (read by `stat
 - `TYPESAFE_API_KEY`: judged guards need it in the shell; compaction also reads the settings `env` map. Without it only guards with a `check` hold the stop.
 - `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`: the hooks module.
 - `maxJudgeTokens`: maximum estimated tokens in one complete serialized guard judgment request, default 18,000. Oversized input is not sent; its guards remain unverified with instructions to narrow the evidence. Invalid nonpositive or nonfinite values use the default. File excerpts explicitly mark truncation.
+- Automatic guard evaluation waits until all tasks are complete and stops before evaluating after eight refused stops. `guard_check` always runs the selected shell checks explicitly. Valid judgments reuse one identical serialized request within a user turn; changed evidence or a new user prompt requires a fresh judgment. Shell checks remain fresh while automatic verification is allowed.
 - `slots`: followline gauges and their order, default `componion,plan,kern`.
 - Compaction: `toolResultMaxChars`, `keepRecentTokens`, `compactEveryTokens`, ….
 
