@@ -39,6 +39,23 @@ const sandbox = () => {
   return { dir, io: fromNode(dir) }
 }
 
+test("mistakes reader: portable and CLI pages preserve the original history", async () => {
+  const { dir, io } = sandbox()
+  const raw = '# Full history 😀\n- quoted "\\ lesson\n'.repeat(300)
+  await io.write(join(dir, ".overwatch", "mistakes.md"), raw)
+  let page = JSON.parse((await callTool(io, "mistakes", { limit: 1200 })).text), joined = ""
+  while (true) {
+    joined += page.text
+    if (page.next_offset === null) break
+    page = JSON.parse((await callTool(io, "mistakes", { id: page.id, offset: page.next_offset, limit: 1200 })).text)
+  }
+  expect(joined).toBe(raw)
+  const cli = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/cli.ts"), "mistakes", "0", "1000"], { cwd: dir })
+  expect(cli.exitCode).toBe(0)
+  expect(JSON.parse(cli.stdout.toString()).text).toBe(raw.slice(0, 1000))
+  expect((await callTool(io, "mistakes", { limit: 0 })).error).toBe(true)
+})
+
 test("portable timeout remains unmet, pauses automatic retry, and explicit override persists", async () => {
   let calls = 0, timedOut = true
   const budgets: number[] = []

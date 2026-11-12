@@ -6,12 +6,13 @@ import { unitNew, vaultInit, vaultPlan, CATEGORIES } from "./vault.ts"
 import { GATE_ROUNDS, GATE_SCORE, prdAdd, prdBrief, prdCollect, prdNext, prdRefine, prdReview, prdScan, prdSet, SET_STATES } from "./prd.ts"
 import { loadout } from "./loadout.ts"
 import { launch, launched } from "./launch.ts"
-import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
+import { asBlock, checklist, evaluation, firedBy, learned, mistake, mistakesPage, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
+import { liveResultBudget } from "./paging.ts"
 import { CHECK_TIERS } from "./guards.ts"
 import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
 /** One tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
-type CommandTool = ToolSpec & { run: (io: Io, e: any) => Promise<string> }
+type CommandTool = ToolSpec & { run: (io: Io, e: any, context?: { maxOutputChars: number }) => Promise<string | object> }
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 
@@ -110,9 +111,9 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: (io, e) => prdCollect(io, e),
   },
   checks: {
-    description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. tier filters to fast, unit or milestone. Run from the repo root. Read-only. Empty until scan froze the checks.",
+    description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus at most five recent distinct mistakes. Omitted commands remain in .overwatch/checks.json; retrieve them before completion. tier filters to fast, unit or milestone. Run from the repo root. Read-only. Empty until scan froze the checks.",
     properties: { tier: { type: "string", enum: [...CHECK_TIERS], description: "Show only checks of this tier." } },
-    run: (io, e) => checklist(io, text(e.tier) || undefined),
+    run: (io, e, context) => checklist(io, text(e.tier) || undefined, context?.maxOutputChars),
   },
   scan: {
     description: "Discover this repo's test/lint/build commands (package.json scripts, Cargo.toml, go.mod, Makefile, justfile, pyproject.toml) and freeze them into .overwatch/checks.json for checks. A discovery pass, not law: a wrong guess is fixed by editing checks.json.",
@@ -138,10 +139,19 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: (io, e) => rate(io, text(e.name), text(e.verdict), text(e.reason), text(e.trigger) || undefined),
   },
   mistake: {
-    description: "Record a mistake that cost time twice, with the why, so every later session in this repo starts with it and every checklist carries it, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .overwatch/mistakes.md in this directory.",
+    description: "Record a mistake that cost time twice, with the why, for the bounded recent lessons in later sessions and checklists; mistakes reads the full history, e.g. \"ran the whole suite while a peer held the cargo lock: use the built test binary\". Not for typos. Writes .overwatch/mistakes.md in this directory.",
     properties: { text: { type: "string", description: "The mistake and what to do instead, one line." } },
     required: ["text"],
     run: (io, e) => mistake(io, text(e.text)),
+  },
+  mistakes: {
+    description: "Read exact pages of the complete recorded mistake history. Offsets count JavaScript string characters. Continue with the returned id and next_offset; restart if the history changes. Read-only.",
+    properties: {
+      id: { type: "string", description: "Revision id from the first page; required for continuation." },
+      offset: { type: "integer", minimum: 0, description: "Character offset; default 0. Use next_offset to continue." },
+      limit: { type: "integer", minimum: 1, description: "Requested characters; default 6000, reduced to the output budget when needed." },
+    },
+    run: (io, e, context) => mistakesPage(io, e, context?.maxOutputChars),
   },
   loadout: {
     description: "Which Claude Code plugins are active per layer (global, each account, project, local) as one table. Cells: x enabled there, / inherited from global, * global and listed, . off. Read-only; print the table verbatim.",
@@ -241,7 +251,8 @@ export async function flushCalls($: any, e: { agentId?: string }): Promise<void>
   try { await tally(await io($), batch) } catch {}
 }
 
-export const register: Register = (on) => {
+export const register: Register = (on, options) => {
+  const maxOutputChars = Math.min(7800, liveResultBudget(options.liveResultMaxChars) - 16)
   // The surface block: after the cache boundary, naming only active tools.
   on("prompt.compose", async ($, e, next) => {
     const [r, block] = await Promise.all([next(e), surfaceBlock($, e.tools)])
@@ -251,7 +262,7 @@ export const register: Register = (on) => {
   for (const [name, t] of Object.entries(COMMAND_TOOLS))
     on("tool.call", { tool: TOOL_PREFIX + name }, async ($, e: any) => {
       try {
-        return { result: (await t.run(await io($), e)) || "(no output)" }
+        return { result: (await t.run(await io($), e, { maxOutputChars })) || "(no output)" }
       } catch (err: any) {
         return { result: String(err?.message ?? err), isError: true as const }
       }

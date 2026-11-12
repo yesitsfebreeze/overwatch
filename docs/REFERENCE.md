@@ -83,7 +83,8 @@ Routine reminders show counts and up to three open task and guard previews; comp
 | `search_context` | `query` | searches every cut or folded message this session |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
 | `checks` | `tier?` | frozen checks plus mistakes: run before saying "done" |
-| `mistake` | `text` | records a lesson for every later session here |
+| `mistake` | `text` | records a distinct lesson for bounded recent reminders |
+| `mistakes` | `offset?`, `limit?`, `id?` | exact pages of the full original mistake history |
 | `status` | | git state, checks, catch counts, memory hogs |
 | `report` | | tool usage, verdicts, triggers, newest catches |
 | `rate` | `name`, `verdict`, `reason`, `trigger?` | rates the tool the "Evaluation due" question named |
@@ -201,3 +202,9 @@ Refresh installed command-hook adapters to get their 660-second outer Stop budge
 ### Learned trigger budget
 
 Only active tools and binaries on PATH with a valid useful verdict from the last 30 days enter the learned-trigger section. At exactly 30 days a verdict expires; missing, invalid, future-dated, situational and dead verdicts do not qualify. The section contains at most eight whole lines within 2,048 characters, including headings and omission notices, ordered by newest verdict then tool name. Oversized or multiline triggers and entries beyond the budget remain in `.overwatch/surface.json`, with an explicit retrieval hint. Ratings away from useful suspend their stored trigger without deleting it. The native session caches its surface block, so ratings affect the next session and do not rewrite the current prompt prefix.
+
+### Mistake history and checklist budgets
+
+Routine prompts and checklists show at most five recent distinct whole mistake records, within a 2,048-character serialized section. The full lessons block stays within 4,096 characters; checklists stay within 8,000 serialized characters (normally 7,800, or the smaller native output setting). Frozen commands are included whole or explicitly omitted with a `.overwatch/checks.json` retrieval instruction. An empty tier does not print other tiers.
+
+`mistake` normalizes new text to one line and does not append an exact whitespace-normalized duplicate, ignoring its generated date. Existing history is never deduplicated or rewritten by reading it. Legacy multiline records are omitted whole from routine reminders and remain exact in the paged reader. `mistakes` returns structured `{id, offset, text, next_offset, total_chars}` pages of the original markdown, with exact UTF-16 string offsets. Continue with the returned id and next_offset; a changed history requires restarting. Native pages fit the configured live-output cap before compaction, including 512-character caps. Portable tools and the CLI serialize at the boundary. Terminal usage: `overwatch mistakes [offset] [limit] [id]`.

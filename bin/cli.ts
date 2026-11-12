@@ -6,7 +6,7 @@ import { CHANGELOG_USAGE, changelogCommand } from "../hooks/changelog.ts"
 import { prdAdd, prdBrief, prdCollect, prdNext, prdRefine, prdReview, prdScan, prdSet } from "../hooks/prd.ts"
 import { loadout } from "../hooks/loadout.ts"
 import { launch, launched } from "../hooks/launch.ts"
-import { checklist, index, mistake, rate, report, scan, status } from "../hooks/surface.ts"
+import { checklist, index, mistake, mistakesPage, rate, report, scan, status } from "../hooks/surface.ts"
 import { fromNode } from "./node-io.ts"
 import { serve } from "../host/mcp.ts"
 import { hook } from "../host/hooks.ts"
@@ -16,6 +16,7 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch status                 git state, frozen checks, guard blocks, memory hogs
   overwatch scan                   discover this repo's checks and freeze them
   overwatch checks [tier]          the frozen checks plus the mistakes; tier is fast, unit or milestone
+  overwatch mistakes [offset] [limit] [id]  exact pages of the complete mistake history
   overwatch mistake <text>         record one mistake, folded into every later checklist
   overwatch report                 tool-surface usage, verdicts, learned triggers
   overwatch index [--active]       the tool-surface block; --active reads a JSON list of tool names on stdin
@@ -55,6 +56,7 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
       return { text: "usage: overwatch vault init|plan", code: 2 }
     case "changelog": return changelogCommand(io, args)
     case "checks": return ok(await checklist(io, args[0] || undefined))
+    case "mistakes": return ok(JSON.stringify(await mistakesPage(io, { offset: args[0] === undefined ? undefined : Number(args[0]), limit: args[1] === undefined ? undefined : Number(args[1]), id: args[2] })))
     case "mistake": return ok(await mistake(io, rest))
     case "report": return ok(await report(io))
     case "loadout": return ok(await loadout(io))

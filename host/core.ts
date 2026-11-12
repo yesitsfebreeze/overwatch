@@ -70,7 +70,10 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
   const at: Io = { ...io, cwd: root }
   try {
     const cmd = COMMAND_TOOLS[name]
-    if (cmd) return { text: await cmd.run(at, args) }
+    if (cmd) {
+      const result = await cmd.run(at, args)
+      return { text: typeof result === "string" ? result : JSON.stringify(result) }
+    }
     if (name === "plan_show") return await withState(io, root, (s) => [s, { text: JSON.stringify(planPage(s.plan, CLEAN, args)) }])
     if (name === "guard_check") {
       return withState(io, root, async (s) => {

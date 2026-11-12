@@ -11,6 +11,8 @@
  */
 import { cmp, type Io, join, onPath, readJson, state } from "./io.ts"
 import { today } from "./io.ts"
+import { hash } from "./catalog.ts"
+import { originalPage } from "./paging.ts"
 import { CHECK_TIERS, checkTier, isTier } from "./guards.ts"
 import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./incidents.ts"
 
@@ -241,18 +243,60 @@ const frozen = async (io: Io): Promise<string[]> => (await frozenDoc(io)).checks
 const tierOf = (tiers: Record<string, string>, c: string) => tiers[c] ?? checkTier(c)
 
 /** The recorded mistakes, or undefined when there are none. */
-const mistakes = async (io: Io) => (await io.read(state(io, "mistakes.md")))?.trim() || undefined
+const readMistakes = async (io: Io) => (await io.read(state(io, "mistakes.md"))) ?? ""
 
 const LEARNED_MISTAKES = 5
+const normalized = (text: string) => text.replace(/\s+/g, " ").trim()
+const mistakeKey = (line: string) => normalized(line).replace(/^- /, "").replace(/ \(\d{4}-\d{2}-\d{2}\)$/, "")
+const mistakeLines = (raw: string): string[] => {
+  const records: string[] = []
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("- ")) records.push(line)
+    else if (records.length) records[records.length - 1] += "\n" + line
+  }
+  return records.map((record) => record.trimEnd())
+}
+const outputSize = (text: string) => JSON.stringify({ result: text }).length
 
-/** What earlier sessions taught, for the prompt: one lesson per kind caught repeatedly here (incidents.ts) and the newest recorded mistakes. Empty when there are none. */
+/** Recent whole records; deduplication never rewrites the source history. */
+function recentMistakes(raw: string, budget = 2048): string {
+  const lines = mistakeLines(raw)
+  if (!lines.length) return ""
+  const seen = new Set<string>(), recent: string[] = []
+  for (const line of [...lines].reverse()) {
+    const key = mistakeKey(line)
+    if (!seen.has(key)) { seen.add(key); recent.push(line) }
+    if (recent.length === LEARNED_MISTAKES) break
+  }
+  const head = "## Recent mistakes to avoid"
+  const hint = "Some records omitted; full history: mistakes {offset:0}."
+  const selected: string[] = []
+  for (const line of recent)
+    if (!/[\r\n]/.test(line) && outputSize([head, ...selected, line, hint].join("\n")) <= budget) selected.push(line)
+  return [head, ...selected, ...(selected.length < lines.length ? [hint] : [])].join("\n")
+}
+
+/** Exact, revision-checked pages of the untouched markdown history. */
+export async function mistakesPage(io: Io, args: { id?: unknown; offset?: unknown; limit?: unknown } = {}, maxChars = 7800) {
+  const raw = await readMistakes(io)
+  const id = `mistakes-${hash(raw)}`
+  if (args.offset !== undefined && args.offset !== 0 && !args.id) throw new Error("continue with the first page's id")
+  if (args.id !== undefined && args.id !== id) throw new Error("mistakes changed; restart at offset 0")
+  return originalPage(raw, id, args.offset as number | undefined, args.limit as number | undefined, maxChars)
+}
+
+/** Incident lessons plus bounded recent mistakes; the raw history remains retrievable. */
 export async function learned(io: Io): Promise<string> {
-  const [caught, mist] = await Promise.all([loadIncidents(io), mistakes(io)])
+  const [caught, mist] = await Promise.all([loadIncidents(io), readMistakes(io)])
   const habits = lessons(caught)
-  const recorded = (mist ?? "").split("\n").filter((l) => l.startsWith("- ")).slice(-LEARNED_MISTAKES)
+  const recorded = recentMistakes(mist)
   const out: string[] = []
-  if (habits.length) out.push("## Caught repeatedly in earlier sessions — do not repeat", ...habits)
-  if (recorded.length) out.push("## Mistakes recorded in this repo", ...recorded)
+  if (habits.length) {
+    out.push("## Caught repeatedly in earlier sessions — do not repeat")
+    for (const habit of habits)
+      if (outputSize(["# Lessons (overwatch)", ...out, habit, recorded].filter(Boolean).join("\n")) <= 4096) out.push(habit)
+  }
+  if (recorded) out.push(recorded)
   return out.length ? ["# Lessons (overwatch)", ...out].join("\n") : ""
 }
 
@@ -266,29 +310,34 @@ export async function scan(io: Io): Promise<string> {
 }
 
 /** The frozen checks, one tier when named; an unknown tier is an error. */
-export async function checklist(io: Io, tier?: string): Promise<string> {
+export async function checklist(io: Io, tier?: string, maxChars = 7800): Promise<string> {
   if (tier && !isTier(tier)) throw new Error(`tier must be one of ${CHECK_TIERS.join(", ")}`)
   const doc = await frozenDoc(io)
   const all = doc.checks ?? []
   if (!all.length) return "no checks frozen — run scan (`overwatch scan`) first"
   const tiers = doc.tiers ?? {}
   const checks = tier ? all.filter((c) => tierOf(tiers, c) === tier) : all
-  const [body, mist] = await Promise.all([
-    Promise.resolve(checks.length
-      ? checks.map((c) => `- [${tierOf(tiers, c)}] ${c}`).join("\n")
-      : `no ${tier} checks frozen; all frozen checks: ${all.join(", ")}`),
-    mistakes(io),
-  ])
+  const mist = recentMistakes(await readMistakes(io), Math.min(2048, Math.floor(maxChars / 3)))
   const head = tier ? `# verification plan (${tier} tier)` : "# verification plan"
-  return `${head}\nrun these, in order, before calling the change done:\n${body}\n\n# mistakes to avoid\n${mist ?? "(none recorded)"}`
+  const render = (lines: string[]) => [head, "Run the complete commands before calling the change done:", ...lines,
+    ...(lines.length < checks.length ? [`${checks.length - lines.length} command(s) omitted; retrieve .overwatch/checks.json before completion.`] : []),
+    ...(!checks.length ? [`no ${tier ?? "matching"} checks frozen`] : []), mist].filter(Boolean).join("\n")
+  const selected: string[] = []
+  for (const c of checks) {
+    const line = `- [${tierOf(tiers, c)}] ${c}`
+    if (outputSize(render([...selected, line])) <= maxChars) selected.push(line)
+  }
+  return render(selected)
 }
 
 export async function mistake(io: Io, text: string): Promise<string> {
-  if (!text.trim()) throw new Error("usage: overwatch mistake <what went wrong>")
+  const lesson = normalized(text)
+  if (!lesson) throw new Error("usage: overwatch mistake <what went wrong>")
   const path = state(io, "mistakes.md")
   const old = (await io.read(path)) ?? "# Mistakes to fold into every plan\n"
-  await io.write(path, `${old}- ${text.trim()} (${today()})\n`)
-  return `recorded: ${text.trim()}`
+  if (mistakeLines(old).some((line) => mistakeKey(line) === mistakeKey(lesson))) return "already recorded; full history: mistakes {offset:0}"
+  await io.write(path, `${old}${old.endsWith("\n") ? "" : "\n"}- ${lesson} (${today()})\n`)
+  return outputSize(`recorded: ${lesson}`) <= 512 ? `recorded: ${lesson}` : "recorded; full text: mistakes {offset:0}"
 }
 
 async function guardBlocks(io: Io): Promise<string> {
@@ -316,7 +365,7 @@ export async function status(io: Io): Promise<string> {
   const [git, checks, mist, guard, mem, st, caught] = await Promise.all([
     io.run(["git", "status", "--porcelain"]).then((r) => (r.code === 0 ? r.stdout.trimEnd().split("\n").filter(Boolean) : [])),
     frozen(io),
-    mistakes(io),
+    readMistakes(io),
     guardBlocks(io),
     memory(io),
     load(io),
@@ -327,7 +376,7 @@ export async function status(io: Io): Promise<string> {
     "# overwatch",
     git.length ? `git: dirty, ${git.length} path(s)\n${git.slice(0, 10).map((d) => `  ${d}`).join("\n")}` : "git: clean",
     checks.length ? `checks: ${checks.join(", ")}` : "checks: none frozen (run scan)",
-    mist ? `mistakes: ${mist.split("\n").length - 1} recorded` : "mistakes: none recorded",
+    mist ? `mistakes: ${mistakeLines(mist).length} recorded` : "mistakes: none recorded",
     guard,
     tallyLine(caught),
     mem,
