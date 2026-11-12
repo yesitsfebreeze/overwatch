@@ -214,7 +214,7 @@ type StopVerdict = { kind: "pass" } | { kind: "block"; reason: string } | { kind
  * clear, so it reviews finished work. A refusal with nothing changed counts toward MAX_STALLS, every
  * refusal toward MAX_ROUNDS; either cap lets the stop through, so a stuck run never loops.
  */
-export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook): { verdict: StopVerdict; next: StopBook } {
+export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook, contract = CONTRACT): { verdict: StopVerdict; next: StopBook } {
   const open = openTasks(s)
   const unmet = decided.filter((g) => !g.met)
   const left = due(v)
@@ -231,7 +231,7 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
   const head = `overwatch: not done — ${lines.length} item(s) open:\n${lines.join("\n")}`
   if (stalls >= MAX_STALLS || next.rounds > MAX_ROUNDS)
     return { verdict: { kind: "stalled", reason: `${head}\n${stalls >= MAX_STALLS ? `unchanged over ${MAX_STALLS} refused stops` : `${MAX_ROUNDS} refused stops this prompt`} — letting the stop through for the user to decide.` }, next }
-  return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the plan tools (task_progress, task_complete, guard_check), then stop again. ${CONTRACT}` }, next }
+  return { verdict: { kind: "block", reason: `${head}\nWork these to completion with the plan tools (task_progress, task_complete, guard_check), then stop again. ${contract}` }, next }
 }
 
 /**

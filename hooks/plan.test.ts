@@ -85,6 +85,12 @@ const FINISHED = P([DONE], [TESTS])
 /** The stop with the tests guard upheld: only tasks and the review pass can hold it. */
 const held = (v: typeof CLEAN, plan = FINISHED) => stopVerdict(plan, [met(TESTS, true)], v, FRESH)
 
+test("stopVerdict: the native default retains its review and question tools", () => {
+  const text = reasonOf(stopVerdict(P([OPEN]), [], CLEAN, FRESH))
+  for (const instruction of ["/code-review", "/simplify", "Skill tool", "AskUserQuestion"])
+    expect(text).toContain(instruction)
+})
+
 test("stopVerdict: open tasks and failing guards refuse the stop, named in the reason", () => {
   const r = stopVerdict(P([OPEN], [TESTS]), [met(TESTS, false)], CLEAN, FRESH)
   expect(r.verdict.kind).toBe("block")

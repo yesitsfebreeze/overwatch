@@ -126,7 +126,7 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
         // Judged guards need the turn's transcript, which each host shapes differently: they fail open here (ceiling: read transcript_path where a host gives one).
         const decided = await Promise.all(openGuards(s.plan.guards).filter((g) => g.check).map((g) => runCheck(io.run, g, root)))
         const plan = withDecided(s.plan, decided)
-        const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops)
+        const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops, HOST_CONTRACT)
         const out: Outcome = verdict.kind === "pass" ? {} : verdict.kind === "block" ? { block: plain(verdict.reason) } : { notify: plain(verdict.reason) }
         return [{ ...s, plan, stops: next }, out]
       })
