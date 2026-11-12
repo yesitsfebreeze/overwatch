@@ -1,6 +1,8 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { session } from './test-session.ts'
 import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './compaction.ts';
+import { compact, resolveOptions } from '../jev/compact.ts';
+import { estimateTokens } from '../jev/state.ts';
 
 // The fs engine resolves a path before a hook sees it (win32: 'C:\h\x' for '/h/x'); back to the mocks' POSIX keys.
 const norm = (p: unknown) => String(p).replace(/\\/g, '/').replace(/^[A-Za-z]:/, '');
@@ -36,6 +38,64 @@ const transcript = [
   { role: 'assistant', text: 'ok', toolUses: [] },
 ] as const;
 const limits = { keepRecentTokens: 2, toolResultMaxChars: 2000, outcomeMaxChars: 120 };
+
+const gradingOptions = { preserveRecentMessages: 0, maxStateTokens: 15000, maxRequestTokens: 18000 };
+const gradingTranscript = (count: number) => [
+  { role: 'user', text: 'Inspect the implementation and fix the known issue.', toolUses: [] },
+  ...Array.from({ length: count }, (_, i) => [
+    { role: 'assistant', text: 'Inspect the next file and check the exact implementation. '.repeat(15), toolUses: [{ tool_use_id: `u${i}`, tool: 'Read', input: { file_path: `src/file${i}.ts` }, text: 'export const value = 123;\n'.repeat(400) }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `u${i}`, text: 'export const value = 123;\n'.repeat(400) }] },
+  ]).flat(),
+] as never;
+const graded = (questions: object) => ({ answers: Object.fromEntries(Object.keys(questions).map((q) => [q, { noul: 0.8 }])) });
+const grader = (fetch: (...args: any[]) => Promise<any>) => ({
+  env: { get: async () => 'key' }, ui: { log: () => {} }, process: { run: async () => ({}) }, http: { fetch },
+}) as never;
+
+test('a fold preflights the entire grading budget before any request', async () => {
+  for (const [count, options, expected] of [
+    [50, {}, 2], [60, {}, 0], [100, {}, 0], [50, { maxRequests: 1 }, 0],
+    [50, { maxRequests: 5, maxTotalTokens: 20000 }, 0], [40, { maxRequests: 0 }, 0], [40, { maxTotalTokens: 0 }, 0],
+  ] as const) {
+    const bodies: string[] = [];
+    const heads = await jevHeads(grader(async (_url, init) => {
+      bodies.push(init.body);
+      return { status: 200, ok: true, text: JSON.stringify(graded(JSON.parse(init.body).questions)) };
+    }), gradingTranscript(count), { ...gradingOptions, ...options }, { jev: '' });
+    expect(bodies.length).toBe(expected);
+    expect(bodies.reduce((sum, body) => sum + estimateTokens(body), 0)).toBeLessThanOrEqual(36000);
+    if (!expected) {
+      expect(heads.size).toBe(0);
+      expect(fold(gradingTranscript(count), 6000, heads, 1)).not.toBe(null);
+    }
+  }
+  expect(resolveOptions({ maxRequests: NaN, maxTotalTokens: Infinity }).maxRequests).toBe(2);
+  expect(resolveOptions({ maxRequests: NaN, maxTotalTokens: Infinity }).maxTotalTokens).toBe(36000);
+});
+
+test('grading batches run one at a time and stop after the first failure', async () => {
+  let active = 0, peak = 0, calls = 0;
+  await compact(gradingTranscript(50), { ask: async (_state, questions) => {
+    calls++; active++; peak = Math.max(peak, active);
+    await Promise.resolve();
+    active--;
+    return graded(questions);
+  } }, gradingOptions);
+  expect(calls).toBe(2);
+  expect(peak).toBe(1);
+  calls = 0;
+  await expect(compact(gradingTranscript(50), { ask: async () => { calls++; throw new Error('offline'); } }, gradingOptions)).rejects.toThrow('offline');
+  expect(calls).toBe(1);
+});
+
+test('transport retries also consume the fold request and input budgets', async () => {
+  for (const options of [{ maxRequests: 1 }, { maxRequests: 2, maxTotalTokens: 17000 }]) {
+    let attempts = 0;
+    const heads = await jevHeads(grader(async () => { attempts++; throw new Error('offline'); }), gradingTranscript(40), { ...gradingOptions, ...options }, { jev: '' });
+    expect(attempts).toBe(1);
+    expect(heads.size).toBe(0);
+  }
+});
 
 test('cut point never splits a call from its result', () => {
   expect(keepFrom(transcript, 2)).toBe(5);

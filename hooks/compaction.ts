@@ -8,7 +8,8 @@
 //   fallback the built-in summary over a slimmed transcript when nothing can be folded
 //   turn end a failed turn distilled to one line
 import type { EngineInterface, Register, SessionMessage } from 'claude-code';
-import { compact } from '../jev/compact.js';
+import { compact, resolveOptions } from '../jev/compact.js';
+import { estimateTokens } from '../jev/state.js';
 import { buildJevRequest, parseJevResponse, DEFAULT_MODEL } from '../jev/request.js';
 import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
 import { STATE_DIR } from './io.ts';
@@ -246,10 +247,21 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
     const apiKey = (await $.env.get('TYPESAFE_API_KEY'))
       ?? (((await $.settings.read()).env as Record<string, unknown> | undefined)?.TYPESAFE_API_KEY as string | undefined);
     if (!apiKey) throw new Error('no TYPESAFE_API_KEY');
+    const budget = resolveOptions(options);
+    let requests = 0, inputTokens = 0;
     const asker = { ask: async (st: never, questions: never) => {
       const q = buildJevRequest({ apiKey, model: DEFAULT_MODEL }, st, questions);
       const init = { method: q.method, headers: q.headers, body: q.body };
-      const r = await $.http.fetch(q.url, init).catch(() => $.http.fetch(q.url, init));
+      const requestTokens = estimateTokens(q.body);
+      const send = () => {
+        if (requests >= budget.maxRequests || inputTokens + requestTokens > budget.maxTotalTokens) {
+          throw new Error('fold grading budget exhausted');
+        }
+        requests++;
+        inputTokens += requestTokens;
+        return $.http.fetch(q.url, init);
+      };
+      const r = await send().catch(() => send());
       const res = parseJevResponse(r.status, r.ok, r.text);
       void logJev($, { ts: Date.now(), client: 'componion', model: res.model ?? DEFAULT_MODEL, state: st, questions, answers: res.answers });
       return res;
@@ -306,6 +318,8 @@ function session(options: Record<string, unknown>): Session {
       keepThreshold: n('keepThreshold', 0.6),
       maxStateTokens: n('maxStateTokens', 15000),
       maxRequestTokens: n('maxRequestTokens', 18000),
+      maxTotalTokens: n('maxTotalTokens', 36000),
+      maxRequests: n('maxRequests', 2),
       truncateHeadChars: n('truncateHeadChars', 150),
     },
     saved: 0, folds: 0, failures: 0, lastFold: 0, jev: '', compacting: false, lastCompactAt: 0, foldedRestart: false,

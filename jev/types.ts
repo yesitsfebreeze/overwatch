@@ -104,6 +104,10 @@ export interface CompactOptions {
   maxStateTokens?: number;
   /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
   maxRequestTokens?: number;
+  /** Estimated input ceiling across every request in one compaction. Default 36000; 0 disables grading. */
+  maxTotalTokens?: number;
+  /** Maximum requests in one compaction. Default 2; 0 disables grading. */
+  maxRequests?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
 }
@@ -114,6 +118,8 @@ export interface ResolvedCompactOptions {
   preserveRecentMessages: number;
   maxStateTokens: number;
   maxRequestTokens: number;
+  maxTotalTokens: number;
+  maxRequests: number;
   truncateHeadChars: number;
 }
 

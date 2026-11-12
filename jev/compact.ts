@@ -1,4 +1,4 @@
-import { noulAnswer } from './request.js';
+import { buildJevRequest, noulAnswer } from './request.js';
 import { collectToolCalls, estimateTokens, fitState } from './state.js';
 import type {
   CallAnswer,
@@ -20,6 +20,8 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
+  maxTotalTokens: 36_000,
+  maxRequests: 2,
   truncateHeadChars: 300,
 };
 
@@ -45,6 +47,8 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       1,
       finite(options.maxRequestTokens, DEFAULT_OPTIONS.maxRequestTokens),
     ),
+    maxTotalTokens: Math.max(0, Math.floor(finite(options.maxTotalTokens, DEFAULT_OPTIONS.maxTotalTokens))),
+    maxRequests: Math.max(0, Math.floor(finite(options.maxRequests, DEFAULT_OPTIONS.maxRequests))),
     truncateHeadChars: Math.max(
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
@@ -266,10 +270,16 @@ export async function compact(
     const state = fitState(messages, calls, resolved);
     fitted = state;
     batches = batchCalls(candidates, state.tokens, resolved);
-    const answered = await Promise.all(
-      batches.map((batch) => askBatch(asker, state.state, batch)),
-    );
-    for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
+    const totalTokens = batches.reduce((sum, batch) => sum + estimateTokens(buildJevRequest(
+      { apiKey: '' }, state.state, Object.assign({}, ...batch.map(questionsFor)),
+    ).body), 0);
+    if (batches.length > resolved.maxRequests || totalTokens > resolved.maxTotalTokens) {
+      throw new Error(`fold grading budget exceeded: ${batches.length} requests / ~${totalTokens} input tokens`);
+    }
+    for (const batch of batches) {
+      const answered = await askBatch(asker, state.state, batch);
+      for (const [id, answer] of answered) answers.set(id, answer);
+    }
   }
 
   const decisions = calls.map((call) =>
