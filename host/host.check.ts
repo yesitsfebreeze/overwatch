@@ -6,8 +6,9 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fromNode } from "../bin/node-io.ts"
-import { callTool, onEvent } from "./core.ts"
-import { hook } from "./hooks.ts"
+process.env.OVERWATCH_TOOL_GROUPS = "all"
+const { callTool, onEvent } = await import("./core.ts")
+const { hook } = await import("./hooks.ts")
 import { memIo } from "../hooks/io.ts"
 import { CLEAN, detail } from "../hooks/plan.ts"
 

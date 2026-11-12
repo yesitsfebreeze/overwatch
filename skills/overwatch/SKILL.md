@@ -6,6 +6,8 @@ argument-hint: "[status | scan | checks | mistakes [offset] [limit] [id] | mista
 
 # Overwatch: catches, tool surface and checks
 
+Core planning and checks are available by default. Unit workflows require `vault`; PRD workflows require `prd` (which includes vault). `tool_groups` lists enabled groups and configuration; enable optional groups and restart before using their tools.
+
 Call `mcp__overwatch__<action>` directly; from a terminal, `"${CLAUDE_PLUGIN_ROOT}/bin/overwatch" <action>`. Invoked as `/overwatch:overwatch <args>`: call the tool for the action (none → `status`) and report what it returns.
 
 | need | tool |

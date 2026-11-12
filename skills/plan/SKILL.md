@@ -3,6 +3,9 @@ name: plan
 description: Plan and finish work under overwatch's tasks and guards. Turn the user's request into tasks and guards (yes/no questions, a shell check where one decides), work until every task is done and every guard upheld, then run /simplify on the change, preceded by /code-review when the change is large. Use when the user asks for work, types "/overwatch:plan", or a stop was refused by overwatch.
 ---
 
+Core planning and checks are available by default. Unit workflows require `vault`; PRD workflows require `prd` (which includes vault). `tool_groups` lists enabled groups and configuration; enable optional groups and restart before using their tools.
+
+
 The user wrote: **$ARGUMENTS** (when nothing follows, use their last message).
 
 Everything goes through the plan tools (`mcp__overwatch__task_add`, `guard_add`, `task_progress`, `task_complete`, `guard_check`, `plan_show`, …).

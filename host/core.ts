@@ -18,6 +18,7 @@ import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
 import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
 import { VAULT_TOOLS } from "../hooks/vault.ts"
 import { CHANGELOG_TOOLS } from "../hooks/changelog.ts"
+import { selectTools, TOOL_GROUPS_SPEC } from "../hooks/tool-groups.ts"
 const ALL_PLAN_TOOLS = { ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS }
 
 export { schemaOf }
@@ -39,9 +40,12 @@ const EDIT_TOOLS = new Set([
 const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
 
 /** Every overwatch tool a host can offer: the commands and the plan, by short name. */
-export const TOOLS: Record<string, ToolSpec> = Object.fromEntries(
+const ALL_TOOLS: Record<string, ToolSpec> = Object.fromEntries(
   [...Object.entries(COMMAND_TOOLS), ...Object.entries(ALL_PLAN_TOOLS)].map(([n, t]) => [n, { description: t.description, properties: t.properties, required: t.required }]),
 )
+ALL_TOOLS.tool_groups = TOOL_GROUPS_SPEC
+const selection = selectTools(ALL_TOOLS, process.env.OVERWATCH_TOOL_GROUPS)
+export const TOOLS = selection.specs
 
 /** Text written for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
 const plain = (s: string) => s.replaceAll(TOOL_PREFIX, "")
@@ -69,6 +73,9 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
   const root = await projectRoot(io)
   const at: Io = { ...io, cwd: root }
   try {
+    if (name === "tool_groups") return { text: selection.report() }
+    const disabled = selection.refusal(name)
+    if (disabled) return { text: disabled, error: true }
     const cmd = COMMAND_TOOLS[name]
     if (cmd) {
       const result = await cmd.run(at, args)
@@ -109,8 +116,8 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   switch (e.kind) {
     case "start": {
       // Once per session: the gardener's ask, earlier sessions' lessons and, until git ignores the state folder, the line asking for it.
-      const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), fullNotice(at).then(plain, () => "")])
-      return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
+      const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), selection.enabled.includes("maintenance") ? fullNotice(at).then(plain, () => "") : ""])
+      return withState(io, root, (s) => [{ ...s, told: false }, { context: [selection.error, hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
     }
     case "prompt":
       return withState(io, root, (s) => [
