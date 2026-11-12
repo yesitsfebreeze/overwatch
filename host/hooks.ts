@@ -1,7 +1,7 @@
 /**
- * `overwatch hook <host> <event>`: one command hook for every host that runs shell
- * hooks. Reads the host's event JSON on stdin, maps it to an `Event`, answers in that
- * host's output shape. Fails open: a payload it cannot read lets the host go on.
+ * `overwatch hook <host> <event>`: one command hook for every host that runs shell hooks. Maps the
+ * host's event JSON on stdin to an `Event` and answers in that host's output shape. Fails open: a
+ * payload it cannot read lets the host go on.
  */
 import type { Io } from "../hooks/io.ts"
 import { onEvent, type Event, type Outcome } from "./core.ts"
@@ -19,13 +19,9 @@ type Host = {
 const none: Out = { text: "", code: 0 }
 const json = (o: object): Out => ({ text: JSON.stringify(o), code: 0 })
 
-/**
- * Claude Code's command-hook protocol, which Codex and Factory Droid follow too:
- * additionalContext through hookSpecificOutput, permissionDecision on PreToolUse,
- * decision "block" with a reason on Stop.
- */
-const claudeShape = (events: Record<string, Kind>): Host => ({
-  events,
+/** Claude Code's command-hook protocol, which Codex and Factory Droid follow too. */
+const CLAUDE: Host = {
+  events: { SessionStart: "start", UserPromptSubmit: "prompt", PreToolUse: "pre_tool", Stop: "stop" },
   tool: (p) => p.tool_name ?? "",
   render: (kind, o, event) => {
     if (kind === "pre_tool")
@@ -34,11 +30,9 @@ const claudeShape = (events: Record<string, Kind>): Host => ({
       return o.block ? json({ decision: "block", reason: o.block }) : o.notify ? json({ systemMessage: o.notify }) : none
     return o.context ? json({ hookSpecificOutput: { hookEventName: event, additionalContext: o.context } }) : none
   },
-})
+}
 
-const CLAUDE = claudeShape({ SessionStart: "start", UserPromptSubmit: "prompt", PreToolUse: "pre_tool", Stop: "stop" })
-
-export const HOSTS: Record<string, Host> = {
+const HOSTS: Record<string, Host> = {
   claude: CLAUDE,
   codex: CLAUDE,
   droid: CLAUDE,
@@ -55,7 +49,7 @@ export const HOSTS: Record<string, Host> = {
   copilot: {
     events: { sessionStart: "start", preToolUse: "pre_tool", agentStop: "stop" },
     tool: (p) => p.toolName ?? p.tool_name ?? "",
-    // userPromptSubmitted output is dropped by the CLI, so the reminder rides sessionStart; agentStop blocks (the CLI ends after 8 blocks).
+    // The CLI drops userPromptSubmitted output, so the reminder rides sessionStart; it ends after 8 agentStop blocks.
     render: (kind, o) => {
       if (kind === "pre_tool") return o.deny ? json({ permissionDecision: "deny", permissionDecisionReason: o.deny }) : none
       if (kind === "stop") return o.block ? json({ decision: "block", reason: o.block }) : none
@@ -67,9 +61,9 @@ export const HOSTS: Record<string, Host> = {
     tool: (p) => p.tool_name ?? "",
     render: (kind, o) => {
       if (kind === "pre_tool") return o.deny ? json({ permission: "deny", user_message: o.deny, agent_message: o.deny }) : json({ permission: "allow" })
-      // stop: a followup_message is sent as the next user message (Cursor caps the loop).
+      // A followup_message is sent as the next user message (Cursor caps the loop).
       if (kind === "stop") return o.block ? json({ followup_message: o.block }) : none
-      // beforeSubmitPrompt cannot add context; the reminder rides sessionStart instead.
+      // beforeSubmitPrompt cannot add context: the reminder rides sessionStart.
       return kind === "start" && o.context ? json({ additional_context: o.context }) : none
     },
   },
@@ -85,7 +79,7 @@ export async function hook(io: Io, hostName: string, event: string, stdin: strin
   const cwd = p.cwd ?? p.workspace_roots?.[0] ?? io.cwd
   const e: Event =
     kind === "pre_tool" ? { kind, cwd, tool: host.tool?.(p) ?? "" } : kind === "prompt" ? { kind, cwd, person: true } : { kind, cwd }
-  // Claude Code and Codex set stop_hook_active on a stop that a block already continued; the stop verdict's own caps end the loop.
+  // stop_hook_active (a stop that a block already continued) is ignored: the stop verdict's own caps end the loop.
   try {
     return host.render(kind, await onEvent(io, e), event)
   } catch (err: any) {

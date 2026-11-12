@@ -16,7 +16,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 If you have not run the verification command in this message, you cannot claim it passes. Claiming a result without checking it is dishonesty, not efficiency.
 
-The rule serves shipping; it does not outrank it. It governs claims that a verifiable result holds ("tests pass", "build succeeds", "bug fixed"). Scale the check to the stakes: a one-line copy tweak needs no test-suite ceremony. Do not dodge it with synonyms, and do not keep re-proving instead of shipping.
+The rule serves shipping; it does not outrank it. It governs every claim or implication, in any wording, that a verifiable result holds ("tests pass", "build succeeds", "bug fixed"): before committing, opening a PR, completing a task, moving to the next one or delegating. Scale the check to the stakes: a one-line copy tweak needs no test-suite ceremony. Do not keep re-proving instead of shipping.
 
 ## The gate
 
@@ -44,7 +44,6 @@ The rule serves shipping; it does not outrank it. It governs claims that a verif
 - About to commit, push or open a PR without verification.
 - Trusting an agent's success report, or a partial check.
 - "Just this once", or tired and wanting the work over.
-- Different words, same implication of success.
 
 ## When the check itself lies
 
@@ -56,7 +55,3 @@ A check can exit clean and prove nothing.
 - **A syntax check proves parseability only.** A clean `node --check`, lint or parse says nothing about boot and runtime.
 - **A hang reports nothing.** Race a bare `await` against a timer so failure has a shape.
 - **Never take inventory through a truncating display.** Count with `grep -c` / `grep -o`, never `cut`, `head` or a pager. Then re-audit with a different method. Empty or short output is a claim about your command until proven a second way.
-
-## When to apply
-
-Before any claim or implication of success, in any wording; before committing, opening a PR, completing a task, moving to the next task or delegating.

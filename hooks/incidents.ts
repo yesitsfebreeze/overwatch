@@ -1,19 +1,16 @@
 /**
- * The incident ledger: every time overwatch catches an agent misbehaving (an edit
- * before a plan, a stop with work open, a call that does not fit its schema, a turn
- * with failed tool calls) the catch is recorded, and a kind that keeps happening
- * rides every later session's prompt as one lesson line. That is the loop:
- * catch → record → remind.
+ * The incident ledger: each time overwatch catches an agent misbehaving, the catch
+ * is recorded, and a kind that keeps happening rides every later session's prompt
+ * as one lesson line.
  *
- * State: .overwatch/incidents.json in the working directory, counts per day plus the
- * newest entries. Ceiling: read-modify-write with no lock, so two sessions recording
- * in the same millisecond can lose one count; move to an append-only log once `Io`
- * has an append.
+ * State: .overwatch/incidents.json, counts per day plus the newest entries.
+ * Ceiling: read-modify-write with no lock, so two sessions recording at once can
+ * lose a count; move to an append-only log once `Io` has an append.
  */
 import { readJson, sessionIo, state, type Io } from "./io.ts"
 
-/** What is caught. `lesson` is the line a repeat offence adds to the prompt; a kind without one is only counted. */
-export const KINDS = {
+/** What is caught. `lesson` is the line a habit adds to the prompt; a kind without one is only counted. */
+const KINDS = {
   unplanned_edit: { label: "edit before a plan", lesson: "Plan before the first file change: task_add and guard_add first, then edit." },
   early_stop: { label: "stop with work open", lesson: "Before ending a turn: complete every task, confirm the guards with guard_check, run the review pass that is due." },
   stalled: { label: "gave up with work open", lesson: "Stuck on an open task or a failing guard: ask the user, do not stop on the same open items again." },
@@ -27,12 +24,12 @@ export const REPEAT_AT = 3
 export const WINDOW_DAYS = 30
 const RECENT_MAX = 40
 
-export type Incident = { at: string; kind: Kind; detail: string }
+type Incident = { at: string; kind: Kind; detail: string }
 export type Incidents = { days: Record<string, Partial<Record<Kind, number>>>; recent: Incident[] }
 
 const path = (io: Io) => state(io, "incidents.json")
 const day = (d: Date) => d.toISOString().slice(0, 10)
-/** The last day outside the window: a day counts while it is later. */
+/** The last day outside the window. */
 const oldest = (now: Date) => day(new Date(now.getTime() - WINDOW_DAYS * 86_400_000))
 
 export async function load(io: Io): Promise<Incidents> {
@@ -53,12 +50,12 @@ export function add(st: Incidents, kind: Kind, detail: string, now = new Date())
 export async function note(io: Io, kind: Kind, detail = ""): Promise<void> {
   try {
     await io.write(path(io), JSON.stringify(add(await load(io), kind, detail), null, 1) + "\n")
-  } catch { /* the catch itself already happened; only its record is lost */ }
+  } catch {}
 }
 
-/** `note` from a hook; a function declaration, the one form `$` may be handed to. */
+/** `note` from a hook. A function declaration: the one form `$` may be handed to. */
 export async function incident($: any, kind: Kind, detail = ""): Promise<void> {
-  try { await note(await sessionIo($), kind, detail) } catch { /* best-effort */ }
+  try { await note(await sessionIo($), kind, detail) } catch {}
 }
 
 /** Catches per kind inside the window, most frequent first. */
@@ -69,7 +66,7 @@ export function totals(st: Incidents, now = new Date()): [Kind, number][] {
   return (Object.entries(sum) as [Kind, number][]).sort((a, b) => b[1] - a[1])
 }
 
-/** One lesson line per habit: what the prompt carries so the next session does better. */
+/** One lesson line per habit, for the prompt. */
 export const lessons = (st: Incidents, now = new Date()): string[] =>
   totals(st, now).filter(([k, n]) => n >= REPEAT_AT && KINDS[k].lesson).map(([k, n]) => `- ${KINDS[k].lesson} (caught ${n}× in ${WINDOW_DAYS} days)`)
 

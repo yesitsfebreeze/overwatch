@@ -1,9 +1,9 @@
 """overwatch for Hermes Agent.
 
-Hooks shell out to `overwatch hook claude <Event>` (the Claude Code hook shape), so the
-logic is the same TypeScript core every host runs. The plan tools come from the overwatch
-MCP server (`mcp_servers.overwatch` in ~/.hermes/config.yaml). Fails open: a missing
-binary or a bad answer never blocks Hermes.
+Hooks shell out to `overwatch hook claude <Event>` (the Claude Code hook shape): the same
+core every host runs. The plan tools come from the overwatch MCP server
+(`mcp_servers.overwatch` in ~/.hermes/config.yaml). Fails open: a missing binary or a bad
+answer never blocks Hermes.
 
 Limit: Hermes has no general stop hook; `pre_verify` fires only on turns that edited code,
 so an open plan holds the end of those turns only.

@@ -1,15 +1,15 @@
 /**
  * The guard core, from orly: a guard is one yes/no question about the finished
  * work, decided by a shell command where one can, else judged by Jev (TypeSafe)
- * from the recorded turn. Pure: the module does the I/O.
+ * from the recorded turn. Pure: the hooks module does the I/O.
  */
 import type { Guard } from "../types/index.d.ts"
 
 // ── the turn, reduced to what a judge reads ──────────────────────────
-export const MAX_RESULTS = 12
-export const MAX_ACTIONS = 40
+const MAX_RESULTS = 12
+const MAX_ACTIONS = 40
 
-export type Turn = {
+type Turn = {
   user_request: string
   assistant_final_message: string
   assistant_said: string
@@ -24,7 +24,7 @@ const FAILURE = /\b(fail(?:ed|ure|s|ing)?|errors?|err!|exit (?:code|status) [1-9
 const EVIDENCE = /\b(pass(?:e[sd]|ing)?|ok|green|succe\w+|exit|done|\d+ (?:tests?|specs?))\b|✓|✗/i
 const clip = (s: string, n: number) => (s.length <= n ? s : `${s.slice(0, n)}…[${s.length - n} more chars]`)
 
-export const textOf = (content: unknown): string =>
+const textOf = (content: unknown): string =>
   typeof content === "string"
     ? content
     : Array.isArray(content)
@@ -34,8 +34,8 @@ export const textOf = (content: unknown): string =>
 const blocks = (content: unknown): any[] => (Array.isArray(content) ? content : [])
 const hasToolResult = (content: unknown) => blocks(content).some((b) => b?.type === "tool_result")
 
-/** One readable line per tool call: the name plus whatever field names its target. */
-export function describeCall(name: string, input: any): string {
+/** One line per tool call: the name plus whatever field names its target. */
+function describeCall(name: string, input: any): string {
   const t = input?.command ?? input?.file_path ?? input?.path ?? input?.pattern ?? input?.url ?? input?.query ?? input?.description ?? (input === undefined ? "" : JSON.stringify(input))
   return clip(`${name}: ${String(t).replace(/\s+/g, " ")}`, 300)
 }
@@ -136,7 +136,7 @@ export function guardId(question: string, taken: string[] = []): string {
   return id
 }
 
-export const UNCHECKABLE =
+const UNCHECKABLE =
   /\b(clean|elegant|readable|maintainable|idiomatic|well[- ](structured|designed|written)|good|nice|proper|appropriate|robust|scalable|performant|secure enough|best practice)\b/i
 
 /** A command that exits 0 whatever happened, as the last word of a check. */
@@ -149,15 +149,15 @@ const PIPED_AWAY = new RegExp(String.raw`(?:^|[^|])\|&?\s*(?:(?:tail|head|tee|ca
 const ENDS_EARLIER = /\bexit\s+[1-9]|\bset\s+(?:-[a-z]*e|-o\s+errexit)/
 
 /**
- * Whether a check's exit code says nothing about the work: a bare always-0 command (true, :, exit 0, echo,
- * printf), anything ending in `|| <always-0>`, a last `; <always-0>` with no earlier `exit N`, `set -e` or
- * `set -o errexit` that could end it first, or a last pipe into tail/head/tee/cat or an always-0 command (sh takes the pipe's status
- * from its last command). Quoted text, comments, parens and trailing `;` are looked through; a substitution
- * (`$(...)`, `<(...)`, backticks) is one word, so a pipe inside it is not the check's own.
+ * Whether a check's exit code says nothing about the work: a bare always-0 command, anything ending in
+ * `|| <always-0>`, a last `; <always-0>` with no earlier `exit N` or `set -e` that could end it first, or a
+ * last pipe into tail/head/tee/cat or an always-0 command (sh takes a pipe's status from its last command).
+ * Quoted text, comments, parens and trailing `;` are looked through; a substitution (`$(...)`, `<(...)`,
+ * backticks) is one word, so a pipe inside it is not the check's own.
  */
 export function cannotFail(check: string): boolean {
   let c = check
-    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''") // quoted text can neither end nor join commands
+    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''") // quoted text neither ends nor joins commands
     .replace(/(^|[ \t])#.*$/gm, "$1")
     .replace(/`[^`]*`/g, "x")
   // Innermost first, so nested substitutions fold; one holding a bare subshell `$( (a) )` is left as is.
@@ -172,8 +172,7 @@ export function cannotFail(check: string): boolean {
   return BARE.test(c) || OR_ALWAYS.test(c) || PIPED_AWAY.test(c) || (LAST_ALWAYS.test(c) && !ENDS_EARLIER.test(c))
 }
 
-
-/** A new guard, or the reason it is refused: a question the judge cannot decide. */
+/** A new guard, or the reason it is refused. */
 export function makeGuard(taken: Guard[], question: string, check?: string, files?: string[]): Guard | string {
   const q = question.trim().replace(/\s+/g, " ")
   if (q.length < 15) return "a guard is one yes/no question of at least 15 characters"

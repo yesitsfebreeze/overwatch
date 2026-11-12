@@ -7,13 +7,12 @@ const SLOTS = { plugin: "overwatch", key: "slots" } as const
 const FACES = [":(", ":/", ":|", ":)", ":D"]
 export const face = (pct: number) => FACES[Math.max(0, Math.min(4, Math.floor(pct / 20)))]
 
-export type Seg = { text: string; color?: string; backgroundColor?: string; dimColor?: boolean }
+type Seg = { text: string; color?: string; backgroundColor?: string; dimColor?: boolean }
 
-// tmux-sys's gauge: `w` cells, filled on base16 slot 8 and trough on slot 18
-// (base01), the percent centred across all. With `saved`, the fill covers
-// `used` percent of the cells and the next `saved` percent take base16 slot 3
-// (yellow): compaction's context kept, folded away, and free. Slots, never hex:
-// the terminal's base16 theme paints them.
+// tmux-sys's gauge: `w` cells, fill on base16 slot 8, trough on slot 18 (base01),
+// the percent centred. With `saved`, the fill covers `used` percent and the next
+// `saved` percent take slot 3 (yellow): compaction's context kept, folded away and
+// free. Slots, never hex: the terminal's base16 theme paints them.
 export function gauge(pct: number, w = 10, used?: number, saved?: number): Seg[] {
   const c = (x: number) => Math.max(0, Math.min(100, Math.round(x)))
   const p = c(pct), t = `${p}%`, l = Math.floor((w - t.length) / 2)
@@ -34,7 +33,7 @@ export function line(slots: Record<string, FollowlineSlot>, order: readonly stri
   const mean = shown.reduce((a, s) => a + s.pct, 0) / shown.length
   const out: Seg[] = [{ text: face(mean) }]
   for (const s of shown) {
-    out.push((s.color ? { text: ` ${s.label ?? s.id} `, color: s.color } : { text: ` ${s.label ?? s.id} `, dimColor: true }), ...gauge(s.pct, 10, s.used, s.saved))
+    out.push({ text: ` ${s.label ?? s.id} `, ...(s.color ? { color: s.color } : { dimColor: true }) }, ...gauge(s.pct, 10, s.used, s.saved))
     if (s.detail) out.push({ text: ` ${s.detail}`, dimColor: true })
   }
   return out
@@ -46,8 +45,8 @@ export const slotOrder = (setting: unknown): string[] => [...new Set(String(sett
 export const register: Register = (on, options) => {
   const order = slotOrder(options.slots)
 
-  // $.followline.put is an event: the noun's core answers nothing, this
-  // plugin's own hook stores the slot, so a producer's call redraws the line.
+  // $.followline.put is an event: the core answers nothing, this hook stores
+  // the slot, so a producer's call redraws the line.
   on("engine.create", async (_, e, next) => ({ ...(await next(e)), followline: { put: async () => ({}) } }))
   on("followline.put", async ($, slot) => {
     const { value = {} } = await $.state.get(SLOTS)

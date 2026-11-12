@@ -16,7 +16,7 @@ test("session: a command tool runs in-process; a refusal is an error result", as
   on("process.run", async (_: any, e: any) => (runs.push(e), { value: { exitCode: 0, stdout: "", stderr: "" } }) as any)
   const ok = JSON.stringify(await $.tool.call({ tool: "mcp__overwatch__checks" } as any))
   expect(ok).toContain("no checks frozen")
-  // In-process: reading the frozen checks spawns nothing. The one `df` is the gardener reading the free space beside the result.
+  // In-process: nothing is spawned but the gardener's one `df`.
   expect(runs.filter((r) => r.argv?.[0] !== "df")).toEqual([])
   const bad = await $.tool.call({ tool: "mcp__overwatch__rate", name: "WebFetch", verdict: "useful", reason: "x" } as any)
   expect(JSON.stringify(bad)).toContain("needs a trigger")

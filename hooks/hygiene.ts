@@ -7,13 +7,13 @@ import { abs, cmp, join, memIo, type Entry, type Io } from "./io.ts"
  *   overwatch hygiene [repo] --issues   also sync GitHub issues of <repo> (needs gh)
  *   overwatch hygiene --selftest
  *
- * Usage counts come from local Claude Code transcripts when present
- * (~/.claude/projects, override with HYGIENE_TRANSCRIPTS); without them the column is blank.
+ * Usage counts come from local Claude Code transcripts (~/.claude/projects, or HYGIENE_TRANSCRIPTS);
+ * without them the column is blank.
  */
 
 type Severity = "high" | "medium" | "low"
-export type Finding = { skill: string; rule: string; severity: Severity; detail: string }
-export type Skill = {
+type Finding = { skill: string; rule: string; severity: Severity; detail: string }
+type Skill = {
   name: string; files: number; words: number; description: string; requires: string[]
   internal: string[]; external: string[]; lines: number; score: number
 }
@@ -30,7 +30,7 @@ const STOP = new Set(
     "be are was not no if then than so do does load read say says").split(" "),
 )
 
-/** Exactly what Python's str.split() splits on (str.isspace): JS's \s lacks \x1c-\x1f and NEL and adds U+FEFF. */
+/** What Python's str.split() splits on: JS's \s lacks \x1c-\x1f and NEL and adds U+FEFF. */
 const PY_SPACE = /[\t\n\v\f\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
 const len = (s: string) => [...s].length
 const stripChars = (s: string, chars: string) => {
@@ -87,9 +87,8 @@ export function fm(text: string): [Meta, string] {
 const vocab = (desc: string) => new Set([...desc.toLowerCase().matchAll(/[a-z][a-z0-9-]{2,}/g)].map((m) => m[0]).filter((w) => !STOP.has(w)))
 
 /**
- * difflib.SequenceMatcher(None, a, b).ratio(), autojunk included: in a `b` of 200+ items an
- * element seen more than 1% + 1 times is "popular" and never seeds a match, as in Python, so
- * DUP_RATIO keeps the meaning it was tuned with.
+ * difflib.SequenceMatcher(None, a, b).ratio(), autojunk included (in a `b` of 200+ items an element
+ * seen more than 1% + 1 times never seeds a match), so DUP_RATIO keeps the meaning it was tuned with.
  */
 export function ratio(sa: string, sb: string): number {
   const a = [...sa], b = [...sb]
@@ -146,9 +145,8 @@ async function walk(io: Io, dir: string, rel = ""): Promise<string[]> {
 const SKILL_CALL = /"name":"Skill","input":\{"skill":"([^"]+)"/g
 
 /**
- * Skill-tool invocations per skill in local transcripts. rg when it is on PATH (seconds over
- * gigabytes); otherwise every *.jsonl is read here, as the Python script did. Not BSD grep:
- * its -o over large files is an order of magnitude slower than either.
+ * Skill-tool invocations per skill in local transcripts: rg when on PATH (seconds over gigabytes),
+ * else every *.jsonl is read here. Not BSD grep: its -o is an order of magnitude slower than either.
  */
 async function usageCounts(io: Io): Promise<Record<string, number>> {
   const base = (await io.env("HYGIENE_TRANSCRIPTS")) ?? join((await io.env("HOME")) ?? "", ".claude/projects")
@@ -166,7 +164,7 @@ async function usageCounts(io: Io): Promise<Record<string, number>> {
   return counts
 }
 
-export async function scan(io: Io, skillsDir: string): Promise<[Record<string, Skill>, Finding[]]> {
+async function scan(io: Io, skillsDir: string): Promise<[Record<string, Skill>, Finding[]]> {
   const names = (await io.list(skillsDir)).filter((e) => e.kind === "dir" && !e.name.startsWith(".")).map((e) => e.name).sort(cmp)
   const parent = skillsDir.replace(/\/[^/]+\/?$/, "")
   const skills: Record<string, Skill> = {}
@@ -200,8 +198,7 @@ export async function scan(io: Io, skillsDir: string): Promise<[Record<string, S
       flag(name, "no-triggers", "medium", "description names no trigger phrases; routing is guesswork")
     if (s.lines > MAX_LINES) flag(name, "oversize", "low", `SKILL.md is ${s.lines} lines; split rarely-read parts into companions`)
 
-    // dependencies: requires:, prose "requires the X skill", another repo skill named in the body,
-    // and path references into a directory that is not this skill
+    // dependencies: requires:, prose "requires the X skill", another repo skill named in the body, a path into another skill
     const deps = new Set(s.requires)
     for (const m of body.matchAll(/[Rr]equires (?:the )?(?:`([a-z][a-z0-9-]+)`|([a-z][a-z0-9-]+) skill)/g)) deps.add(m[1] || m[2])
     for (const m of body.matchAll(/`\/([a-z][a-z0-9-]+)`/g)) deps.add(m[1])
@@ -260,7 +257,7 @@ function today(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
 }
 
-export function ledger(skills: Record<string, Skill>, findings: Finding[], usage: Record<string, number>): string {
+function ledger(skills: Record<string, Skill>, findings: Finding[], usage: Record<string, number>): string {
   const hasUsage = Object.keys(usage).length > 0
   const order = Object.values(skills).sort((x, y) => y.score - x.score || (usage[y.name] ?? 0) - (usage[x.name] ?? 0) || cmp(x.name, y.name))
   const out = [
@@ -295,7 +292,7 @@ export function title(f: Finding): string {
   return `[hygiene] ${f.skill}: ${f.rule}` + (named ? ` (${f.detail.split("'")[1]})` : "")
 }
 
-/** One open issue per medium/high finding, titled stably so reruns do not duplicate; close what healed. */
+/** One open issue per medium/high finding; closes what healed. */
 async function syncIssues(io: Io, root: string, findings: Finding[]): Promise<string[]> {
   const gh = async (...args: string[]) => {
     const r = await io.run(["gh", ...args], { cwd: root, timeoutMs: 60_000 })
@@ -322,7 +319,6 @@ async function syncIssues(io: Io, root: string, findings: Finding[]): Promise<st
   }
   return log
 }
-
 
 /** The fixture the selftest scans; every rule it checks fires on it. */
 export const FIXTURE: Record<string, string> = {

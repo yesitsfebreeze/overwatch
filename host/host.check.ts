@@ -1,6 +1,6 @@
-// The portable core end to end: plan tools over the state file, the edit gate, the stop
-// verdict with a real shell check, and the MCP server over stdio. Run: bun test ./host/host.check.ts
-// (named *.check.ts so `claude plugin test .` does not load it into the hooks engine).
+// The portable core end to end: plan tools over the state file, the edit gate, the stop verdict with a
+// real shell check, and the MCP server over stdio. Run: bun test ./host/host.check.ts
+// (*.check.ts so `claude plugin test .` does not load it into the hooks engine).
 import { expect, test } from "bun:test"
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

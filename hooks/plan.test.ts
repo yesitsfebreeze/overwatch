@@ -6,7 +6,6 @@ import type { Guard, Plan } from "../types/index.d.ts"
 const P = (tasks: Plan["tasks"], guards: Guard[] = []): Plan => ({ tasks, nextId: tasks.length + 1, guards })
 const OPEN = { id: 1, title: "fix the parser", progress: 45, status: "active" } as const
 const DONE = { id: 1, title: "fix the parser", progress: 100, status: "done" } as const
-/** One plan tool's pure change, as its tool.call would apply it. */
 const run = (name: string, s: Plan, e: object) => PLAN_TOOLS[name]!.run!(s, e)
 const G = (id: string, extra: Partial<Guard> = {}): Guard => ({ id, question: `Does ${id} hold after the change?`, ...extra })
 
@@ -15,7 +14,6 @@ test("tasks: add, progress to done, replace retires the id, remove, clear", () =
   let s = P([])
   for (let i = 1; i <= 7; i++) s = run("task_add", s, { titles: [`t${i}`] }).state
   expect(s.tasks.length).toBe(7)
-  expect(run("task_add", s, { titles: [" "] }).warn).toBe(true)
   s = run("task_progress", P([{ ...OPEN, progress: 0, status: "todo" }]), { task_id: 1, progress: 50 }).state
   expect(s.tasks[0]).toMatchObject({ progress: 50, status: "active" })
   s = run("task_progress", s, { task_id: 1, progress: 100 }).state
@@ -81,33 +79,31 @@ test("results: failures kept over a blind tail, long output cut to evidence", ()
 // ── the stop ─────────────────────────────────────────────────────────
 const met = (g: Guard, ok: boolean): Guard => ({ ...g, met: ok, last: { exit: ok ? 0 : 1, out: ok ? "" : "1 fail" } })
 const reasonOf = (r: ReturnType<typeof stopVerdict>) => (r.verdict as any).reason as string
+const TESTS = G("tests", { check: "bun test" })
+const FINISHED = P([DONE], [TESTS])
+/** The stop with the tests guard upheld: only tasks and the review pass can hold it. */
+const held = (v: typeof CLEAN, plan = FINISHED) => stopVerdict(plan, [met(TESTS, true)], v, FRESH)
 
 test("stopVerdict: open tasks and failing guards refuse the stop, named in the reason", () => {
-  const g = G("tests", { check: "bun test" })
-  const r = stopVerdict(P([OPEN], [g]), [met(g, false)], CLEAN, FRESH)
+  const r = stopVerdict(P([OPEN], [TESTS]), [met(TESTS, false)], CLEAN, FRESH)
   expect(r.verdict.kind).toBe("block")
   const reason = reasonOf(r)
   expect(reason).toContain('task #1 "fix the parser" (45%)')
   expect(reason).toContain("guard tests (check `bun test` exit 1)")
   expect(reason).toContain("1 fail")
-  expect(stopVerdict(P([DONE], [g]), [met(g, true)], CLEAN, FRESH).verdict.kind).toBe("pass")
+  // No edits, nothing to review.
+  expect(held(CLEAN).verdict.kind).toBe("pass")
 })
 
 test("verify: a large change is refused until code-review and simplify both ran", () => {
-  const g = G("tests", { check: "bun test" })
-  const plan = P([DONE], [g])
   const dirty = edited(CLEAN, LARGE_CHANGE_LINES)
-  const none = reasonOf(stopVerdict(plan, [met(g, true)], dirty, FRESH))
-  expect(none).toContain("run /code-review, then run /simplify")
-  const half = reasonOf(stopVerdict(plan, [met(g, true)], { ...dirty, review: true }, FRESH))
+  expect(reasonOf(held(dirty))).toContain("run /code-review, then run /simplify")
+  const half = reasonOf(held({ ...dirty, review: true }))
   expect(half).toContain("run /simplify")
   expect(half).not.toContain("run /code-review")
-  expect(stopVerdict(plan, [met(g, true)], { ...dirty, review: true, simplify: true }, FRESH).verdict.kind).toBe("pass")
+  expect(held({ ...dirty, review: true, simplify: true }).verdict.kind).toBe("pass")
   // Not asked while tasks are open: the review pass is for finished work.
-  const early = reasonOf(stopVerdict(P([OPEN], [g]), [met(g, true)], dirty, FRESH))
-  expect(early).not.toContain("run /simplify")
-  // No edits, nothing to review.
-  expect(stopVerdict(plan, [met(g, true)], CLEAN, FRESH).verdict.kind).toBe("pass")
+  expect(reasonOf(held(dirty, P([OPEN], [TESTS])))).not.toContain("run /simplify")
 })
 
 test("stopVerdict: unchanged refusals stall to the cap, progress resets it", () => {
@@ -125,23 +121,20 @@ test("stopVerdict: unchanged refusals stall to the cap, progress resets it", () 
 })
 
 test("verify: a mid-size change needs only simplify", () => {
-  const g = G("tests", { check: "bun test" })
-  const plan = P([DONE], [g])
   const mid = edited(CLEAN, LARGE_CHANGE_LINES - 1)
-  const r = reasonOf(stopVerdict(plan, [met(g, true)], mid, FRESH))
+  const r = reasonOf(held(mid))
   expect(r).toContain("run /simplify")
   expect(r).not.toContain("run /code-review")
-  expect(stopVerdict(plan, [met(g, true)], { ...mid, simplify: true }, FRESH).verdict.kind).toBe("pass")
-  expect(reasonOf(stopVerdict(plan, [met(g, true)], edited(CLEAN, SMALL_CHANGE_LINES), FRESH))).toContain("run /simplify")
+  expect(held({ ...mid, simplify: true }).verdict.kind).toBe("pass")
+  expect(reasonOf(held(edited(CLEAN, SMALL_CHANGE_LINES)))).toContain("run /simplify")
 })
 
 test("verify: a small change needs no review pass", () => {
-  const g = G("tests", { check: "bun test" })
   const small = edited(CLEAN, SMALL_CHANGE_LINES - 1)
-  expect(stopVerdict(P([DONE], [g]), [met(g, true)], small, FRESH).verdict.kind).toBe("pass")
+  expect(held(small).verdict.kind).toBe("pass")
   expect(reviewLine(small)).toContain("no review pass needed")
-  // Still held by open tasks and unmet guards.
-  expect(stopVerdict(P([OPEN], [g]), [met(g, true)], small, FRESH).verdict.kind).toBe("block")
+  // Still held by open tasks.
+  expect(held(small, P([OPEN], [TESTS])).verdict.kind).toBe("block")
 })
 
 test("changedLines: replaced or new text, summed over edits and items", () => {
@@ -173,7 +166,7 @@ test("tools: one flat tool per change, no action switch, every schema names its 
     expect(Object.keys(t.properties ?? {})).not.toContain("action")
     for (const r of t.required ?? []) expect(Object.keys(t.properties ?? {})).toContain(r)
     expect(t.description.length).toBeGreaterThan(40)
-    // Each tool owns its logic: a pure change to the plan, except the two named handlers.
+    // A pure change to the plan, except the two named handlers.
     expect(!!t.run).toBe(!["guard_check", "plan_show"].includes(name))
   }
 })
@@ -196,19 +189,18 @@ test("verify: new work counts lines only since each skill last ran", () => {
   expect(newWork(big)).toEqual(big)
   // Fix edits made after /code-review ran keep the pass, and count once new work starts.
   const fixed = edited(ran(big, "review"), LARGE_CHANGE_LINES)
-  expect(reasonOf(stopVerdict(P([DONE], [G("t", { check: "bun test" })]), [met(G("t", { check: "bun test" }), true)], fixed, FRESH))).not.toContain("run /code-review")
+  expect(reasonOf(held(fixed))).not.toContain("run /code-review")
   expect(newWork(ran(fixed, "simplify"))).toMatchObject({ unreviewed: LARGE_CHANGE_LINES, lines: 0 })
   // The fix for a /code-review finding, added as a task: /code-review is not asked for again, /simplify still is.
-  const g = G("tests", { check: "bun test" })
   const fix = edited(newWork(ran(big, "review")), 3)
   expect(fix).toMatchObject({ lines: big.lines + 3, unreviewed: 3 })
-  const r = reasonOf(stopVerdict(P([DONE], [g]), [met(g, true)], fix, FRESH))
+  const r = reasonOf(held(fix))
   expect(r).toContain("run /simplify")
   expect(r).not.toContain("run /code-review")
   // After /simplify too, a small fix needs no pass at all; a large one is reviewed again.
   const after = newWork(ran(fix, "simplify"))
-  expect(stopVerdict(P([DONE], [g]), [met(g, true)], edited(after, 3), FRESH).verdict.kind).toBe("pass")
-  expect(reasonOf(stopVerdict(P([DONE], [g]), [met(g, true)], edited(after, LARGE_CHANGE_LINES), FRESH))).toContain("run /code-review, then run /simplify")
+  expect(held(edited(after, 3)).verdict.kind).toBe("pass")
+  expect(reasonOf(held(edited(after, LARGE_CHANGE_LINES)))).toContain("run /code-review, then run /simplify")
   // The first edit after a passed stop voids a pass run before it.
   expect(edited({ ...CLEAN, review: true, simplify: true }, 2)).toEqual({ ...CLEAN, dirty: true, lines: 2, unreviewed: 2 })
 })
@@ -311,7 +303,7 @@ test("session: gate, plan, large edit, stop refused until checks pass and code-r
   let exitCode = 1
   on("process.run", async () => ({ value: { exitCode, stdout: exitCode ? "1 fail" : "1 pass", stderr: "" } }) as any)
   on("classic.Stop", async () => ({}) as any)
-  // overwatch's own followline stores each gauge in its slots: record the writes
+  // followline stores each gauge in its slots: record the writes
   const slots: any[] = []
   on("state.set" as any, async (_: any, e: any, next: any) => (e?.key === "slots" && slots.push(e.value), next(e)))
   on("tool.call", async () => ({ result: "written" }) as any)

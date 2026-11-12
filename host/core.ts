@@ -1,60 +1,58 @@
 /**
- * overwatch outside Claude Code's hooks engine: the same plan tools, gate and stop
- * verdict (hooks/plan.ts) and the same commands (hooks/commands.ts), over a state file
- * instead of `$.state`. Every host adapter (MCP server, command hooks, pi, opencode,
- * Hermes) goes through `callTool` and `onEvent`.
+ * overwatch outside Claude Code's hooks engine: the same plan tools, gate and stop verdict
+ * (hooks/plan.ts) and commands (hooks/commands.ts), over a state file instead of `$.state`.
+ * Every host adapter goes through `callTool` and `onEvent`.
  *
- * State is per project, not per session (.overwatch/plan.json in the project root): an MCP server is never told which session
- * calls it, so the plan file sits in the project root (the git toplevel, else the
- * directory). Ceiling: two sessions in one project share one plan; key by session once
- * every host passes a session id to its MCP servers.
+ * State is per project, not per session (.overwatch/plan.json in the project root): an MCP
+ * server is never told which session calls it. Ceiling: two sessions in one project share one
+ * plan; key by session once every host passes a session id to its MCP servers.
  */
-import type { Guard, Plan, StopBook } from "../types/index.d.ts"
-import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, checkReport, checked, detail, gateReason, openLine, pickChecks, reminder, stopVerdict, withDecided } from "../hooks/plan.ts"
+import type { Plan, StopBook } from "../types/index.d.ts"
+import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, checkReport, detail, gateReason, openLine, pickChecks, reminder, runCheck, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
 import { fullNotice } from "../hooks/gardener.ts"
 import { COMMAND_TOOLS } from "../hooks/commands.ts"
 import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
-import { ignoreHint, join, shellArgv, STATE_DIR, type Io } from "../hooks/io.ts"
+import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
 
 export { schemaOf }
 
-export type State = { plan: Plan; stops: StopBook; told: boolean }
+type State = { plan: Plan; stops: StopBook; told: boolean }
 const FRESH_STATE: State = { plan: EMPTY, stops: FRESH, told: false }
 
-/** No /simplify or /code-review outside Claude Code, so the review pass is not part of the contract here. */
-export const HOST_CONTRACT =
+/** No /simplify or /code-review outside Claude Code: the contract has no review pass. */
+const HOST_CONTRACT =
   "Every stop is refused until all tasks are done and every guard is upheld. Need the user's input: ask them. A guard that cannot be met: say so and why; only the user drops a guard."
 
-/** Tool names hosts use for file writes and edits, lower-cased: gated until the plan has tasks and guards. */
-export const EDIT_TOOLS = new Set([
+/** Hosts' file write and edit tools, lower-cased: gated until the plan has tasks and guards. */
+const EDIT_TOOLS = new Set([
   ...CLAUDE_EDIT_TOOLS.map((t) => t.toLowerCase()), // Claude Code (pi and opencode share write, edit)
   "apply_patch", "applypatch", "patch", // Codex, Droid, opencode, Hermes
   "write_file", "replace", "edit_file", "create", "str_replace", "str_replace_editor", "create_file", // Gemini, Copilot, Cursor, Droid, Hermes
   "mcp__git-fs__write", "mcp__git-fs__edit",
 ])
-export const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
+const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
 
 /** Every overwatch tool a host can offer: the commands and the plan, by short name. */
 export const TOOLS: Record<string, ToolSpec> = Object.fromEntries(
   [...Object.entries(COMMAND_TOOLS), ...Object.entries(PLAN_TOOLS)].map(([n, t]) => [n, { description: t.description, properties: t.properties, required: t.required }]),
 )
 
-/** Text meant for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
-export const plain = (s: string) => s.replaceAll(TOOL_PREFIX, "")
+/** Text written for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
+const plain = (s: string) => s.replaceAll(TOOL_PREFIX, "")
 
-/** The project root: the git toplevel of `dir`, else `dir`. `OVERWATCH_PROJECT` overrides it (a host that starts MCP servers elsewhere). */
-export async function projectRoot(io: Io, dir = io.cwd): Promise<string> {
+/** The git toplevel of `dir`, else `dir`. `OVERWATCH_PROJECT` overrides it (a host that starts MCP servers elsewhere). */
+async function projectRoot(io: Io, dir = io.cwd): Promise<string> {
   const pinned = process.env.OVERWATCH_PROJECT
   if (pinned) return pinned
   const r = await io.run(["git", "rev-parse", "--show-toplevel"], { cwd: dir, timeoutMs: 5000 })
   return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : dir
 }
 
-/** Read-modify-write of the project's state. Ceiling: no lock, so a hook and a tool call landing in the same millisecond can lose one write; add a lock file if that shows up. */
-export async function withState<T>(io: Io, root: string, f: (s: State) => Promise<[State, T]> | [State, T]): Promise<T> {
+/** Read-modify-write of the project's state. Ceiling: no lock, so a hook and a tool call in the same millisecond can lose one write; add a lock file if that shows up. */
+async function withState<T>(io: Io, root: string, f: (s: State) => Promise<[State, T]> | [State, T]): Promise<T> {
   const path = join(root, STATE_DIR, "plan.json")
   let s: State
   try { s = { ...FRESH_STATE, ...JSON.parse((await io.read(path)) ?? "") } } catch { s = FRESH_STATE }
@@ -63,15 +61,8 @@ export async function withState<T>(io: Io, root: string, f: (s: State) => Promis
   return out
 }
 
-const runCheck = async (io: Io, g: Guard, cwd: string): Promise<Guard> => {
-  const r = await io.run([...await shellArgv(io.run), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-  return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
-}
-
-export type ToolResult = { text: string; error?: boolean }
-
-/** Runs one overwatch tool by short name, as every host's tool call does. */
-export async function callTool(io: Io, name: string, args: Record<string, unknown> = {}): Promise<ToolResult> {
+/** Runs one overwatch tool by short name. */
+export async function callTool(io: Io, name: string, args: Record<string, unknown> = {}): Promise<{ text: string; error?: boolean }> {
   const root = await projectRoot(io)
   const at: Io = { ...io, cwd: root }
   try {
@@ -82,7 +73,7 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
       return withState(io, root, async (s) => {
         const pick = pickChecks(s.plan, args.guard_id)
         if (typeof pick === "string") return [s, { text: pick, error: true }]
-        const decided = await Promise.all(pick.map((g) => runCheck(io, g, root)))
+        const decided = await Promise.all(pick.map((g) => runCheck(io.run, g, root)))
         return [{ ...s, plan: withDecided(s.plan, decided) }, { text: checkReport(decided) }]
       })
     }
@@ -104,7 +95,7 @@ export type Event =
   | { kind: "pre_tool"; cwd: string; tool: string }
   | { kind: "stop"; cwd: string }
 
-/** What a host does with the answer: add `context` to the model's input, `deny` the tool call, `block` the stop (the turn continues with the reason), or `notify` the user. */
+/** What the host does: add `context` to the model's input, `deny` the tool call, `block` the stop (the turn continues with the reason), or `notify` the user. */
 export type Outcome = { context?: string; deny?: string; block?: string; notify?: string }
 
 export async function onEvent(io: Io, e: Event): Promise<Outcome> {
@@ -112,7 +103,7 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   const at: Io = { ...io, cwd: root }
   switch (e.kind) {
     case "start": {
-      // Once per session: the gardener's ask while the disk is nearly full, the lessons of earlier sessions (caught habits, recorded mistakes) and, while git does not ignore the state folder, the line that asks for it.
+      // Once per session: the gardener's ask, earlier sessions' lessons and, until git ignores the state folder, the line asking for it.
       const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), fullNotice(at).then(plain, () => "")])
       return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
     }
@@ -130,8 +121,8 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
     }
     case "stop": {
       const out = await withState(io, root, async (s): Promise<[State, Outcome]> => {
-        // Judged guards need the turn's transcript, which hosts hand over in different shapes; they fail open here (ceiling: read transcript_path where a host gives one).
-        const decided = await Promise.all(openGuards(s.plan.guards).filter((g) => g.check).map((g) => runCheck(io, g, root)))
+        // Judged guards need the turn's transcript, which each host shapes differently: they fail open here (ceiling: read transcript_path where a host gives one).
+        const decided = await Promise.all(openGuards(s.plan.guards).filter((g) => g.check).map((g) => runCheck(io.run, g, root)))
         const plan = withDecided(s.plan, decided)
         const { verdict, next } = stopVerdict(plan, decided, CLEAN, s.stops)
         const out: Outcome = verdict.kind === "pass" ? {} : verdict.kind === "block" ? { block: plain(verdict.reason) } : { notify: plain(verdict.reason) }

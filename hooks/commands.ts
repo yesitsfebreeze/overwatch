@@ -6,15 +6,12 @@ import { loadout } from "./loadout.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
 import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
-/** One flat tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
-export type CommandTool = ToolSpec & { run: (io: Io, e: any) => Promise<string> }
+/** One tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
+type CommandTool = ToolSpec & { run: (io: Io, e: any) => Promise<string> }
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 
-/**
- * The commands overwatch exposes as `mcp__overwatch__<name>`. bin/overwatch runs
- * the same functions from a terminal; the skills stay for the judgement around them.
- */
+/** The commands exposed as `mcp__overwatch__<name>`; bin/overwatch runs the same functions from a terminal. */
 export const COMMAND_TOOLS: Record<string, CommandTool> = {
   checks: {
     description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. Run from the repo root. Read-only. Empty until scan froze the checks.",
@@ -84,13 +81,12 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
 const SURFACE = { plugin: "overwatch", key: "surface" } as const
 
 /**
- * The block overwatch adds to this session's system prompt: the tool surface (what
- * gets used, learned triggers) and the lessons of earlier sessions (habits caught
- * repeatedly, this repo's recorded mistakes). Built once from the tools the session
- * has (the request's and `$.tool.list()`'s) and kept in $.state: a reload neither
- * redraws the tool up for rating nor changes the prompt mid-session.
+ * The block added to this session's system prompt: the tool surface and the lessons
+ * of earlier sessions. Built once from the session's tools (the request's and
+ * `$.tool.list()`'s) and kept in $.state: a reload neither redraws the tool up for
+ * rating nor changes the prompt mid-session.
  */
-export async function surfaceBlock($: any, offered: readonly string[]): Promise<string> {
+async function surfaceBlock($: any, offered: readonly string[]): Promise<string> {
   const { value } = await $.state.get(SURFACE)
   if (typeof value === "string") return value
   const [listed, at]: [string[], Io] = await Promise.all([$.tool.list().then((ts: { name: string }[]) => ts.map((t) => t.name), () => []), io($)])
@@ -98,7 +94,7 @@ export async function surfaceBlock($: any, offered: readonly string[]): Promise<
   if (parts === undefined) return "" // a failed build is retried on the next request, not cached
   const [{ sections, drawn }, lessons] = parts
   const block = [asBlock(sections), lessons].filter(Boolean).join("\n\n")
-  // The rating question waits in $.state for takeEvaluation; an empty block is cached too: it is the answer for this session.
+  // The rating question waits for takeEvaluation. An empty block is cached too: it is this session's answer.
   await Promise.all([$.state.set(SURFACE, block), drawn && $.state.set(EVALUATION, evaluation(drawn))])
   return block
 }
@@ -108,10 +104,7 @@ export const EVALUATE_AFTER_CALLS = 5
 const EVALUATION = { plugin: "overwatch", key: "evaluation" } as const
 const CALLS = { plugin: "overwatch", key: "calls" } as const
 
-/**
- * The rating question, once, on the first prompt after the session did real work:
- * a chat-only session is never asked. overwatch.ts's prompt.submit hook calls it.
- */
+/** The rating question, once, on the first prompt after EVALUATE_AFTER_CALLS calls: a chat-only session is never asked. */
 export async function takeEvaluation($: any): Promise<string | undefined> {
   const [{ value: text }, { value: calls }] = await Promise.all([$.state.get(EVALUATION), $.state.get(CALLS)])
   if (!text || (calls ?? 0) < EVALUATE_AFTER_CALLS) return undefined
@@ -119,27 +112,26 @@ export async function takeEvaluation($: any): Promise<string | undefined> {
   return text
 }
 
-// The ledger counts the main thread's calls as they run and folds them in once per turn.
+/** The main thread's calls this turn, by tool and shell binary. */
 let fired: Record<string, number> = {}
 
-/** Counts one tool call; overwatch.ts's tool.call hook calls it. */
 export function countCall(e: { tool: string; agentId?: string; command?: unknown }): void {
   if (!e.agentId) for (const n of firedBy(e.tool, e)) fired[n] = (fired[n] ?? 0) + 1
 }
 
-/** Folds the turn's counts into the ledger; overwatch.ts's turn.complete hook calls it. */
+/** Folds the turn's counts into the ledger. */
 export async function flushCalls($: any, e: { agentId?: string }): Promise<void> {
   if (e.agentId || !Object.keys(fired).length) return
   const batch = fired
   fired = {}
   const calls = Object.entries(batch).reduce((n, [k, c]) => (k.startsWith("sh:") ? n : n + c), 0)
   try { const { value } = await $.state.get(CALLS); await $.state.set(CALLS, (value ?? 0) + calls) } catch {}
-  // Best-effort and fire-and-forget: a session that ended under it loses this turn's counts, never the hook.
-  try { await tally(await io($), batch) } catch { /* counting never breaks a turn */ }
+  // Best-effort: a session that ended under it loses this turn's counts, never the hook.
+  try { await tally(await io($), batch) } catch {}
 }
 
 export const register: Register = (on) => {
-  // The surface block rides the system prompt, after the cache boundary, naming only active tools.
+  // The surface block: after the cache boundary, naming only active tools.
   on("prompt.compose", async ($, e, next) => {
     const [r, block] = await Promise.all([next(e), surfaceBlock($, e.tools)])
     return block ? { ...r, sections: [...r.sections, { id: "overwatch:surface", text: block, scope: "session" as const }] } : r

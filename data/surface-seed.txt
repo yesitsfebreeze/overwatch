@@ -1,6 +1,5 @@
-# Tool names overwatch may draw from for a cold-tool evaluation, one per line.
-# Seeded with this harness's deferred and rare surface — the tools whose value
-# is unobservable until something deliberately points at them. Edit freely.
+# Tools overwatch may draw for a cold-tool evaluation, one per line: the deferred and
+# rare ones, whose value is unobservable until something points at them. Edit freely.
 Agent
 Artifact
 ArtifactComments

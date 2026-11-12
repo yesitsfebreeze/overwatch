@@ -3,8 +3,7 @@ import { memIo, type Io } from "./io.ts"
 import { asBlock, discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, surface, tally } from "./surface.ts"
 import { EVALUATE_AFTER_CALLS } from "./commands.ts"
 
-// The fs engine resolves a path before a hook sees it: win32 delivers 'C:\state\x' for '/state/x'.
-// Normalize back so the POSIX keys the mocks pre-seed match on every host.
+// The fs engine resolves a path before a hook sees it (win32: 'C:\state\x' for '/state/x'); back to the mocks' POSIX keys.
 const norm = (p: unknown) => String(p).replace(/\\/g, "/").replace(/^[A-Za-z]:/, "")
 
 /** A memory Io with a state home and a PATH holding only `onPath`. */
@@ -17,6 +16,7 @@ function io(files: Record<string, string> = {}, onPath = ["ls"]): Io & { files: 
     run: async (argv) => ({ code: 0, stdout: argv.slice(4).filter((b) => onPath.includes(b)).join("\n"), stderr: "" }),
   }
 }
+const ledger = (counts: Record<string, number>, triggers: Record<string, string> = {}) => ({ counts, verdicts: {}, triggers, drawn: null })
 
 test("scan: parameterised just recipes are seen, and verify supersedes raw cargo", async () => {
   const m = io({ "/repo/Cargo.toml": "[package]\n", "/repo/justfile": 'target := "x"\nbuild:\n\tcargo build\ntest *args:\n\tcargo test\nverify rev="HEAD":\n\techo\n' })
@@ -36,7 +36,7 @@ test("shellBinary: the command a Bash call ran, past cd, env and flags", () => {
 
 test("index: only active tools and binaries on PATH; the drawn tool is one of them", async () => {
   const m = io()
-  await save(m, { counts: { Bash: 9, mcp__gone__task: 7, Read: 3, "sh:ls": 5, "sh:no-such-binary-xyz": 4 }, verdicts: {}, triggers: { mcp__gone__task: "gone trigger", Read: "read trigger" }, drawn: null })
+  await save(m, ledger({ Bash: 9, mcp__gone__task: 7, Read: 3, "sh:ls": 5, "sh:no-such-binary-xyz": 4 }, { mcp__gone__task: "gone trigger", Read: "read trigger" }))
   const out = await index(m, ["Bash", "Read"])
   expect(out).toContain("# Tool surface (overwatch)")
   expect(out).toContain("Bash 9")
@@ -52,15 +52,15 @@ test("index: only active tools and binaries on PATH; the drawn tool is one of th
 
 test("index: shell search that dwarfs kern asks for kern first, only where kern fired", async () => {
   const m = io({}, ["rg", "sed"])
-  await save(m, { counts: { "sh:rg": 30, "sh:sed": 20, kern_fs: 5 }, verdicts: {}, triggers: {}, drawn: null })
+  await save(m, ledger({ "sh:rg": 30, "sh:sed": 20, kern_fs: 5 }))
   expect(await index(m)).toContain("## Search through kern first: shell search 50 vs kern 5")
-  await save(m, { counts: { "sh:rg": 30 }, verdicts: {}, triggers: {}, drawn: null })
+  await save(m, ledger({ "sh:rg": 30 }))
   expect(await index(m)).not.toContain("kern first")
 })
 
 test("index: the kern CLI on PATH is not kern's tools, so it never asks for kern first", async () => {
   const m = io({}, ["rg", "sed", "kern"])
-  await save(m, { counts: { "sh:rg": 30, "sh:sed": 20, "sh:kern": 5 }, verdicts: {}, triggers: {}, drawn: null })
+  await save(m, ledger({ "sh:rg": 30, "sh:sed": 20, "sh:kern": 5 }))
   const block = await index(m, ["Bash", "Read"])
   expect(block).toContain("kern 5") // still listed as a shell binary
   expect(block).not.toContain("kern first")
@@ -82,7 +82,7 @@ test("ledger: tally adds a turn's fires; rate refuses a useful verdict without a
 
 test("surface: the block without the question, the drawn tool returned with it; evaluation() names it", async () => {
   const m = io()
-  await save(m, { counts: { Bash: 9, Read: 3 }, verdicts: {}, triggers: {}, drawn: null })
+  await save(m, ledger({ Bash: 9, Read: 3 }))
   expect(await index(m, ["Bash", "Read"])).toContain("Evaluation due")
   const { sections, drawn } = await surface(m, ["Bash", "Read"])
   expect(asBlock(sections)).not.toContain("Evaluation due")
@@ -103,9 +103,9 @@ test("session: rating held back while the session is unused, asked once after re
   on("process.run", async () => ({ value: { exitCode: 0, stdout: "", stderr: "" } }) as any)
   on("tool.call", async () => ({ result: "ok" }) as any)
   on("turn.complete", async () => ({ text: "" }) as any)
-  const built = JSON.stringify((await ($.prompt.compose as any)({ model: "m", promptModel: "m", surfaces: [], tools: ["Bash", "Read"], outputStyle: null, traits: [] })).sections)
-  expect(built).toContain("Used most in this project")
-  expect(JSON.stringify((await ($.prompt.compose as any)({ model: "m", promptModel: "m", surfaces: [], tools: ["Bash", "Read"], outputStyle: null, traits: [] })).sections)).not.toContain("Evaluation due")
+  const compose = async () => JSON.stringify((await ($.prompt.compose as any)({ model: "m", promptModel: "m", surfaces: [], tools: ["Bash", "Read"], outputStyle: null, traits: [] })).sections)
+  expect(await compose()).toContain("Used most in this project")
+  expect(await compose()).not.toContain("Evaluation due")
   const submit = async () => JSON.stringify(await $.prompt.submit({ text: "hi" } as any))
   expect(await submit()).not.toContain("Evaluation due")
   // Real work: main-thread tool calls, folded in when the turn completes.

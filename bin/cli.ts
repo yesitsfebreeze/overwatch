@@ -1,4 +1,4 @@
-// overwatch's one binary: every command over the same modules the hooks run (hooks/*.ts), through the bun Io.
+// overwatch's one binary: every command over the modules the hooks run (hooks/*.ts), through the bun Io.
 import { clean, disk } from "../hooks/gardener.ts"
 import { hygiene } from "../hooks/hygiene.ts"
 import { loadout } from "../hooks/loadout.ts"
@@ -43,7 +43,7 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
       return ok(await disk(io, args[0] === "disk" ? "disk" : "project", m < 0 ? undefined : Number(args[m + 1]) || undefined))
     }
     case "disk-clean": return ok(await clean(io, args.filter((a) => a !== "--apply"), args.includes("--apply")))
-    case "mcp": await serve(io); return { text: "", code: 0 }
+    case "mcp": await serve(io); return ok("")
     case "hook": return hook(io, args[0] ?? "", args[1] ?? "", await Bun.stdin.text())
     case "index": return ok(await index(io, args.includes("--active") ? JSON.parse(await Bun.stdin.text()) : undefined))
     case "rate": {

@@ -1,8 +1,7 @@
 /**
- * overwatch for opencode 2.x (`@opencode/plugin`): the plan and command tools, the plan
- * reminder in every model request, the edit gate (permission "edit" denied while the plan
- * is empty), and the stop hold (on session.idle an open plan prompts the session again).
- * Same core as every other host (host/core.ts). opencode runs plugins on bun.
+ * overwatch for opencode 2.x (`@opencode/plugin`) over host/core.ts: the tools, the plan reminder in
+ * every model request, the edit gate (permission "edit" denied while the plan is empty) and the stop
+ * hold (on session.idle an open plan prompts the session again). opencode runs plugins on bun.
  */
 import { Plugin } from "@opencode/plugin"
 import { fromNode } from "../../bin/node-io.ts"
@@ -28,7 +27,7 @@ export default Plugin.define({
         })
     })
 
-    // A submitted prompt resets the stop rounds (the idle re-prompt below counts as one; the 3-unchanged cap still ends a stuck loop).
+    // A submitted prompt resets the stop rounds. The idle re-prompt below counts as one; the 3-unchanged cap still ends a stuck loop.
     await ctx.session.hook("prompt", async () => {
       await onEvent(io, { kind: "prompt", cwd: dir, person: true })
     })

@@ -1,6 +1,6 @@
 ---
 name: hygiene
-description: Lint and rank the skills in one repository's skills/ folder: writes LEDGER.md (ranking, duplicates, dependencies, findings) and syncs one GitHub issue per finding. Use when the user asks to rate, review or clean up the skills in a repo, wants a skill ledger, asks which skills duplicate or depend on each other, or says "/hygiene". Not for writing a new skill, reviewing application code, or ranking installed plugins (that is gemify).
+description: Lint and rank the skills in one repository's skills/ folder. Writes LEDGER.md (ranking, duplicates, dependencies, findings) and syncs one GitHub issue per finding. Use when the user asks to rate, review or clean up the skills in a repo, wants a skill ledger, asks which skills duplicate or depend on each other, or says "/hygiene". Not for writing a new skill, reviewing application code, or ranking installed plugins (that is gemify).
 allowed-tools: Read, Glob, Grep, mcp__overwatch__hygiene_ledger, Bash(*/bin/overwatch *), Bash(gh *)
 ---
 

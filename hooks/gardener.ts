@@ -2,12 +2,10 @@ import { TOOL_PREFIX } from "./catalog.ts"
 import { cmp, join, readJson, shellArgv, state, type Io } from "./io.ts"
 
 /**
- * The disk gardener: knows when the disk a project sits on is nearly full, finds what
- * can go (ephemeral files in the temp folders, build output and dependency folders that
- * rebuild, both proven rather than guessed by name) and deletes only what it proved
- * again at that moment. Two scopes: `project` (the working directory, first) and `disk`
- * (the home folder, the temp folders, caches and app data). Everything goes through
- * `find`, `du`, `df`, `git` and `lsof`, so it runs wherever a POSIX shell does.
+ * The disk gardener: notices a nearly full disk, finds what can go (temp entries, build output and
+ * dependency folders, each proven, never guessed by name) and deletes only what it proves again at
+ * that moment. Scopes: `project` (the working directory) and `disk` (home, temp folders, caches, app
+ * data). Runs on `find`, `du`, `df`, `git` and `lsof`: wherever a POSIX shell does.
  */
 
 /** Smallest unit listed, in MiB; loose files are listed from LARGE_FILE_MIB. */
@@ -17,17 +15,17 @@ const LARGE_FILE_MIB = 500
 export const ACTIVE_MINUTES = 120
 /** Build output of a project whose last commit is this old is a leftover, not a working copy. */
 export const STALE_DAYS = 30
-/** The disk counts as nearly full from this percent used (the plugin's `diskFullPercent` setting). */
+/** Percent used from which the disk is nearly full (the `diskFullPercent` setting). */
 export const FULL_PERCENT = 88
-/** How deep a busy temp folder is split into its children, so one live process does not hide dead siblings. */
+/** Levels a busy temp folder is split into children, so one live process does not hide dead siblings. */
 const TEMP_DEPTH = 3
 const SCAN_TIMEOUT_MS = 10 * 60_000
 const ROWS = 12
 
-/** What proves a folder with an output name is output: a manifest beside it, a file inside it, or git ignoring it. None: the name is proof enough. */
+/** What proves a folder with an output name is output: a manifest beside it, a file inside it, or git ignoring it. None: the name is enough. */
 type Proof = { kind: string; beside?: string[]; inside?: string[]; ignored?: true }
 const JS: Pick<Proof, "beside"> = { beside: ["package.json"] }
-export const OUTPUT: Record<string, Proof> = {
+const OUTPUT: Record<string, Proof> = {
   node_modules: { kind: "JavaScript dependencies", ...JS },
   ".next": { kind: "Next.js build output", ...JS },
   ".nuxt": { kind: "Nuxt build output", ...JS },
@@ -63,10 +61,10 @@ export const OUTPUT: Record<string, Proof> = {
   ".cache": { kind: "project cache (git-ignored)", ignored: true },
 }
 
-/** Folders under the home folder whose children are listed in the disk scope: never deleted here, only named with their owner's command. */
+/** Home folders whose children the disk scope lists: never deleted here, only named with their owner's command. */
 const AREAS = ["Library/Caches", ".cache", "Library/Application Support", "Library/Containers", "Library/Developer"]
 /** The command that shrinks a cache, by path under the home folder. `owners` in .overwatch/disk.json adds to it. */
-export const OWNERS: Record<string, string> = {
+const OWNERS: Record<string, string> = {
   ".npm/_cacache": "npm cache clean --force",
   ".npm/_npx": "delete it; npx downloads again",
   ".cache/uv": "uv cache prune",
@@ -95,27 +93,27 @@ export const OWNERS: Record<string, string> = {
   ".Trash": "empty the Trash",
 }
 
-export type Scope = "project" | "disk"
-export type Status = "leftover" | "regenerable" | "unverified" | "busy" | "kept"
-export type Unit = { path: string; kib: number; kind: string; status: Status; why: string }
-export type Listed = { path: string; kib: number; note: string }
-export type Df = { mount: string; totalKib: number; freeKib: number; percent: number }
-/** What the shell found out about one path (PROBE). `unsaved` names a git checkout at or under it with uncommitted or unpushed work. */
+type Scope = "project" | "disk"
+type Status = "leftover" | "regenerable" | "unverified" | "busy" | "kept"
+type Unit = { path: string; kib: number; kind: string; status: Status; why: string }
+type Listed = { path: string; kib: number; note: string }
+type Df = { mount: string; totalKib: number; freeKib: number; percent: number }
+/** What the probe script found about one path. `unsaved`: a git checkout at or under it with uncommitted or unpushed work. */
 export type Facts = { type: "d" | "f" | "l"; commit?: number; top: string; ignored: boolean; tracked: boolean; active: boolean; unsaved: string }
 type Ctx = { keep: string[]; cwds: string[]; now: number; home: string }
-/** .overwatch/disk.json: `keep` and `owners` are the user's; the rest is the last survey per scope and what was deleted. */
+/** .overwatch/disk.json: `keep` and `owners` are the user's; the rest is the last survey per scope and the deletions. */
 type Book = { keep?: string[]; owners?: Record<string, string>; project?: Snapshot; disk?: Snapshot; cleaned?: { at: number; path: string; kib: number }[] }
 type Snapshot = { at: number; kib: Record<string, number> }
 type Sized = readonly [path: string, kib: number]
-export type Survey = { scope: Scope; df?: Df; units: Unit[]; areas: Listed[]; files: Listed[]; grew: Listed[]; since?: number; searched: string[]; seconds: number; minMib: number }
+type Survey = { scope: Scope; df?: Df; units: Unit[]; areas: Listed[]; files: Listed[]; grew: Listed[]; since?: number; searched: string[]; seconds: number; minMib: number }
 
 const dirname = (p: string) => p.slice(0, p.lastIndexOf("/")) || "/"
 const basename = (p: string) => p.slice(p.lastIndexOf("/") + 1)
-export const inside = (p: string, root: string) => p === root || p.startsWith(root.replace(/\/+$/, "") + "/")
-export const size = (kib: number) => (kib >= 1 << 20 ? `${(kib / (1 << 20)).toFixed(1)} GiB` : `${Math.round(kib / 1024)} MiB`)
+const inside = (p: string, root: string) => p === root || p.startsWith(root.replace(/\/+$/, "") + "/")
+const size = (kib: number) => (kib >= 1 << 20 ? `${(kib / (1 << 20)).toFixed(1)} GiB` : `${Math.round(kib / 1024)} MiB`)
 
-// ── the shell side ───────────────────────────────────────────────────
-// Each script takes its paths as arguments (never spliced into the text) and prints tab-separated lines.
+// ── shell ────────────────────────────────────────────────────────────
+// Each script takes its paths as arguments, never spliced into the text, and prints tab-separated lines.
 
 const NAMES = Object.keys(OUTPUT).map((n) => `-name '${n}'`).join(" -o ")
 /** `kib<TAB>path` for one path, skipping links and anything under `$min` KiB. */
@@ -123,7 +121,7 @@ const ONE = String.raw`one() { [ -L "$1" ] && return; [ -e "$1" ] || return; k=$
 min=$1; shift
 `
 export const SCRIPTS = {
-  /** Every folder with an output name (not entered, so nested ones stay one unit) and every large loose file under the roots. Never crosses a filesystem, never enters .git, the Trash or ~/Library. */
+  /** Every folder with an output name (not entered: nested ones stay one unit) and every large loose file under the roots. Never crosses a filesystem or enters .git, the Trash or ~/Library. */
   walk: String.raw`min=$1; fmin=$2; home=$3; shift 3
 find "$@" -xdev \( -name .git -o -name .Trash -o -path "$home/Library" \) -prune -o \( -type d \( ${NAMES} \) -prune -print0 \) -o \( -type f -size +"$fmin"k -print0 \) 2>/dev/null |
   xargs -0 -r -n 100 -P 4 du -skx 2>/dev/null | awk -F '\t' -v m="$min" '$1 + 0 >= m + 0'`,
@@ -132,10 +130,10 @@ find "$@" -xdev \( -name .git -o -name .Trash -o -path "$home/Library" \) -prune
   /** A folder's real path (temp folders are often links: /tmp, $TMPDIR). */
   real: String.raw`for d; do r=$(cd "$d" 2>/dev/null && pwd -P) && printf '%s\t%s\n' "$d" "$r"; done`,
   /**
+   * Prints path, type, last commit of the folder around it, git toplevel, ignored, tracked, active, unsaved checkout.
    * Case patterns open with a paren: bash 3.2 (macOS sh) cannot parse the bare form inside $( ).
-   * path, type, last commit of the folder around it, git toplevel, ignored, tracked, active, unsaved checkout.
-   * One find per path answers both "changed lately" and "holds a checkout". Ceiling: only its first 200
-   * lines are read, so a folder with more than 200 checkouts and no recent file has the rest unchecked.
+   * One find per path answers "changed lately" and "holds a checkout". Ceiling: only its first 200 lines
+   * are read, so past 200 checkouts with no recent file the rest go unchecked.
    */
   probe: String.raw`export GIT_OPTIONAL_LOCKS=0
 m=$1; shift
@@ -168,7 +166,7 @@ wait`,
 } as const
 
 const rows = (out: string) => out.split("\n").filter(Boolean).map((l) => l.split("\t"))
-/** A script that did not run to its end (timeout, no shell, a syntax error) is an error, never an empty finding. */
+/** A script that did not finish (timeout, no shell, syntax error) is an error, never an empty finding. */
 const sh = async (io: Io, script: string, args: readonly string[]): Promise<string[][]> => {
   const r = await io.run([...await shellArgv(io.run), "-c", script, "sh", ...args], { timeoutMs: SCAN_TIMEOUT_MS })
   if (r.code === 124 || r.code === 127 || r.code === 2) throw new Error(`disk gardener: a shell step ${r.code === 124 ? "timed out" : `failed (${r.stderr.trim().split("\n")[0] || r.code})`}`)
@@ -189,21 +187,18 @@ async function probe(io: Io, paths: string[]): Promise<Map<string, Facts>> {
 /** The real paths of `dirs` that exist, without repeats. */
 const real = async (io: Io, dirs: string[]) => [...new Set((await sh(io, SCRIPTS.real, dirs.filter(Boolean))).map((r) => r[1]!).filter(Boolean))]
 const tempRoots = async (io: Io) => real(io, ["/tmp", "/var/tmp", (await io.env("TMPDIR")) ?? ""])
-/** Where processes work right now; empty without lsof (the activity check still holds). */
+/** Where processes work now; empty without lsof (the activity check still holds). */
 const workdirs = async (io: Io) => (await io.run(["lsof", "-a", "-d", "cwd", "-Fn"], { timeoutMs: 20_000 })).stdout.split("\n").filter((l) => l.startsWith("n/") && l.length > 2).map((l) => l.slice(1))
 
 export function parseDf(stdout: string): Df | undefined {
   const m = stdout.trim().split("\n").pop()?.match(/\s(\d+)\s+\d+\s+(\d+)\s+(\d+)%\s+(\/.*)$/)
   return m ? { totalKib: Number(m[1]), freeKib: Number(m[2]), percent: Number(m[3]), mount: m[4]! } : undefined
 }
-export const usage = async (io: Io, path: string) => parseDf((await io.run(["df", "-Pk", path], { timeoutMs: 10_000 })).stdout)
+const usage = async (io: Io, path: string) => parseDf((await io.run(["df", "-Pk", path], { timeoutMs: 10_000 })).stdout)
 
 // ── judging ──────────────────────────────────────────────────────────
 
-/**
- * What may happen to one unit. `temp`: it sits in a temp folder; otherwise it carries an output name and
- * `proven` says whether its proof held. Only `leftover` and `regenerable` are ever deleted.
- */
+/** What may happen to one unit: in a temp folder (`temp`), or carrying an output name whose proof held (`proven`). Only `leftover` and `regenerable` are ever deleted. */
 export function judge(u: { path: string; temp: boolean; proven: boolean }, f: Facts, ctx: Ctx): Pick<Unit, "status" | "why"> {
   const { path } = u
   if (ctx.keep.some((k) => inside(path, k) || inside(k, path))) return { status: "kept", why: "a kept project" }
@@ -211,7 +206,7 @@ export function judge(u: { path: string; temp: boolean; proven: boolean }, f: Fa
   if (f.unsaved) return { status: "unverified", why: `uncommitted or unpushed work in ${f.unsaved}` }
   if (u.temp && f.top && f.top !== path && !f.ignored) return { status: "unverified", why: `part of the checkout ${f.top}, not ignored by it` }
   if (!u.temp && !u.proven) return { status: "unverified", why: "nothing beside it proves it is build output" }
-  // ~/.tool/…/node_modules is an installed tool, not a project's output: deleting it breaks the tool until someone reinstalls it.
+  // ~/.tool/…/node_modules is an installed tool, not a project's output: deleting it breaks the tool.
   const tool = ctx.home && inside(path, ctx.home) ? path.slice(ctx.home.length + 1).split("/")[0]! : ""
   if (!u.temp && tool.startsWith(".")) return { status: "unverified", why: `inside ~/${tool}, a tool's own folder: its owner decides` }
   const user = ctx.cwds.find((c) => inside(c, u.temp ? path : dirname(path)))
@@ -252,7 +247,7 @@ export const fileKind = (p: string) =>
 const book = (io: Io) => readJson<Book>(io, state(io, "disk.json"), {})
 const bySize = <T extends { kib: number; path: string }>(xs: readonly T[]) => [...xs].sort((a, b) => b.kib - a.kib || cmp(a.path, b.path))
 
-/** Temp folders: every entry is a unit; a busy folder that is not a checkout is split into its children, TEMP_DEPTH levels deep. */
+/** Every temp folder entry is a unit; a busy folder that is not a checkout is split into its children, TEMP_DEPTH levels deep. */
 async function tempUnits(io: Io, temps: string[], min: string, ctx: Ctx): Promise<Unit[]> {
   const units: Unit[] = []
   let level = temps
@@ -292,7 +287,7 @@ async function homeAreas(io: Io, home: string, min: string, owners: Record<strin
   return found.flat().map(([path, kib]) => ({ path, kib, note: ownerOf(path.slice(home.length + 1), owners) || "no known owner command: report only" }))
 }
 
-/** Finds and judges every unit of `scope`, and remembers the sizes so the next survey can say what grew. */
+/** Finds and judges every unit of `scope`, and stores the sizes so the next survey can say what grew. */
 export async function survey(io: Io, scope: Scope = "project", minMib = MIN_MIB): Promise<Survey> {
   const started = Date.now()
   const whole = scope === "disk"
@@ -300,7 +295,7 @@ export async function survey(io: Io, scope: Scope = "project", minMib = MIN_MIB)
   const fileMin = String(Math.round(Math.max(minMib, LARGE_FILE_MIB) * 1024))
   const home = (await io.env("HOME")) ?? ""
   const [temps, bk, cwds] = await Promise.all([whole ? tempRoots(io) : [], book(io), workdirs(io)])
-  // The project scope is asked to clean the project the session works in; the disk scope leaves that project alone.
+  // The project scope cleans the session's own project; the disk scope leaves it alone.
   const ctx: Ctx = { keep: [...(bk.keep ?? []), ...(whole ? [io.cwd] : [])], cwds: whole ? cwds : cwds.filter((c) => !inside(c, io.cwd)), now: started, home }
   const searched = whole ? [home, ...temps] : [io.cwd]
   const [found, temp, areas] = await Promise.all([
@@ -308,8 +303,8 @@ export async function survey(io: Io, scope: Scope = "project", minMib = MIN_MIB)
     tempUnits(io, temps, min, ctx),
     whole ? homeAreas(io, home, min, { ...OWNERS, ...bk.owners }) : [],
   ])
-  // Left out of the walk's findings: what a temp unit already covers (a leftover goes as a whole, a loose file is its
-  // entry), and an output name directly in the home folder (~/.cache, ~/.gradle), a tool's store the caches section has.
+  // Left out of the walk's findings: what a temp unit already covers, and an output name directly in the
+  // home folder (~/.cache, ~/.gradle): a tool's store, listed under caches.
   const gone = temp.filter((u) => u.status === "leftover").map((u) => u.path)
   const rest = await walked(io, found.filter(([p]) => dirname(p) !== home && !gone.some((g) => inside(p, g))), ctx)
   const units = [...temp, ...rest.units]
@@ -334,7 +329,7 @@ const SECTIONS: [Status, string][] = [
   ["kept", "Kept: hands off"],
 ]
 
-/** One section: its count and total, the ROWS largest, then how many more. Empty when there is nothing to list. */
+/** One section: count and total, the ROWS largest, then how many more. Empty with nothing to list. */
 function table<T extends { path: string; kib: number }>(title: string, xs: T[], note: (x: T) => string): string[] {
   if (!xs.length) return []
   const total = size(xs.reduce((n, x) => n + x.kib, 0))
@@ -363,7 +358,7 @@ export function render(s: Survey, full = FULL_PERCENT): string {
 
 export const disk = async (io: Io, scope: Scope = "project", minMib = MIN_MIB, full = FULL_PERCENT) => render(await survey(io, scope, minMib), full)
 
-/** The line that asks the agent to free space, or "" while the disk under the working directory is below `full` percent used. */
+/** The line asking the agent to free space, or "" while the working directory's disk is below `full` percent used. */
 export async function fullNotice(io: Io, full = FULL_PERCENT): Promise<string> {
   const d = full > 0 ? await usage(io, io.cwd) : undefined
   if (!d || d.percent < full) return ""
@@ -373,9 +368,9 @@ export async function fullNotice(io: Io, full = FULL_PERCENT): Promise<string> {
 // ── cleaning ─────────────────────────────────────────────────────────
 
 /**
- * Deletes the given paths, each only if it is, right now, a temp entry or proven build output that
- * nothing uses: judged again from scratch (never from an earlier survey), not a link, no tracked
- * files, no unsaved checkout inside, no open file. A dry run unless `apply`.
+ * Deletes each path only if it is, right now, a temp entry or proven build output that nothing uses:
+ * judged from scratch (never from an earlier survey), not a link, no tracked files, no unsaved
+ * checkout inside, no open file. A dry run unless `apply`.
  */
 export async function clean(io: Io, paths: string[], apply = false): Promise<string> {
   const asked = [...new Set(paths.map((p) => p.replace(/\/+$/, "")))]

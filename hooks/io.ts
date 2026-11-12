@@ -1,13 +1,15 @@
 /**
- * The one door overwatch's logic has to the machine. The hooks module runs with
- * no Node (everything goes through `$`); the CLI runs under bun. Each part's
- * logic takes an `Io` and so runs, unchanged, in both: `fromEngine($)` in a hook,
- * `fromNode()` (bin/node-io.ts) in a terminal.
+ * The one door overwatch's logic has to the machine. The hooks module has no Node
+ * (everything goes through `$`); the CLI runs under bun. Each part's logic takes an
+ * `Io` and runs unchanged in both: `sessionIo($)` in a hook, `fromNode()`
+ * (bin/node-io.ts) in a terminal.
  */
 /** The environment variables overwatch reads; a new one is added here and in engineEnv. */
-export type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HYGIENE_TRANSCRIPTS" | "TMPDIR"
+type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HYGIENE_TRANSCRIPTS" | "TMPDIR"
 export type Run = { code: number; stdout: string; stderr: string }
 export type Entry = { name: string; kind: "file" | "dir" | "other"; mtimeMs: number }
+/** Runs argv; never rejects: a failure to start is code 127, a timeout 124. */
+export type Runner = (argv: readonly string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number; env?: Record<string, string> }) => Promise<Run>
 
 export type Io = {
   /** The file's text, or undefined when it is missing or unreadable. */
@@ -17,8 +19,7 @@ export type Io = {
   /** A directory's entries; empty when it is missing. A symbolic link has the kind of what it leads to. */
   list(path: string): Promise<Entry[]>
   exists(path: string): Promise<boolean>
-  /** Runs argv; never rejects (a failure to start is code 127, a timeout 124). */
-  run(argv: readonly string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<Run>
+  run: Runner
   /** Only the names in EnvName: the engine reads each by its literal name (engineEnv). */
   env(name: EnvName): Promise<string | undefined>
   /** The directory relative paths resolve against: the session's, or the shell's. */
@@ -38,10 +39,7 @@ export async function readJson<T>(io: Io, path: string, fallback: T): Promise<T>
 
 export const abs = (io: Io, p: string) => (p.startsWith("/") ? p : join(io.cwd, p))
 
-/** Runs argv like `Io.run`: never rejects; a failure to start is 127, a timeout 124. */
-export type Runner = (argv: readonly string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number; env?: Record<string, string> }) => Promise<Run>
-
-/** The sh replacements probed on native Windows, where the engine's PATH has no `sh`: the Git installs' own shells, which find their msys runtime through their install prefix. */
+/** Probed on native Windows, where the engine's PATH has no `sh`: the Git installs' own shells, which find their msys runtime through their install prefix. */
 const WINDOWS_SH = ["C:\\Program Files\\Git\\bin\\sh.exe", "C:\\Program Files (x86)\\Git\\bin\\sh.exe"] as const
 let shellProbed: Promise<readonly string[]> | undefined
 
@@ -50,9 +48,8 @@ export const resetShellArgv = () => { shellProbed = undefined }
 
 /**
  * The argv prefix that runs a POSIX `-c` script: `sh`, or on native Windows the
- * first Git `sh` the host can actually start. Probed once per process, then
- * cached; `sh` stays the last resort so a machine with no shell at all keeps
- * reporting the same failure it does today.
+ * first Git `sh` the host can start. Probed once per process. `sh` stays the last
+ * resort, so a machine with no shell reports the same failure as before.
  */
 export function shellArgv(run: Runner): Promise<readonly string[]> {
   shellProbed ??= (async () => {
@@ -62,7 +59,7 @@ export function shellArgv(run: Runner): Promise<readonly string[]> {
   return shellProbed
 }
 
-/** The one folder overwatch keeps its working data in, inside the working directory: nothing of its own goes to the home folder. */
+/** All of overwatch's working data, inside the working directory: nothing goes to the home folder. */
 export const STATE_DIR = ".overwatch"
 export const state = (io: Io, ...parts: string[]) => join(io.cwd, STATE_DIR, ...parts)
 
@@ -76,23 +73,28 @@ export async function ignoreHint(io: Io): Promise<string> {
   return r.code === 1 ? `[overwatch] overwatch keeps its working data in \`${STATE_DIR}/\` in this directory, and git does not ignore it yet. Ignore it now, before anything else: \`printf '\\n${STATE_DIR}/\\n' >> .gitignore\`.` : ""
 }
 
-/** The session's Io in a hook; a function declaration, the one form `$` may be handed to. */
+/** The session's Io in a hook. A function declaration: the one form `$` may be handed to. */
 export async function sessionIo($: any): Promise<Io> {
   return fromEngine($, await $.session.cwd())
 }
 
-/** The `Io` over the engine's `$`, for hooks. */
-export function fromEngine($: any, cwd: string): Io {
+/** `$.process.run` as a `Runner`. */
+export function engineRun($: any): Runner {
+  return (argv, init = {}) =>
+    $.process.run(argv, init).then(
+      (r: any) => ({ code: r.exitCode ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }),
+      (err: any) => ({ code: /timed? ?out/i.test(String(err?.message)) ? 124 : 127, stdout: "", stderr: String(err?.message ?? err) }),
+    )
+}
+
+function fromEngine($: any, cwd: string): Io {
+  const run = engineRun($)
   return {
     read: (p) => $.fs.read(p).then((t: unknown) => (typeof t === "string" ? t : undefined), () => undefined),
     write: (p, t) => $.fs.write(p, t),
     list: (p) => engineList($, p),
     exists: (p) => $.fs.exists(p).catch(() => false),
-    run: (argv, init = {}) =>
-      $.process.run(argv, { cwd: init.cwd ?? cwd, ...init }).then(
-        (r: any) => ({ code: r.exitCode ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }),
-        (err: any) => ({ code: /timed? ?out/i.test(String(err?.message)) ? 124 : 127, stdout: "", stderr: String(err?.message ?? err) }),
-      ),
+    run: (argv, init) => run(argv, { cwd, ...init }),
     env: (n) => engineEnv($, n),
     cwd,
     root: $.plugin.root,
@@ -111,10 +113,7 @@ async function engineList($: any, path: string): Promise<Entry[]> {
   )
 }
 
-/**
- * The engine lists the variables a module reads, so each is read by its literal
- * name; a name not listed here reads as unset.
- */
+/** The engine lists the variables a module reads, so each is read by its literal name; any other reads as unset. */
 async function engineEnv($: any, name: EnvName): Promise<string | undefined> {
   switch (name) {
     case "HOME": return $.env.get("HOME")

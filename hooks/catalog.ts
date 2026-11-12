@@ -1,17 +1,15 @@
 /**
- * Every overwatch tool goes through one catalog, so a hot reload can never leave
- * an agent calling yesterday's schema unnoticed:
+ * Every overwatch tool goes through one catalog, so a hot reload never leaves an
+ * agent calling yesterday's schema unnoticed:
  *
- * - each tool's spec has a fingerprint, the catalog a version (both content hashes);
- * - `declare` (session.start, which a reload runs again) re-registers every tool,
- *   which the engine treats as a replacement visible from the next prompt on, and
- *   compares against the version stored for this session: a change leaves a notice
+ * - each tool's spec has a fingerprint, the catalog a version (content hashes);
+ * - `declareCatalog` (session.start, which a reload runs again) re-registers every
+ *   tool and, when the version stored for this session differs, leaves a notice
  *   naming the tools added, changed and removed;
- * - the notice rides the next prompt and the next overwatch tool result, once;
- * - every overwatch tool result carries the version stamp as context beside it;
- * - a call whose input does not fit the current schema (a missing or unknown
- *   argument, a wrong type, a value outside the enum) is refused with that schema,
- *   and a call to a tool the catalog dropped is refused with what is left.
+ * - the notice rides the next prompt or overwatch tool result, once;
+ * - every overwatch tool result carries the version stamp beside it;
+ * - a call that does not fit the current schema is refused with that schema, a
+ *   call to a dropped tool with the tools that are left.
  */
 import { cmp } from "./io.ts"
 import { incident } from "./incidents.ts"
@@ -25,7 +23,7 @@ const STATE = { plugin: "overwatch", key: "tools" } as const
 /** Keys the engine sets on a call beside the arguments. */
 const RESERVED = new Set(["tool", "tool_use_id", "consent", "agentId", "requestMeta"])
 
-/** FNV-1a, 32 bit, hex: a content hash small enough to print in every result. */
+/** FNV-1a, 32 bit, hex: small enough to print in every result. */
 export function hash(text: string): string {
   let h = 0x811c9dc5
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193)
@@ -34,7 +32,7 @@ export function hash(text: string): string {
 
 export const schemaOf = (t: ToolSpec) => ({ type: "object", properties: t.properties ?? {}, ...(t.required?.length ? { required: [...t.required] } : {}) })
 
-/** One tool's fingerprint; the order of keys in its source does not count. */
+/** Key order in the source does not count. */
 const fingerprint = (t: ToolSpec) => hash(JSON.stringify([t.description, schemaOf(t)], (_, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => cmp(a, b))) : v)))
 
 const typeOk = (want: unknown, v: unknown) =>
@@ -46,7 +44,7 @@ const typeOk = (want: unknown, v: unknown) =>
   (want === "array" && Array.isArray(v)) ||
   (want === "object" && !!v && typeof v === "object" && !Array.isArray(v))
 
-/** Why `input` does not fit `spec`, or undefined when it does. Top level only: the shape a stale schema breaks. */
+/** Why `input` does not fit `spec`, or undefined. Top level only: the shape a stale schema breaks. */
 export function misfit(spec: ToolSpec, input: Record<string, unknown>): string | undefined {
   const props = spec.properties ?? {}
   for (const r of spec.required ?? []) if (input[r] === undefined) return `missing required \`${r}\``
@@ -60,7 +58,7 @@ export function misfit(spec: ToolSpec, input: Record<string, unknown>): string |
   return undefined
 }
 
-export type Catalog = ReturnType<typeof catalog>
+type Catalog = ReturnType<typeof catalog>
 
 /** The catalog over every part's tools, keyed by short name (no prefix). */
 export function catalog(specs: Record<string, ToolSpec>) {
@@ -87,7 +85,7 @@ export function catalog(specs: Record<string, ToolSpec>) {
     tools,
     diff,
 
-    /** Refusal for a call that does not fit the catalog, or undefined to let it run. */
+    /** Why a call is refused, or undefined to let it run. */
     refusal(e: Record<string, unknown> & { tool: string }): string | undefined {
       const name = e.tool.slice(TOOL_PREFIX.length)
       const spec = specs[name]
@@ -98,10 +96,7 @@ export function catalog(specs: Record<string, ToolSpec>) {
   }
 }
 
-/**
- * A matched hook per catalog tool, registered before the parts' own: a stale call is
- * refused before the part sees it, and the result carries the stamp and any notice.
- */
+/** The hook on every catalog tool, registered before the parts' own: refuses a stale call, adds the stamp and any notice to the result. */
 export async function guardCall(c: Catalog, $: any, e: any, next: (e: any) => Promise<any>) {
   const deny = c.refusal(e)
   if (deny) {
@@ -116,7 +111,7 @@ export async function guardCall(c: Catalog, $: any, e: any, next: (e: any) => Pr
   return { ...r, context: [...(r.context ?? []), ...(notice ? [notice] : []), c.stamp] }
 }
 
-/** Whether a notice waits in state; set by declareCatalog, which every load and reload runs at session.start. */
+/** Whether a notice waits in state. */
 let pending = false
 
 /** Registers every tool (a reload replaces them) and records a notice when the catalog changed. */
@@ -131,9 +126,9 @@ export async function declareCatalog($: any, c: Catalog): Promise<string | undef
   return notice
 }
 
-/** The pending reload notice, cleared: it is delivered once, to whichever comes first, a prompt or an overwatch tool result. */
+/** The pending reload notice, cleared: delivered once, to the next prompt or overwatch tool result. */
 export async function takeNotice($: any): Promise<string | undefined> {
-  if (!pending) return undefined // the hot paths (every prompt, every overwatch call) skip the state read
+  if (!pending) return undefined // every prompt and overwatch call comes through here: skip the state read
   pending = false
   const { value } = await $.state.get(STATE)
   const v = value as Stored | undefined

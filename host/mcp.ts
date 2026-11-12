@@ -1,7 +1,6 @@
 /**
- * overwatch's tools as a stdio MCP server (newline-delimited JSON-RPC 2.0), for every
- * host with an MCP client: Codex, Copilot, Gemini, Cursor, Droid, opencode, Hermes.
- * Hand-rolled: initialize, tools/list, tools/call and ping are the whole surface used.
+ * overwatch's tools as a stdio MCP server (newline-delimited JSON-RPC 2.0) for every host with an
+ * MCP client. Hand-rolled: initialize, tools/list, tools/call and ping are the whole surface used.
  */
 import type { Io } from "../hooks/io.ts"
 import { callTool, schemaOf, TOOLS } from "./core.ts"
@@ -9,7 +8,7 @@ import pkg from "../package.json" with { type: "json" }
 
 type Req = { jsonrpc: "2.0"; id?: number | string | null; method: string; params?: any }
 
-export async function answer(io: Io, req: Req): Promise<object | undefined> {
+async function answer(io: Io, req: Req): Promise<object | undefined> {
   const ok = (result: object) => ({ jsonrpc: "2.0", id: req.id, result })
   if (req.id === undefined || req.id === null) return undefined // a notification
   switch (req.method) {

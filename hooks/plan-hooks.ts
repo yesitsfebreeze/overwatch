@@ -2,72 +2,50 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CHECK_TIMEOUT_MS, CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, checked, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
-import { shellArgv, type Runner } from "./io.ts"
+import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, runCheck, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { engineRun } from "./io.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
 const STOPS = atom({ plugin: "overwatch", key: "stop" } as const, FRESH)
-/** The directory the session started in: guard checks run from here, not from wherever a `cd` left the shell. */
+/** Where the session started: guard checks run from here, not from wherever a `cd` left the shell. */
 const ROOT = atom({ plugin: "overwatch", key: "root" } as const, "")
-/** Whether this session's prompts already carried the full reminder; later ones carry one line. */
+/** Whether a prompt already carried the full reminder; later ones carry one line. */
 const TOLD = atom({ plugin: "overwatch", key: "told" } as const, false)
 
-/** Prompt origins that are the person speaking. */
+/** Prompt origins that are the person: terminal, Remote Control, SDK. */
 const PERSON = new Set(["composer", "bridge", "sdk"])
 
-/** Publish the gauge; without followline loaded the call throws and the gauge goes nowhere. */
+/** Publishes the gauge; without followline the call throws and nothing is drawn. */
 async function show($: any, s: Plan): Promise<void> {
   try {
     await $.followline.put(slot(s))
   } catch {}
 }
 
-/** `$.process.run` as a `Runner`: never rejects; a failure to start is 127, a timeout 124. */
-const engineRun = ($: any): Runner => (argv, init = {}) =>
-  $.process.run(argv, init).then(
-    (r: any) => ({ code: r.exitCode ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" }),
-    (err: any) => ({ code: /timed? ?out/i.test(String(err?.message)) ? 124 : 127, stdout: "", stderr: String(err?.message ?? err) }),
-  )
 
-/** Runs one guard's check from the session root; a check past CHECK_TIMEOUT_MS counts as not upheld. */
-const runCheck = async ($: any, g: Guard, cwd?: string): Promise<Guard> => {
-  try {
-    const r = await engineRun($)([...await shellArgv(engineRun($)), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
-    return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
-  } catch (err: any) {
-    return checked(g, null, `[check did not finish: ${err?.message ?? err}]`)
-  }
-}
-
-/** Writes decided guards back onto whatever the plan holds now and redraws the gauge. */
+/** Writes decided guards onto whatever the plan holds now and redraws the gauge. */
 const record = async ($: any, decided: Guard[]): Promise<Plan> => {
   const plan = await update($, PLAN, (p) => withDecided(p, decided))
   await show($, plan)
   return plan
 }
 
-/** guard_check: runs the picked guards' checks now and records the outcome. */
 async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: string }> {
   const [s, root] = await Promise.all([read($, PLAN), read($, ROOT)])
   const pick = pickChecks(s, e.guard_id)
   if (typeof pick === "string") return { deny: pick }
-  const decided = await Promise.all(pick.map((g) => runCheck($, g, root || undefined)))
+  const decided = await Promise.all(pick.map((g) => runCheck(engineRun($), g, root || undefined)))
   await record($, decided)
   return { result: checkReport(decided) }
 }
 
-/** plan_show: the plan in full beside the review state. */
 async function planShow($: any): Promise<{ result: string }> {
   const [s, v] = await Promise.all([read($, PLAN), read($, VERIFY)])
   return { result: detail(s, v) }
 }
 
-/**
- * The plan beside a prompt: the full rules once per session, then one line. Only the
- * person (terminal, Remote Control, SDK) resets the stop rounds; task notifications
- * and peers do not. Called from overwatch.ts's one prompt.submit.
- */
+/** The plan beside a prompt: the full rules once per session, then one line. Only the person resets the stop rounds; task notifications and peers do not. */
 export async function planReminder($: any, e: any): Promise<string> {
   const [plan, told] = await Promise.all([
     read($, PLAN),
@@ -78,7 +56,7 @@ export async function planReminder($: any, e: any): Promise<string> {
   return reminder(plan, told)
 }
 
-/** Session start for the plan: remember the start directory, draw the gauge. Called from overwatch.ts's one session.start; the catalog declares the tools. */
+/** Session start: remember the start directory, draw the gauge. */
 export async function startPlan($: any, e: any): Promise<void> {
   await Promise.all([
     e.cwd && update($, ROOT, (r) => r || e.cwd),
@@ -94,17 +72,13 @@ export const register: Register = (on) => {
     on("tool.call", { tool: tool(name) }, async ($, e: any) => {
       let out!: Result
       const plan = await update($, PLAN, (s) => (out = run(s, e)).state)
-      // New work ends a review pass: the next edit marks the change dirty again.
       await Promise.all([show($, plan), out.work && update($, VERIFY, newWork)])
       return out.warn ? { deny: out.text } : { result: out.text }
     })
   }
 
-  // The gate: no file change before the plan has tasks and guards. The first edit
-  // marks the change dirty and voids a pass run before it; later edits (fixes the
-  // pass asks for) keep the pass. Every edit adds its lines to the counts since
-  // /simplify and since /code-review, which decide whether each is due. A skill that
-  // runs starts its count from 0; new work through the task tool ends the pass.
+  // The gate: no file change before the plan has tasks and guards. Every edit adds
+  // its lines to the review counts (plan.ts: edited, skillRan, newWork).
   for (const tool of EDIT_TOOLS)
     on("tool.call", { tool }, async ($, e, next) => {
       const why = gateReason(await read($, PLAN))
@@ -162,9 +136,8 @@ export const register: Register = (on) => {
       }
     }
 
-    const [checked, judged] = await Promise.all([Promise.all(open.filter((g) => g.check).map((g) => runCheck($, g, cwd))), judge(open.filter((g) => !g.check))])
+    const [checked, judged] = await Promise.all([Promise.all(open.filter((g) => g.check).map((g) => runCheck(engineRun($), g, cwd))), judge(open.filter((g) => !g.check))])
     const decided = [...checked, ...judged]
-    // Write back only the decided guards, onto whatever the plan holds now.
     const plan = decided.length ? await record($, decided) : s
     const { verdict, next: nb } = stopVerdict(plan, decided, v, { ...book, nokeyTold })
     await Promise.all([update($, STOPS, () => nb), verdict.kind === "pass" && update($, VERIFY, () => CLEAN)])

@@ -1,11 +1,11 @@
-import type { Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
+import type { FollowlineSlot, Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
 import { TOOL_PREFIX } from "./catalog.ts"
 import { guardMark, makeGuard } from "./guards.ts"
+import { shellArgv, type Runner } from "./io.ts"
 
-// The plan's pure logic: tools, reminder, gate and stop verdict. No engine import, so the
-// Claude Code hooks (plan-hooks.ts) and every other host (host/core.ts) run the same code.
+// The plan's pure logic: tools, reminder, gate and stop verdict. No engine import:
+// plan-hooks.ts (Claude Code) and host/core.ts (every other host) run the same code.
 
-/** A registered tool's full name: `mcp__<plugin>__<name>`. */
 export const tool = (name: string) => TOOL_PREFIX + name
 export const EMPTY: Plan = { tasks: [], nextId: 1, guards: [] }
 export const CLEAN: Verify = { dirty: false, review: false, simplify: false, lines: 0, unreviewed: 0 }
@@ -14,19 +14,19 @@ export const FRESH: StopBook = { sig: "", stalls: 0, rounds: 0 }
 /** Refused stops with nothing changed before the stop is let through and the user told. */
 export const MAX_STALLS = 3
 /** Refused stops per user prompt before the same. */
-export const MAX_ROUNDS = 8
+const MAX_ROUNDS = 8
 /** A check past this is killed and counts as not upheld. */
 export const CHECK_TIMEOUT_MS = 60_000
-/** Skills that count as the review pass; `/review` is the older name of `/code-review`. */
+/** `/review` is the older name of `/code-review`. */
 export const REVIEW_SKILLS = new Set(["code-review", "review"])
-/** Tools that change files: gated on an empty plan and marking the work dirty. Bash writes and kern `fs` writes (one tool that also reads) are not seen (ceiling: track a diff of the worktree instead). */
+/** Tools that change files. Ceiling: writes through Bash or kern `fs` are not seen; track a diff of the worktree instead. */
 export const EDIT_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "mcp__plugin_git-fs_git-fs__write", "mcp__plugin_git-fs_git-fs__edit"]
-/** A change touching this many lines is large: /code-review is asked for on top of /simplify. */
+/** From this many changed lines /code-review is due before /simplify. */
 export const LARGE_CHANGE_LINES = 50
-/** A change under this many lines is small: no review pass is asked for. */
+/** Under this many changed lines no review pass is due. */
 export const SMALL_CHANGE_LINES = 10
 
-/** Lines in `s`, a trailing newline not starting one; counted without copying, as a whole-file write passes through here. */
+/** Lines in `s`; a trailing newline starts none. No copy: whole-file writes pass through here. */
 const lineCount = (s: unknown) => {
   if (typeof s !== "string" || !s) return 0
   let n = 1
@@ -38,77 +38,67 @@ const oldText = (i: any) => i?.old_string ?? i?.old ?? i?.oldText
 const wholeText = (i: any) => i?.content ?? i?.text
 const newText = (i: any) => i?.new_string ?? i?.new ?? i?.newText ?? wholeText(i) ?? i?.new_source
 
-/** Lines the input shows: the larger of the replaced and the new text, summed over `edits` and git-fs `items`. */
+/** The larger of the replaced and the new text, summed over `edits` and git-fs `items`. */
 const shownLines = (i: any): number => {
   const ps = parts(i)
   if (ps.length) return ps.reduce((n: number, x) => n + shownLines(x), 0)
   return Math.max(lineCount(oldText(i)), lineCount(newText(i)))
 }
 
-/** Whether the input hides text the call replaces: a whole-file write, a replace_all, a notebook cell replace or delete. */
+/** The call replaces text its input does not show: a whole-file write, a replace_all, a notebook cell replace or delete. */
 const hidesReplaced = (i: any): boolean =>
   parts(i).some(hidesReplaced) ||
   i?.replace_all === true ||
   (oldText(i) === undefined && wholeText(i) !== undefined) ||
   (i?.notebook_path !== undefined && i?.edit_mode !== "insert")
 
-/**
- * Lines one edit-tool call touches. A call that hides what it replaces counts as at least SMALL_CHANGE_LINES, once
- * per call (not per item), so it never slips under the small-change exemption and a few new files stay small.
- */
+/** Lines one edit call touches. A call hiding what it replaces counts at least SMALL_CHANGE_LINES, once per call, so it is never exempt as small. */
 export const changedLines = (i: any): number => Math.max(shownLines(i), hidesReplaced(i) ? SMALL_CHANGE_LINES : 0)
-
-/** One gauge on followline's line, as `$.followline.put` takes it (followline's own type, kept local: no dependency). */
-export type Slot = { id: string; label?: string; pct: number; color?: "green" | "yellow" | "red"; detail?: string }
 
 const clamp = (p: number) => Math.max(0, Math.min(100, Math.round(p)))
 const openTasks = (s: Plan) => s.tasks.filter((t) => t.status !== "done")
 
-/**
- * What a plan tool's pure `run` returns: the next plan and the text the model
- * reads. `warn` marks a refusal, the plan unchanged. `work` marks a change that
- * starts new work, which ends a running review/simplify pass.
- */
+/** What a plan tool's `run` returns. `warn`: a refusal, the plan unchanged. `work`: new work, which ends a review pass. */
 export type Result = { state: Plan; text: string; warn?: boolean; work?: boolean }
 
 const refuse = (s: Plan, text: string): Result => ({ state: s, text, warn: true })
 
-/** Runs `f` on a copy of the task `e.task_id` names, or refuses; MCP clients may send `"3"` for an integer field. */
+/** Runs `f` on a copy of the task `e.task_id` names, or refuses. `Number`: MCP clients may send `"3"`. */
 const withTask = (s: Plan, e: any, f: (t: Task, tasks: Task[]) => Result): Result => {
   const tasks = s.tasks.map((t) => ({ ...t }))
   const t = tasks.find((x) => x.id === Number(e.task_id))
   return t ? f(t, tasks) : refuse(s, `no task #${e.task_id}; plan_show lists the task numbers`)
 }
 
-/**
- * The review passes still due on a dirty change, each judged by the lines changed since it last ran: /simplify
- * from SMALL_CHANGE_LINES, /code-review first from LARGE_CHANGE_LINES.
- */
+/** The review passes still due, each judged by the lines changed since it last ran. */
 export const due = (v: Verify): string[] =>
   [(v.unreviewed || 0) >= LARGE_CHANGE_LINES && !v.review && "/code-review", (v.lines || 0) >= SMALL_CHANGE_LINES && !v.simplify && "/simplify"].filter((x): x is string => !!x)
 
-/** One edit of `n` lines: the first marks the change dirty and voids a pass run before it; later ones add to both counts and keep the pass. */
+/** One edit of `n` lines: the first marks the change dirty and voids an earlier pass; later ones add to both counts and keep it. */
 export const edited = (v: Verify, n: number): Verify =>
   v.dirty ? { ...v, lines: (v.lines || 0) + n, unreviewed: (v.unreviewed || 0) + n } : { ...CLEAN, dirty: true, lines: n, unreviewed: n }
 
-/**
- * A review skill ran: it covered every line so far, so its count starts again from 0. Edits after it (the fixes
- * it asked for) keep the pass and add to the count, so they are judged by their own size once new work starts.
- */
+/** A review skill ran: its count restarts at 0, so the fixes it asks for are judged by their own size once new work starts. */
 export const skillRan = (v: Verify, skill: "review" | "simplify"): Verify => ({ ...v, [skill]: true, [skill === "review" ? "unreviewed" : "lines"]: 0 })
 
 /** New work ends a review pass: each skill is due again by the lines changed since it last ran. */
 export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: false })
 
-/** A task's state as every view prints it: `done`, or `45%` / `45% active`. */
+/** `done`, `45%` or `45% active`. */
 const taskState = (t: Task) => (t.status === "done" ? "done" : `${t.progress}%${t.status === "active" ? " active" : ""}`)
 
 /** How a check ended (`exit 1` / `did not finish`), and its output's last lines, indented. */
 export const ran = (g: Guard) => (g.last?.exit === null ? "did not finish" : `exit ${g.last?.exit}`)
 export const tail = (g: Guard) => (g.last?.out ? `\n    ${g.last.out.trim().split("\n").slice(-4).join("\n    ")}` : "")
 
-/** A guard after its check ran: exit 0 upholds it, null means it did not finish. The last 600 chars of output are kept. */
+/** A guard after its check ran: exit 0 upholds it, null means it did not finish. */
 export const checked = (g: Guard, exit: number | null, out: string): Guard => ({ ...g, met: exit === 0, last: { exit, out: out.trim().slice(-600) } })
+
+/** Runs one guard's check from `cwd`; a check past CHECK_TIMEOUT_MS counts as not upheld. */
+export const runCheck = async (run: Runner, g: Guard, cwd?: string): Promise<Guard> => {
+  const r = await run([...await shellArgv(run), "-c", g.check!], { cwd, timeoutMs: CHECK_TIMEOUT_MS })
+  return checked(g, r.code === 124 ? null : r.code, r.stdout + r.stderr)
+}
 
 /** The plan with the decided guards written back by id, onto whatever it holds now. */
 export const withDecided = (s: Plan, decided: Guard[]): Plan => {
@@ -124,13 +114,12 @@ export const pickChecks = (s: Plan, guard_id: unknown): Guard[] | string => {
   return id ? `no guard "${id}" with a check; plan_show lists the guard ids` : "no guard has a check; judged guards are decided at the stop"
 }
 
-/** guard_check's answer: each guard upheld or failing, with its exit and output tail. */
 export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n")
 
 /** The open items of a refused stop in one line, for the incident ledger. */
 export const openLine = (reason: string): string => reason.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2)).join("; ")
 
-/** Where the review pass stands: what plan_show reports beside the plan. */
+/** Where the review pass stands, for plan_show. */
 export const reviewLine = (v: Verify): string => {
   if (!v.dirty) return "Review: no file changes since the last passed stop."
   const lines = Math.max(v.lines || 0, v.unreviewed || 0)
@@ -141,7 +130,7 @@ export const reviewLine = (v: Verify): string => {
   return `Review: ${lines} changed line(s) since the last pass; none due yet.`
 }
 
-/** The plan in full for plan_show: tasks, each guard with its question and last outcome, the review state. */
+/** plan_show's answer. */
 export const detail = (s: Plan, v: Verify): string =>
   [
     ...s.tasks.map((t) => `#${t.id} ${taskState(t)}: ${t.title}`),
@@ -150,8 +139,8 @@ export const detail = (s: Plan, v: Verify): string =>
     reviewLine(v),
   ].join("\n")
 
-/** The plan in one line each for tasks and guards, as the model reads it. */
-export const summary = (s: Plan): string =>
+/** The plan in one line, for the reminder. */
+const summary = (s: Plan): string =>
   [
     s.tasks.length
       ? `${s.tasks.length} task(s), ${overall(s)}% overall: ` +
@@ -162,15 +151,12 @@ export const summary = (s: Plan): string =>
     .filter(Boolean)
     .join(". ")
 
-/** Overall progress: the mean over all tasks, a done task counting 100. */
+/** The mean over all tasks, a done task counting 100. */
 export const overall = (s: Plan): number =>
   s.tasks.length ? clamp(s.tasks.reduce((n, t) => n + (t.status === "done" ? 100 : clamp(t.progress)), 0) / s.tasks.length) : 0
 
-/**
- * The plan as one followline gauge: overall progress, red while a guard fails,
- * green once everything holds. Followline owns the drawing.
- */
-export function slot(s: Plan): Slot {
+/** The plan as one followline gauge: red while a guard fails, green once everything holds. */
+export function slot(s: Plan): FollowlineSlot {
   if (!s.tasks.length && !s.guards.length) return { id: "plan", label: "tasks", pct: 0, detail: "no plan" }
   const open = openTasks(s).length
   const held = s.guards.filter((g) => g.met).length
@@ -196,25 +182,22 @@ export function reminder(s: Plan, told = false, contract = CONTRACT): string {
   return `[overwatch] ${summary(s)}. Keep this current with the plan tools (task_add, task_progress, task_start, task_complete, task_replace, task_remove, guard_add, guard_check, plan_show); add tasks and guards for new work. ${contract}`
 }
 
-/** Why an edit is refused: the plan is missing tasks or guards. */
+/** Why an edit is refused, or undefined once the plan has tasks and guards. */
 export const gateReason = (s: Plan): string | undefined =>
   s.tasks.length && s.guards.length
     ? undefined
     : `overwatch: ${s.tasks.length ? "no guards" : s.guards.length ? "no tasks" : "no tasks and no guards"} yet. Before changing files, put the work in the plan: tasks with ${tool("task_add")} {titles} and one guard per deliverable with ${tool("guard_add")} {question, check}. Then retry this call.`
 
-export type StopVerdict = { kind: "pass" } | { kind: "block"; reason: string } | { kind: "stalled"; reason: string }
+type StopVerdict = { kind: "pass" } | { kind: "block"; reason: string } | { kind: "stalled"; reason: string }
 
 /**
- * The pure decision every stop goes through. Open tasks and unmet guards come
- * first; the review pass is asked for only once those are clear, so it reviews
- * finished work. A refusal with nothing changed since the last one counts
- * toward MAX_STALLS, every refusal toward MAX_ROUNDS; either cap lets the stop
- * through and tells the user, so a stuck run never loops.
+ * The decision every stop goes through. The review pass is asked for only once tasks and guards are
+ * clear, so it reviews finished work. A refusal with nothing changed counts toward MAX_STALLS, every
+ * refusal toward MAX_ROUNDS; either cap lets the stop through, so a stuck run never loops.
  */
 export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook): { verdict: StopVerdict; next: StopBook } {
   const open = openTasks(s)
   const unmet = decided.filter((g) => !g.met)
-  // A small change needs only /simplify; a large one /code-review as well.
   const left = due(v)
   const verify = !open.length && !unmet.length && v.dirty && left.length > 0
   if (!open.length && !unmet.length && !verify) return { verdict: { kind: "pass" }, next: { ...FRESH, nokeyTold: book.nokeyTold } }
@@ -233,9 +216,8 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
 }
 
 /**
- * One flat tool: its schema and `run`, its pure change to the plan. guard_check and
- * plan_show read state or run checks, so they have named handlers instead: the
- * engine only lets `$` reach named functions, not ones read from a record.
+ * One tool: its schema and `run`, its pure change to the plan. guard_check and plan_show have named
+ * handlers instead of `run`: the engine only lets `$` reach named functions, not ones read from a record.
  */
 type PlanTool = { description: string; properties?: Record<string, unknown>; required?: string[]; run?: (s: Plan, e: any) => Result }
 
@@ -243,7 +225,6 @@ const TASK_ID = { type: "integer", minimum: 1, description: "The task's number a
 const TASK_TITLE = { type: "string", description: "Short imperative title, e.g. \"split the parser\"." }
 const trimmed = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 
-/** The plan's tools, one per change, each its own `mcp__overwatch__<name>`, each owning its logic: no `action` switch. */
 export const PLAN_TOOLS: Record<string, PlanTool> = {
   task_add: {
     description: "Add tasks to the session plan, one per step of the user's request, in the order they will be worked. Call once with every title before starting work: file edits are refused until the plan has tasks and guards. Returns each new task's number. All titles are added, or none when one is empty.",

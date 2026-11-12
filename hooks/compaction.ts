@@ -1,21 +1,18 @@
-// Compaction (once the componion plugin). Every mechanism of ~/dev/ranking.csv the
-// function-hook API reaches:
-//   live     minify every tool result before the model reads it; the original
-//            stays on disk for decompress (persistence, compact serialization)
-//   rolling  fold old history into an index block appended after the earlier
-//            folds; nothing before it is ever rewritten, so the model only sees
-//            the conversation move forward, and every folded message stays
-//            reachable by id (decompress, search_context). Jev decides how much
-//            of each folded tool result the index keeps. A fold runs in the
-//            background after a turn, only once the context grew enough to pay
-//            for the one prompt-cache rewrite it causes, or once the cache has
-//            gone cold anyway.
-//   fallback the built-in summary over a slimmed transcript when nothing can be
-//            folded (2000-char results, <recap>, summary template, file lists)
-//   turn end failed turns distilled to one line (slim, OUTCOME_MAX 120)
+// Compaction (once the componion plugin):
+//   live     every tool result is minified before the model reads it; the original stays on disk
+//   rolling  old history folds into an index block appended after the earlier folds. Nothing before it
+//            is rewritten, and every folded message stays reachable by id (decompress, search_context).
+//            Jev decides how much of each folded tool result the index keeps. A fold runs in the
+//            background after a turn, once the context grew enough to pay for the one prompt-cache
+//            rewrite it causes, or once the cache has gone cold anyway.
+//   fallback the built-in summary over a slimmed transcript when nothing can be folded
+//   turn end a failed turn distilled to one line
 import type { EngineInterface, Register, SessionMessage } from 'claude-code';
 import { compact } from '../jev/compact.js';
 import { buildJevRequest, parseJevResponse, DEFAULT_MODEL } from '../jev/request.js';
+import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
+import { STATE_DIR } from './io.ts';
+import { incident } from './incidents.ts';
 
 type Limits = { keepRecentTokens: number; toolResultMaxChars: number; outcomeMaxChars: number; cutUserChars?: number };
 
@@ -37,9 +34,6 @@ const VERBATIM = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const SKIP_KEYS = new Set(['data', 'base64', 'source']);
 const MAX_TOOLS = 8;
 export const FOLD_TAG = '[overwatch fold';
-import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
-import { STATE_DIR } from './io.ts';
-import { incident } from './incidents.ts';
 
 export const tokens = (chars: number) => Math.ceil(chars / 4);
 
@@ -50,8 +44,7 @@ export function cut(text: string, max: number, id?: string): string {
   return `${text.slice(0, half)}\n[… overwatch cut ${text.length - 2 * half} chars${tail} …]\n${text.slice(-half)}`;
 }
 
-// Loss-free for reading: ANSI colour, progress-bar overwrites, trailing blanks,
-// blank-line runs and repeated lines go; the words stay.
+// Loss-free for reading: ANSI colour, progress-bar overwrites, trailing blanks, blank-line runs and repeated lines go.
 export function minify(text: string, maxChars: number, id?: string): string {
   if (text.length < 200) return text;
   const lines = text
@@ -77,9 +70,8 @@ export function minifyDeep(value: unknown, maxChars: number, id?: string, key = 
   return value;
 }
 
-// A stored Bash result is its JSON object; read back, the escaped \n and \"
-// cost ~7% more than the words (measured over a day of decompress calls).
-export function plainShell(text: string): string {
+// A stored Bash result is its JSON object; its escaped \n and \" cost ~7% more than the words (measured).
+function plainShell(text: string): string {
   if (!text.startsWith('{"stdout":')) return text;
   try {
     const o = JSON.parse(text);
@@ -98,9 +90,8 @@ const size = (m: SessionMessage) => m.text.length
   + (m.toolResults ?? []).reduce((k, r) => k + r.text.length, 0);
 export const chars = (ms: readonly SessionMessage[]) => ms.reduce((n, m) => n + size(m), 0);
 
-// Cut point: a message that carries no tool results (a prompt or an assistant
-// message). Compaction runs between turns, so every call before it has its
-// result before it too, and a long autonomous turn still folds.
+// Cut point: a message without tool results. Compaction runs between turns, so every call before it
+// has its result before it too, and a long autonomous turn still folds.
 const cutPoint = (m: SessionMessage) => !m.toolResults?.length;
 
 // Oldest index kept whole: the newest `keepTokens` (chars/4), moved back to a cut point.
@@ -152,12 +143,11 @@ export function fileLists(messages: readonly SessionMessage[]): string {
 
 // Heads Jev grants a folded tool result: kept whole-ish, trimmed, or id only.
 const HEAD = { keep: 400, drop_result: 100, drop_call: 0 } as const;
-export type Heads = Map<string, number>;
+type Heads = Map<string, number>;
 
 const oneLine = (t: string, n: number) => t.replace(/\s+/g, ' ').trim().slice(0, n);
 
-// The leading run the model has already read and a fold never touches: the
-// first prompt (its context blocks ride on it) and every earlier fold.
+// The leading run a fold never touches: the first prompt (its context blocks ride on it) and every earlier fold.
 export function frozenEnd(messages: readonly SessionMessage[]): number {
   let i = messages.length ? 1 : 0;
   while (i < messages.length && messages[i].text.startsWith(FOLD_TAG)) i++;
@@ -166,7 +156,7 @@ export function frozenEnd(messages: readonly SessionMessage[]): number {
 
 // One short id per fold index line, text and tool call alike: fN.0, fN.1, …
 // A call's original stays under its toolu id; fN.k.ref points there.
-export function lineIds(region: readonly SessionMessage[], n: number): Map<object, string> {
+function lineIds(region: readonly SessionMessage[], n: number): Map<object, string> {
   const ids = new Map<object, string>();
   let c = 0;
   for (const m of region) {
@@ -183,14 +173,12 @@ const mainArg = (u: { input: Record<string, unknown> }) => {
   return typeof v === 'string' ? v : JSON.stringify(i);
 };
 
-// Rolling fold: messages [frozen, tail) become one index block, in order, each
-// by id; the tail (newest `keepTokens`, from a cut point) and the frozen run
-// stay the engine's own objects. Null when there is nothing worth folding.
+// Rolling fold: messages [frozen, tail) become one index block, in order, each by id; the frozen run and the
+// tail (newest `keepTokens`, from a cut point) stay the engine's own objects. Null when nothing is worth folding.
 export function fold(messages: readonly SessionMessage[], keepTokens: number, heads: Heads, n: number): SessionMessage[] | null {
   const from = frozenEnd(messages);
   let to = keepFrom(messages, keepTokens);
-  // One message holds the whole budget right past the frozen run: fold up to
-  // the next cut point instead.
+  // One message holds the whole budget right past the frozen run: fold up to the next cut point instead.
   if (to - from < 2) to = messages.findIndex((m, i) => i > from + 1 && cutPoint(m));
   if (to < 0 || to - from < 2) return null;
   const region = messages.slice(from, to);
@@ -213,13 +201,13 @@ export const failureLine = (fails: { tool: string; text: string }[], outcomeMax:
   `${[...new Set(fails.map((f) => f.tool))].slice(0, MAX_TOOLS).join(',')}: ${fails[0].text.replace(/\s+/g, ' ').slice(0, outcomeMax)}`;
 
 // CONTRACT §2 (~/orchi/docs/CONTRACT.md): what kern's turn deck reads.
-export type Status = { saved: number; folds: number; lastFold: number; jev: string; compacting: boolean; failures: number; nextCompactAt: number };
+type Status = { saved: number; folds: number; lastFold: number; jev: string; compacting: boolean; failures: number; nextCompactAt: number };
 export const statusPayload = (s: Status, ts: number) => ({ v: 1, ts, ...s });
 
 type State = { home: string };
 
-// What kern's deck reads: a sibling of the originals dir, so decompress/search_context never list it.
-// Plain write: $.fs has no rename, so a reader may rarely see a torn file and must treat bad JSON as silent.
+// A sibling of the originals dir, so decompress/search_context never list it. Plain write: $.fs has no
+// rename, so a reader may rarely see a torn file and must treat bad JSON as silent.
 async function publish($: EngineInterface, s: Status) {
   try {
     const path = `${await $.session.cwd()}/${STATE_DIR}/status/${await $.session.id()}.json`;
@@ -231,7 +219,6 @@ async function dir($: EngineInterface, s: State) {
   return (s.home ||= `${await $.session.cwd()}/${STATE_DIR}/context/${await $.session.id()}`);
 }
 
-// Originals stay on disk; the model reads them back through decompress.
 async function keepOriginal($: EngineInterface, s: State, id: string, text: string, ext = 'txt') {
   try {
     const path = `${await dir($, s)}/${id}.${ext}`;
@@ -239,9 +226,8 @@ async function keepOriginal($: EngineInterface, s: State, id: string, text: stri
   } catch { /* recall is best effort */ }
 }
 
-// CONTRACT §8 dataset: one line per answered Jev call. $.fs has no append or
-// mkdir, so a child does both; perl's syswrite is one O_APPEND write, so
-// kern and orly appending the same file never interleave. Best effort.
+// CONTRACT §8 dataset: one line per answered Jev call. $.fs has no append or mkdir, so a child does both;
+// perl's syswrite is one O_APPEND write, so kern and orly appending the same file never interleave.
 async function logJev($: EngineInterface, entry: object) {
   try {
     const day = new Date().toISOString().slice(0, 10); // UTC day, CONTRACT §8
@@ -250,9 +236,8 @@ async function logJev($: EngineInterface, entry: object) {
   } catch { /* the dataset never fails a fold */ }
 }
 
-// Jev grades each tool call in the region; its answer always shapes the
-// fold (a paid call is never discarded). Unreachable, every call gets a
-// short head and the fold goes ahead anyway.
+// Jev grades each tool call in the region; its answer always shapes the fold (a paid call is never
+// discarded). Unreachable, every call gets a short head and the fold goes ahead anyway.
 export async function jevHeads($: EngineInterface, region: readonly SessionMessage[], options: object, out: { jev: string }): Promise<Heads> {
   const heads: Heads = new Map();
   if (!region.some((m) => m.toolUses.length)) return heads;
@@ -296,11 +281,7 @@ export const COMPACTION_TOOLS: Record<string, ToolSpec> = {
 /** Off for the A/B baseline: `--settings` pluginConfigs overwatch enabled=false. */
 export const compactionEnabled = (options: Record<string, unknown>) => options.enabled !== false;
 
-/**
- * This session's compaction: the settings and what it has done so far. Module state,
- * set by `register` (a reload starts it over), so the handlers below are plain function
- * declarations overwatch.ts can call from the plugin's one hook per event.
- */
+/** This session's settings and counters. Module state, set by `register` (a reload starts it over), so overwatch.ts can call the handlers below from the plugin's one hook per event. */
 type Session = {
   limits: Limits; liveMax: number; foldFrom: number; growthTokens: number; cacheTtlMs: number; jevOptions: object;
   saved: number; folds: number; failures: number; lastFold: number; jev: string; compacting: boolean; lastCompactAt: number; foldedRestart: boolean;
@@ -312,13 +293,10 @@ function session(options: Record<string, unknown>): Session {
   return {
     limits: { keepRecentTokens: n('keepRecentTokens', 6000), toolResultMaxChars: n('toolResultMaxChars', 2000), outcomeMaxChars: n('outcomeMaxChars', 120) },
     liveMax: n('liveResultMaxChars', 8000),
-    // Measured on logged request bodies: after a fold tools and system stay
-    // cached, but every message is written to the cache again (Claude Code
-    // merges the fold block into the first user message). A fold pays for that
-    // only once the context is big, so it waits for `foldFromTokens`, then runs
-    // every `compactEveryTokens` (bench/replay.ts sweep: 50k/20k saved most and
-    // on every replayed session). A cold cache folds for free.
-    // Whatever Jev answers is installed; a paid call is never thrown away.
+    // After a fold every message is written to the prompt cache again (measured on logged request bodies:
+    // Claude Code merges the fold block into the first user message). That pays only once the context is
+    // big, so a fold waits for `foldFromTokens`, then runs every `compactEveryTokens` (bench/replay.ts
+    // sweep: 50k/20k saved most, on every replayed session). A cold cache folds for free.
     foldFrom: n('foldFromTokens', 50000),
     growthTokens: n('compactEveryTokens', 20000),
     cacheTtlMs: n('cacheTtlMinutes', 60) * 60000,
@@ -337,7 +315,7 @@ function session(options: Record<string, unknown>): Session {
 let c: Session = session({});
 const status = (): Status => ({ saved: c.saved, folds: c.folds, lastFold: c.lastFold, jev: c.jev, compacting: c.compacting, failures: c.failures, nextCompactAt: c.lastCompactAt + c.growthTokens });
 
-/** Every tool result, minified before the model reads it; the original stays on disk for decompress. overwatch.ts calls it from the plugin's one unmatched tool.call hook. */
+/** Minifies every tool result before the model reads it and stores the original. Called from the plugin's one unmatched tool.call hook. */
 export async function compactToolCall($: EngineInterface, e: any, next: (e: any) => Promise<any>): Promise<any> {
   const r = await next(e);
   if (r.deny !== undefined) return r;
@@ -359,7 +337,7 @@ export async function compactToolCall($: EngineInterface, e: any, next: (e: any)
   }
 }
 
-/** After a turn: a failed turn leaves one line in the incident ledger, and a fold runs when it pays (growth or cold cache). overwatch.ts calls it from the plugin's one turn.complete hook. */
+/** After a turn: a failed turn leaves one line in the incident ledger, and a fold runs when it pays (growth or cold cache). Called from the plugin's one turn.complete hook. */
 export async function compactTurnEnd($: EngineInterface, e: { agentId?: string }): Promise<void> {
   if (e.agentId) return;
   if (c.fails.length) {
@@ -379,10 +357,8 @@ export async function compactTurnEnd($: EngineInterface, e: { agentId?: string }
       void publish($, status());
     }
   };
-  // Grown enough since the last compaction to be worth a Jev pass now.
   if (tokensNow >= c.foldFrom && tokensNow - c.lastCompactAt >= c.growthTokens) void run();
-  // Idle past the cache TTL: the next request rewrites the cache anyway,
-  // so compact then at no cache cost, whatever the reduction.
+  // Idle past the cache TTL: the next request rewrites the cache anyway, so a fold then costs nothing.
   c.idle?.cancel();
   c.idle = $.clock.after(c.cacheTtlMs + 30000, () => { void run(); });
   await publish($, status());
@@ -448,19 +424,17 @@ export const register: Register = (on, options) => {
       $.ui.log(`overwatch compaction: no fold: frozen ${n}, of ${e.messages.length}: ${e.messages.map((m) => `${m.role[0]}${m.toolUses.length ? 't' : ''}${m.toolResults?.length ? 'r' : ''}${Math.round(chars([m]) / 400)}`).join(' ')}`, { to: 'debug' });
       return { skip: 'nothing to fold yet' };
     }
-    // `/compact` or the engine's threshold with nothing foldable: the built-in
-    // summary, over a slimmed transcript.
+    // `/compact` or the engine's threshold with nothing foldable: the built-in summary over a slimmed transcript.
     const instructions = [e.instructions, SUMMARY_TEMPLATE, fileLists(e.messages)].filter(Boolean).join('\n\n');
     const r = await next({ ...e, messages: slim(e.messages, c.limits), instructions });
     if (r.messages && main) c.saved += Math.max(0, tokens(chars(e.messages) - chars(r.messages)));
     return r;
   });
 
-  // A fold is a compaction, so the engine re-runs every SessionStart hook with
-  // source `compact`. The frozen first message still holds what they said at
-  // startup, so after a fold a re-run only adds another copy (a hook's stdout
-  // rides beside the result, so dropping `additionalContext` is not enough):
-  // skip it. After the built-in summary they run as usual.
+  // A fold is a compaction, so the engine re-runs every SessionStart hook with source `compact`. The frozen
+  // first message still holds what they said at startup, so the re-run would only add a copy (a hook's stdout
+  // rides beside the result, so dropping `additionalContext` is not enough): skip it. After the built-in
+  // summary they run as usual.
   on('classic.SessionStart', async ($, e, next) => {
     if (e.source !== 'compact' || !c.foldedRestart) return next(e);
     c.foldedRestart = false;

@@ -1,16 +1,11 @@
 /**
- * The tool-surface ledger and a repo's verification checks, over `Io` so the hooks
- * and bin/overwatch run the same code.
+ * The tool-surface ledger and a repo's verification checks, over `Io` so the hooks and bin/overwatch run the same code.
  *
- * The harness withholds schema from deferred tools; that policy is static, and
- * "rare" confirms itself because a tool never reached is never observed. This
- * ledger is the feedback loop:
- *
- *   count   every tool call of the main thread is counted as it runs (Bash twice:
- *           `Bash` and `sh:<binary>`), flushed once per turn.
- *   index   what actually gets used here plus the learned trigger lines, injected
- *           into the prompt, limited to the tools this session has.
- *   rate    one cold tool is drawn per session and rated useful | situational | dead.
+ * The harness defers rarely used tools, and "rare" confirms itself: a tool never reached is never observed.
+ * This ledger is the feedback loop:
+ *   count   every main-thread tool call (Bash twice: `Bash` and `sh:<binary>`), flushed once per turn
+ *   index   what gets used here plus the learned trigger lines, in the prompt, limited to this session's tools
+ *   rate    one cold tool is drawn per session and rated useful | situational | dead
  *
  * State: .overwatch/ in the working directory (surface.json, checks.json, mistakes.md).
  */
@@ -20,10 +15,10 @@ import { incidentReport, lessons, load as loadIncidents, tallyLine } from "./inc
 const PROMOTE_AT = 3 // a "rare" tool that fires this often is mislabelled
 const VERDICT_TTL_DAYS = 30 // a verdict this old is stale: the surface moved
 export const VERDICTS = ["useful", "situational", "dead"] as const
-export type Verdict = (typeof VERDICTS)[number]
+type Verdict = (typeof VERDICTS)[number]
 const TOP_N = 8
 
-export type Ledger = {
+type Ledger = {
   counts: Record<string, number>
   verdicts: Record<string, { verdict: Verdict; reason: string; at: string }>
   triggers: Record<string, string>
@@ -57,10 +52,7 @@ async function seedNames(io: Io): Promise<string[]> {
 const BINARY_RE = /^[A-Za-z0-9_][\w.+-]*$/
 const SKIP_WORDS = new Set(["cd", "export", "env", "sudo", "time", "nohup", "source", "."])
 
-/**
- * The command a Bash call actually ran, as `sh:<binary>`: a routing rule like
- * "use rg, not grep" is unfalsifiable until the binaries themselves are counted.
- */
+/** The command a Bash call ran, as `sh:<binary>`: a rule like "use rg, not grep" is unfalsifiable until binaries are counted. */
 export function shellBinary(command: unknown): string | undefined {
   if (typeof command !== "string") return undefined
   for (const segment of command.split(/&&|\|\||;|\||\n/)) {
@@ -79,7 +71,6 @@ export function shellBinary(command: unknown): string | undefined {
 /** The names one tool call counts under. */
 export const firedBy = (tool: string, input: { command?: unknown }) => [tool, ...[shellBinary(tool === "Bash" ? input.command : undefined)].filter((n): n is string => !!n)]
 
-/** Folds a turn's fires into the ledger. */
 export async function tally(io: Io, fired: Record<string, number>): Promise<void> {
   if (!Object.keys(fired).length) return
   const st = await load(io)
@@ -89,10 +80,7 @@ export async function tally(io: Io, fired: Record<string, number>): Promise<void
 
 const fresh = (v: { at?: string } | undefined) => !!v?.at && (Date.parse(today()) - Date.parse(v.at)) / 86_400_000 < VERDICT_TTL_DAYS
 
-/**
- * The cold half of the table, one per session: an unreached tool is unobserved,
- * and a new name has no count so it sorts coldest by construction.
- */
+/** One tool from the cold half of the table; a new name has no count, so it sorts coldest. */
 export function draw(st: Ledger, names: string[], rnd = Math.random): Ledger["drawn"] {
   const eligible = names.filter((n) => !fresh(st.verdicts[n]))
   if (!eligible.length) return null
@@ -104,9 +92,9 @@ export function draw(st: Ledger, names: string[], rnd = Math.random): Ledger["dr
 const top = (pairs: [string, number][]) => pairs.sort((a, b) => b[1] - a[1]).slice(0, TOP_N).map(([n, c]) => `${n} ${c}`).join(" · ")
 
 /**
- * The tool-surface sections (asBlock joins them) without the rating question, the tool drawn for rating, and the ledger write of that
- * draw (not awaited here, so a prompt does not wait on it). The caller gets `drawn` from here, never by
- * re-reading the ledger, which may not hold the draw yet.
+ * The tool-surface sections (asBlock joins them) without the rating question, the tool drawn for rating, and the
+ * ledger write of that draw. The write is not awaited, so a prompt does not wait on it: take `drawn` from here,
+ * never from the ledger, which may not hold it yet.
  */
 export async function surface(io: Io, active?: readonly string[]): Promise<{ sections: string[]; drawn: Ledger["drawn"]; saved: Promise<void> }> {
   const [st, seedList] = await Promise.all([load(io), seedNames(io)])
@@ -127,8 +115,7 @@ export async function surface(io: Io, active?: readonly string[]): Promise<{ sec
   if (hot) out.push(`## Used most in this project: ${hot}`)
   const shells = top(counts.filter(([n]) => n.startsWith("sh:")).map(([n, c]) => [n.slice(3), c]))
   if (shells) out.push(`## Shell binaries reached for: ${shells}`)
-  // Only where kern's tools are present (one fired at least once; the `kern` CLI is not one): shell searching that
-  // dwarfs them is the habit to break.
+  // Only where a kern tool fired at least once (the `kern` CLI is not one): shell search that dwarfs them is the habit to break.
   const kern = toolCounts.filter(([n]) => n.includes("kern")).reduce((a, [, c]) => a + c, 0)
   const shellSearch = ["grep", "rg", "cat", "sed", "find", "head"].reduce((a, b) => a + (st.counts[`sh:${b}`] ?? 0), 0)
   if (kern && shellSearch >= 10 && shellSearch > 3 * kern)
@@ -228,11 +215,7 @@ const mistakes = async (io: Io) => (await io.read(state(io, "mistakes.md")))?.tr
 
 const LEARNED_MISTAKES = 5
 
-/**
- * What earlier sessions taught, for the prompt: one lesson per kind of misbehaviour
- * caught repeatedly in this project (incidents.ts) and its newest recorded
- * mistakes. Empty when there is nothing to carry.
- */
+/** What earlier sessions taught, for the prompt: one lesson per kind caught repeatedly here (incidents.ts) and the newest recorded mistakes. Empty when there are none. */
 export async function learned(io: Io): Promise<string> {
   const [caught, mist] = await Promise.all([loadIncidents(io), mistakes(io)])
   const habits = lessons(caught)

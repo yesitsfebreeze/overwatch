@@ -1,8 +1,8 @@
 // Deterministic replay: real transcripts, every request re-played plain and
-// through overwatch compaction.s own minify + fold. No model, no network, no luck.
+// through compaction's own minify + fold. No model, no network, no luck.
 // Cost model (Anthropic, 1h cache): uncached input 1x, cache write 2x, cache read 0.1x.
 import { readFileSync } from 'fs';
-import { minify, fold, chars } from '../hooks/compaction.ts';
+import { minify, fold } from '../hooks/compaction.ts';
 
 type Msg = { role: 'user' | 'assistant'; text: string; toolUses: any[]; toolResults?: any[] };
 const SYSTEM = 66000;                 // tools + system prefix, measured, always cached after request 1
@@ -37,10 +37,9 @@ function load(path: string): { msgs: Msg[]; requests: number[] } {
   return { msgs, requests };
 }
 
-// Replays the requests; `view` maps the history so far to what is sent.
-// Measured on logged request bodies (2026-09-24): after a fold tools and system
-// stay cached, but every message is re-written, because Claude Code merges the
-// fold block into the first user message.
+// Replays the requests; `viewAt` maps the history so far to what is sent.
+// Measured on logged request bodies (2026-09-24): after a fold, tools and system stay cached but
+// every message is re-written, because Claude Code merges the fold block into the first user message.
 function replay(requests: number[], viewAt: (i: number) => Msg[], resets = new Set<number>()) {
   let prev: string[] = [], sent = 0, cost = 0, peak = 0;
   requests.forEach((at, k) => {

@@ -4,7 +4,7 @@ import { add, incidentReport, lessons, load, note, REPEAT_AT, tallyLine, totals,
 import { learned } from "./surface.ts"
 
 // The fs engine resolves a path before a hook sees it: win32 delivers 'C:\state\x' for '/state/x'.
-// Normalize back so the POSIX keys the mocks read match on every host (as surface.test.ts does).
+// Normalized back so the mocks' POSIX keys match on every host.
 const norm = (p: unknown) => String(p).replace(/\\/g, "/").replace(/^[A-Za-z]:/, "")
 
 const NONE: Incidents = { days: {}, recent: [] }

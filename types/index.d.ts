@@ -1,8 +1,8 @@
 /** One gauge: `pct` 0–100 is how well this plugin did the last turn. */
 export type FollowlineSlot = {
-  /** The slot id, matched against the `slots` setting. */
+  /** Matched against the `slots` setting. */
   id: string
-  /** The label drawn before the gauge; the id when absent. */
+  /** Drawn before the gauge; the id when absent. */
   label?: string
   pct: number
   /** An ANSI colour name for the label (`yellow` to watch, `red` to act). */
@@ -24,9 +24,8 @@ export type Followline = {
 export type Task = {
   /** Stable number; `replace` retires the old id and issues the next one. */
   id: number
-  /** What the model distilled from the user's request, short. */
   title: string
-  /** 0–100, the fill of the bar drawn beside the task. */
+  /** 0–100. */
   progress: number
   /** `done` at 100, `active` while being worked, `todo` until first touched. */
   status: "todo" | "active" | "done"
@@ -36,7 +35,7 @@ export type Task = {
 export type Guard = {
   id: string
   question: string
-  /** A shell command that decides it: exit 0 is upheld. Re-run at every stop, so a regression reopens it. */
+  /** Shell command that decides it: exit 0 is upheld. Re-run at every stop, so a regression reopens it. */
   check?: string
   /** Files whose current content the judge sees, relative to the project. */
   files?: string[]
@@ -54,16 +53,14 @@ export type Plan = {
 }
 
 /**
- * Whether changed code went through /code-review and /simplify. `dirty` is set
- * by the first file edit, which voids a pass run before it. `lines` sums the
- * lines the edit tools touched since /simplify last covered them and decides
- * whether /simplify is asked for; `unreviewed` is the same since /code-review.
- * New work after a skill ran starts that skill's count from 0. A stop that
- * passes clears all of it.
+ * Whether changed code went through /code-review and /simplify. The first file edit sets `dirty`
+ * and voids a pass run before it. `lines` sums the lines edited since /simplify last ran and
+ * decides whether it is asked for; `unreviewed` is the same for /code-review. A stop that passes
+ * clears all of it.
  */
 export type Verify = { dirty: boolean; review: boolean; simplify: boolean; lines: number; unreviewed: number }
 
-/** The stop bookkeeping: what the next stop compares against. */
+/** What the next stop compares against. */
 export type StopBook = {
   /** The signature of what was still open at the last refused stop. */
   sig: string
@@ -88,14 +85,14 @@ declare module "claude-code" {
       evaluation: string
       /** Main-thread tool calls this session, folded in once per turn. */
       calls: number
-      /** The plan part: the plan, the review state, the stop bookkeeping and the session's start directory. */
+      /** The plan, the review state, the stop bookkeeping and the session's start directory. */
       plan: Plan
       verify: Verify
       stop: StopBook
       root: string
-      /** The plan part: the full reminder went out this session; later prompts carry one line. */
+      /** The full plan reminder went out this session; later prompts carry one line. */
       told: boolean
-      /** The tool catalog this session last declared (catalog.ts): its version, each tool's fingerprint, and a reload notice not yet delivered. */
+      /** The tool catalog this session last declared (catalog.ts): version, each tool's fingerprint, a reload notice not yet delivered. */
       tools: { version: string; tools: Record<string, string>; notice?: string }
     }
   }

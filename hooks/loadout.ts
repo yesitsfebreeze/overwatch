@@ -2,9 +2,9 @@ import { abs, cmp, join, readJson, type Io } from "./io.ts"
 
 /**
  * Which plugins are active per layer: global | each account | project | local.
- * Global = BASE in ~/.claude/setup-plugins.sh (what it renders into managed-settings.json; the
- * rendered file when the script has no BASE). Accounts = ~/.claude/<name>/settings.json
- * (root = default). Project/local = ./.claude/settings*.json. '*' marks the current account.
+ * Global = BASE in ~/.claude/setup-plugins.sh, else the managed-settings.json it renders.
+ * Accounts = ~/.claude/<name>/settings.json (root = default; '*' marks the current one).
+ * Project/local = ./.claude/settings*.json.
  * Cells: x enabled here, / inherited from global, * global and also enabled here, . off.
  */
 

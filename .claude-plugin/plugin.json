@@ -1,7 +1,7 @@
 {
   "name": "overwatch",
   "version": "0.2.0",
-  "description": "Catches a coding agent misbehaving, records it and makes the next session better: tasks and guards hold every stop until the work is done and reviewed, every catch (an edit before a plan, a stop with work open, an invalid call, a failed turn) lands in a ledger, and repeated habits plus recorded mistakes ride the next session's prompt. Also in the plugin: compaction (minified tool results, old history folded into indexes, any of it read back by id), one gauge line above the prompt, the tool-surface ledger with a repo's verification checks, /loadout, /hygiene and the disk gardener (asks for a cleanup when the disk is nearly full, finds and deletes proven leftovers).",
+  "description": "Catches a coding agent misbehaving, records it and makes the next session better: tasks and guards hold every stop until the work is done and reviewed, every catch lands in a ledger, and repeated habits plus recorded mistakes ride the next session's prompt. Also: compaction, one gauge line above the prompt, the tool-surface ledger with a repo's verification checks, /loadout, /hygiene and the disk gardener.",
   "author": {
     "name": "Stefan Hoevelmanns"
   },

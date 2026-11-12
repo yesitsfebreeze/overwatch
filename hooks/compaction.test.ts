@@ -1,9 +1,28 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './compaction.ts';
 
-// The fs engine resolves a path before a hook sees it: win32 delivers 'C:\h\x' for '/h/x'.
-// Normalize back so the POSIX keys the mocks pre-seed match on every host.
+// The fs engine resolves a path before a hook sees it (win32: 'C:\h\x' for '/h/x'); back to the mocks' POSIX keys.
 const norm = (p: unknown) => String(p).replace(/\\/g, '/').replace(/^[A-Za-z]:/, '');
+
+/** Session `sid` in `/h` whose stored originals are `files` (name under context/sid/ to text); returns decompress by id. */
+const stored = ($: any, on: any, files: Record<string, string>) => {
+  on('session.cwd', async () => ({ value: '/h' }));
+  on('session.id', async () => ({ value: 'sid' }));
+  on('fs.read', async (_$: unknown, e: { path: string }) => {
+    const name = norm(e.path).replace('/h/.overwatch/context/sid/', '');
+    return Object.hasOwn(files, name) ? { value: files[name] } : { deny: 'ENOENT' };
+  });
+  return async (id: string) => $.tool.call({ tool: 'mcp__overwatch__decompress', id });
+};
+
+/** One user prompt, then 20 Bash calls of 4000 chars each with their results. */
+const longTurn = (prompt: string) => [
+  { role: 'user', text: prompt, toolUses: [] },
+  ...Array.from({ length: 20 }, (_, k) => [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: `t${k}`, tool: 'Bash', input: { command: 'ls' }, text: 'r'.repeat(4000) }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `t${k}`, text: 'r'.repeat(4000), isError: false }] },
+  ]).flat(),
+];
 
 const big = 'x'.repeat(10_000);
 const transcript = [
@@ -73,11 +92,7 @@ test('rolling fold: index in order, frozen prefix and tail untouched, ids kept',
 });
 
 test('one long autonomous turn folds, and never splits a call from its result', () => {
-  const call = (k: number) => [
-    { role: 'assistant', text: '', toolUses: [{ tool_use_id: `t${k}`, tool: 'Bash', input: { command: 'ls' }, text: 'r'.repeat(4000) }] },
-    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `t${k}`, text: 'r'.repeat(4000), isError: false }] },
-  ];
-  const turn = [{ role: 'user', text: 'work the board', toolUses: [] }, ...Array.from({ length: 20 }, (_, k) => call(k)).flat()] as never[];
+  const turn = longTurn('work the board') as never[];
   const out = fold(turn, 6000, new Map(), 1)!;
   expect(out).not.toBe(null);
   expect(out[1].text.startsWith(FOLD_TAG)).toBe(true);
@@ -109,46 +124,31 @@ test('a minified tool result keeps the context an inner hook added', async ($, o
 });
 
 test('decompress reads the exact id back, never a longer one ending the same', async ($, on) => {
-  on('session.cwd' as never, (async () => ({ value: '/h' })) as never);
-  on('session.id' as never, (async () => ({ value: 'sid' })) as never);
-  const files: Record<string, string> = { '/h/.overwatch/context/sid/f11.1.txt': 'eleventh', '/h/.overwatch/context/sid/f1.1.txt': 'first' };
-  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => {
-    return norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' };
-  }) as never);
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f1.1' } as any)).result).toBe('first');
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: '#f11.1' } as any)).result).toBe('eleventh');
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: '../x' } as any)).isError).toBe(true);
+  const decompress = stored($, on, { 'f11.1.txt': 'eleventh', 'f1.1.txt': 'first' });
+  expect((await decompress('f1.1')).result).toBe('first');
+  expect((await decompress('#f11.1')).result).toBe('eleventh');
+  expect((await decompress('../x')).isError).toBe(true);
 });
 
 test('decompress resolves a fold short id through its alias, and still an old toolu id', async ($, on) => {
-  on('session.cwd' as never, (async () => ({ value: '/h' })) as never);
-  on('session.id' as never, (async () => ({ value: 'sid' })) as never);
-  const files: Record<string, string> = { '/h/.overwatch/context/sid/toolu_x.txt': 'out', '/h/.overwatch/context/sid/f2.3.ref': 'toolu_x' };
-  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' })) as never);
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f2.3' } as any)).result).toBe('out');
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: '#toolu_x' } as any)).result).toBe('out');
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 'f2.4' } as any)).isError).toBe(true);
+  const decompress = stored($, on, { 'toolu_x.txt': 'out', 'f2.3.ref': 'toolu_x' });
+  expect((await decompress('f2.3')).result).toBe('out');
+  expect((await decompress('#toolu_x')).result).toBe('out');
+  expect((await decompress('f2.4')).isError).toBe(true);
 });
 
 test('decompress of a stored Bash result returns its plain output, not escaped JSON', async ($, on) => {
-  on('session.cwd' as never, (async () => ({ value: '/h' })) as never);
-  on('session.id' as never, (async () => ({ value: 'sid' })) as never);
   const bash = JSON.stringify({ stdout: 'a "q"\nb', stderr: 'warn', interrupted: false, isImage: false, noOutputExpected: false });
-  const files: Record<string, string> = { '/h/.overwatch/context/sid/t1.txt': bash, '/h/.overwatch/context/sid/t2.txt': '{"k":1}', '/h/.overwatch/context/sid/t3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) };
-  on('fs.read' as never, (async (_$: unknown, e: { path: string }) => (norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'ENOENT' })) as never);
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't1' } as any)).result).toBe('a "q"\nb\nwarn');
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't2' } as any)).result).toBe('{"k":1}');
-  expect((await $.tool.call({ tool: 'mcp__overwatch__decompress', id: 't3' } as any)).result).toBe('x\n[interrupted]');
+  const decompress = stored($, on, { 't1.txt': bash, 't2.txt': '{"k":1}', 't3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) });
+  expect((await decompress('t1')).result).toBe('a "q"\nb\nwarn');
+  expect((await decompress('t2')).result).toBe('{"k":1}');
+  expect((await decompress('t3')).result).toBe('x\n[interrupted]');
 });
 
 test('after a fold the SessionStart re-run adds no second copy; after a summary it does', async ($, on) => {
   on('classic.SessionStart' as never, (async () => ({ additionalContext: ['CAVEMAN MODE ACTIVE'] })) as never);
   on('session.compact' as never, (async () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] })) as never);
-  const call = (k: number) => [
-    { role: 'assistant', text: '', toolUses: [{ tool_use_id: `t${k}`, tool: 'Bash', input: { command: 'ls' }, text: 'r'.repeat(4000) }] },
-    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `t${k}`, text: 'r'.repeat(4000), isError: false }] },
-  ];
-  const long = [{ role: 'user', text: 'work', toolUses: [] }, ...Array.from({ length: 20 }, (_, k) => call(k)).flat()];
+  const long = longTurn('work');
   const folded = await $.session.compact({ trigger: 'manual', messages: long } as any);
   expect((folded as any).messages[1].text.startsWith(FOLD_TAG)).toBe(true);
   expect((await $.classic.SessionStart({ source: 'compact' } as any) as any).additionalContext).toBeUndefined();
@@ -190,9 +190,8 @@ test('an answered Jev call appends one dataset line; a failed log write still fo
   expect(runs.length).toBe(1);
   expect(runs[0].argv[3]).toBe('/h/.jev/log');
   expect(runs[0].argv[4]).toBe(`${new Date(line0().ts).toISOString().slice(0, 10)}.jsonl`);
-  expect(runs[0].init.stdin.endsWith('\n')).toBe(true);
   expect(runs[0].init.stdin.indexOf('\n')).toBe(runs[0].init.stdin.length - 1);
-  const line = JSON.parse(runs[0].init.stdin);
+  const line = line0();
   expect(Object.keys(line)).toEqual(['ts', 'client', 'model', 'state', 'questions', 'answers']);
   expect([line.client, line.model]).toEqual(['componion', 'jev-9']);
   expect(Object.keys(line.answers)).toEqual(Object.keys(line.questions));
