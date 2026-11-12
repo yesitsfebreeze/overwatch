@@ -1,4 +1,5 @@
 import { test, expect } from "claude-code/testing"
+import { session } from "./test-session.ts"
 import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, edited, newWork, reminder, reviewLine, skillRan as ran, slot, stopVerdict, tool } from "./plan.ts"
 import { cannotFail, fitResults, guardId, lastTurn, makeGuard, openGuards, selectResults } from "./guards.ts"
 import type { Guard, Plan } from "../types/index.d.ts"
@@ -277,7 +278,7 @@ test("reminder once: the full rules, then one line", () => {
   expect(reminder(P([OPEN]))).toContain("Every stop is refused")
 })
 
-test("session: reminder once per session, then the short line", async ($, on) => {
+session("session: reminder once per session, then the short line", async ($, on) => {
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))
   const ctx = async () => JSON.stringify(await $.prompt.submit({ text: "hi" } as any))
   expect(await ctx()).toContain("you MUST first")
@@ -286,7 +287,7 @@ test("session: reminder once per session, then the short line", async ($, on) =>
   expect(second).toContain("rules given earlier this session")
 })
 
-test("session: a git repo that does not ignore .overwatch/ is asked to, once; an ignored one never", async ($, on) => {
+session("session: a git repo that does not ignore .overwatch/ is asked to, once; an ignored one never", async ($, on) => {
   let code = 1 // git check-ignore: 1 = not ignored
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))
   on("session.cwd", async () => ({ value: "/repo" }) as any)
@@ -297,7 +298,7 @@ test("session: a git repo that does not ignore .overwatch/ is asked to, once; an
 })
 
 // ── end to end ───────────────────────────────────────────────────────
-test("session: gate, plan, large edit, stop refused until checks pass and code-review + simplify ran", async ($, on) => {
+session("session: gate, plan, large edit, stop refused until checks pass and code-review + simplify ran", async ($, on) => {
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))
   on("skill.prompt", async (_: any, e: any) => ({ text: e.text }))
   on("env.get", async () => ({ value: undefined }) as any)

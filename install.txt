@@ -15,6 +15,9 @@ WHAT IT DOES
 - Stop hold: a stop is refused while a task is open or a check fails.
 - Record: a kind of refusal caught 3 times in 30 days adds one lesson line to
   every later session start.
+- Changelog: `changelog <what changed>` writes a bullet under the current
+  version in CHANGELOG.md; `changelog --backfill` groups git history by the
+  version each commit saw, keeping bullets already written.
 
 One core (host/core.ts) serves every host, through native plugin code, command
 hooks (`overwatch hook <host> <event>`) or the MCP server (`overwatch mcp`).

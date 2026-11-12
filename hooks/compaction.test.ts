@@ -1,4 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing';
+import { session } from './test-session.ts'
 import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads } from './compaction.ts';
 
 // The fs engine resolves a path before a hook sees it (win32: 'C:\h\x' for '/h/x'); back to the mocks' POSIX keys.
@@ -116,28 +117,28 @@ test('status payload matches CONTRACT §2', () => {
   expect(statusPayload(s, 1).v).toBe(1);
 });
 
-test('a minified tool result keeps the context an inner hook added', async ($, on) => {
+session('a minified tool result keeps the context an inner hook added', async ($, on) => {
   on('tool.call', async () => ({ result: 'same\n'.repeat(50), context: ['kern: nudge'] }));
   const r = await $.tool.call({ tool: 'Bash', command: 'rg x', tool_use_id: 'toolu_t' } as any);
   expect(String(r.result)).toContain('same [×50]');
   expect(r.context).toEqual(['kern: nudge']);
 });
 
-test('decompress reads the exact id back, never a longer one ending the same', async ($, on) => {
+session('decompress reads the exact id back, never a longer one ending the same', async ($, on) => {
   const decompress = stored($, on, { 'f11.1.txt': 'eleventh', 'f1.1.txt': 'first' });
   expect((await decompress('f1.1')).result).toBe('first');
   expect((await decompress('#f11.1')).result).toBe('eleventh');
   expect((await decompress('../x')).isError).toBe(true);
 });
 
-test('decompress resolves a fold short id through its alias, and still an old toolu id', async ($, on) => {
+session('decompress resolves a fold short id through its alias, and still an old toolu id', async ($, on) => {
   const decompress = stored($, on, { 'toolu_x.txt': 'out', 'f2.3.ref': 'toolu_x' });
   expect((await decompress('f2.3')).result).toBe('out');
   expect((await decompress('#toolu_x')).result).toBe('out');
   expect((await decompress('f2.4')).isError).toBe(true);
 });
 
-test('decompress of a stored Bash result returns its plain output, not escaped JSON', async ($, on) => {
+session('decompress of a stored Bash result returns its plain output, not escaped JSON', async ($, on) => {
   const bash = JSON.stringify({ stdout: 'a "q"\nb', stderr: 'warn', interrupted: false, isImage: false, noOutputExpected: false });
   const decompress = stored($, on, { 't1.txt': bash, 't2.txt': '{"k":1}', 't3.txt': JSON.stringify({ stdout: 'x', stderr: '', interrupted: true }) });
   expect((await decompress('t1')).result).toBe('a "q"\nb\nwarn');
@@ -145,7 +146,7 @@ test('decompress of a stored Bash result returns its plain output, not escaped J
   expect((await decompress('t3')).result).toBe('x\n[interrupted]');
 });
 
-test('after a fold the SessionStart re-run adds no second copy; after a summary it does', async ($, on) => {
+session('after a fold the SessionStart re-run adds no second copy; after a summary it does', async ($, on) => {
   on('classic.SessionStart' as never, (async () => ({ additionalContext: ['CAVEMAN MODE ACTIVE'] })) as never);
   on('session.compact' as never, (async () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] })) as never);
   const long = longTurn('work');

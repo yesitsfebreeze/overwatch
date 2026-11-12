@@ -8,137 +8,28 @@ import type { Plan } from "../types/index.d.ts"
 import { checkTier } from "./guards.ts"
 import { checkReport, PLAN_TOOLS, refuse, runCheck, runChecks, trimmed, type PlanTool, type Result } from "./plan.ts"
 import { cmp, join, readJson, state, STATE_DIR, VAULT_DIR, type Io } from "./io.ts"
+import { badName, frontmatter, NAME_RULE, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, type Fields, type Value } from "./note.ts"
+import { claimStale, computePlan, normPath, openItems, planReport, renderTasks, slash, type PlanData, type Row } from "./wave.ts"
 
 const SPECS = "01 Specs"
-/** The path spelling comparisons start from: separators and trailing slashes normalize away, case is kept. */
-const slash = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "")
-/** The one path rule scope checks share: `slash`, a leading `./`, and Windows' case fold. */
-const normPath = (p: string) => slash(p).replace(/^\.\//, "").toLowerCase()
-/** A path covers itself and everything under it, so `src/a` and `src/a/lex.ts` overlap. */
-const coversPath = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
 export const PLAN_DATA = "00 Meta/Plan Data.json"
 export const PLAN_TASKS = "00 Meta/Plan Tasks.md"
 const TEMPLATE = "00 Meta/Spec Template.md"
 /** The scaffold shipped in the plugin, copied by vaultInit. */
 const SCAFFOLD = "data/vault"
 /** A claim older than this is stale and may be taken over with an explicit takeover. */
-const CLAIM_TTL_MS = 15 * 60_000
 /** Recorded unit_record runs: what was checked, at which commit, with what output. */
 const EVIDENCE_DIR = "evidence"
 
 /** Statuses that make a note a unit of work; the rest are navigation or provenance. */
 const UNIT_STATUSES = new Set(["implemented", "partial", "target", "proposed", "deferred", "open-question"])
 export const CATEGORIES = ["documentation", "behavior", "protocol", "build", "acceptance"]
-const PRIO_MARK: Record<string, string> = { highest: "🔺", high: "⏫", medium: "🔼", low: "🔽", lowest: "⏬" }
-/** Friction units per status (kit Plan.md): proposed 3, partial 2, target or deferred 1. */
-const STATUS_EFFORT: Record<string, number> = { proposed: 3, partial: 2, target: 1, deferred: 1 }
 
 export const vaultPath = (io: Io, ...parts: string[]) => state(io, VAULT_DIR, ...parts)
 
-// --- frontmatter: the YAML subset the vault uses (scalars, inline and block lists) ---
-
-const FRONT = /^﻿?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/
-type Value = string | number | boolean | null | Value[]
-export type Fields = Record<string, Value>
-
-function splitList(inner: string): string[] {
-  const items: string[] = []
-  let current = "", quote: string | null = null
-  for (const c of inner) {
-    if (quote) { current += c; if (c === quote) quote = null; continue }
-    if (c === '"' || c === "'") { quote = c; current += c; continue }
-    if (c === ",") { items.push(current); current = ""; continue }
-    current += c
-  }
-  items.push(current)
-  return items.map((s) => s.trim()).filter(Boolean)
-}
-
-function scalar(value: string): Value {
-  const v = value.trim()
-  if (v.startsWith("[") && v.endsWith("]")) return splitList(v.slice(1, -1)).map(scalar)
-  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
-    try { return JSON.parse(v) } catch { return v.slice(1, -1) }
-  }
-  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'")
-  if (/^-?\d+$/.test(v)) return Number(v)
-  if (v === "true") return true
-  if (v === "false") return false
-  if (v === "" || v === "null" || v === "~") return null
-  return v
-}
-
-export function serialize(value: Value | undefined): string {
-  if (Array.isArray(value)) return `[${value.map(serialize).join(", ")}]`
-  if (value === null || value === undefined) return ""
-  if (typeof value === "number" || typeof value === "boolean") return String(value)
-  const s = String(value)
-  const plain = s !== "" && !/^[\s\-?:,\[\]{}#&*!|>'"%@`]/.test(s) && !/[:#]\s|:$/.test(s) && !/\s$/.test(s) &&
-    !/^(?:true|false|null|~|-?\d+(?:\.\d+)?)$/.test(s) && !/[\r\n,]/.test(s)
-  return plain ? s : JSON.stringify(s)
-}
-
-export function frontmatter(text: string): { fields: Fields; end: number } {
-  const m = FRONT.exec(text)
-  if (!m) return { fields: {}, end: 0 }
-  const lines = m[1].split(/\r?\n/)
-  const fields: Fields = {}
-  for (let i = 0; i < lines.length; i++) {
-    const kv = /^([A-Za-z0-9_-]+):(?:\s+(.*))?$/.exec(lines[i])
-    if (!kv) continue
-    const value = (kv[2] ?? "").trim()
-    if (value === "") {
-      const items: Value[] = []
-      while (i + 1 < lines.length && /^\s*-\s/.test(lines[i + 1])) items.push(scalar(lines[++i].replace(/^\s*-\s/, "")))
-      fields[kv[1]] = items.length ? items : null
-    } else fields[kv[1]] = scalar(value)
-  }
-  return { fields, end: m[0].length }
-}
-
-/** Replace, add (value) or remove (null) frontmatter keys; everything else is kept byte for byte. */
-export function patchFrontmatter(text: string, changes: Record<string, Value | undefined>): string {
-  const nl = text.includes("\r\n") ? "\r\n" : "\n"
-  const m = FRONT.exec(text)
-  const bom = text.startsWith("﻿") ? "﻿" : ""
-  const lines = m ? m[1].split(/\r?\n/) : []
-  const body = m ? text.slice(m[0].length) : text.replace(/^﻿/, "")
-  for (const [key, value] of Object.entries(changes)) {
-    const index = lines.findIndex((line) => new RegExp(`^${key}:(?:\\s|$)`).test(line))
-    if (index >= 0) {
-      let end = index + 1
-      while (end < lines.length && /^\s*-\s/.test(lines[end])) end++
-      if (value === null || value === undefined) lines.splice(index, end - index)
-      else lines.splice(index, end - index, `${key}: ${serialize(value)}`)
-    } else if (value !== null && value !== undefined) lines.push(`${key}: ${serialize(value)}`)
-  }
-  return `${bom}---${nl}${lines.join(nl)}${nl}---${nl}${body}`
-}
-
-// --- sections ---
-
-const heading = (name: string) => new RegExp(`^## ${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ \\t]*$`, "m")
-
-/** The body of `## name` up to the next `## ` heading, or undefined when the note has none. */
-export function section(text: string, name: string): string | undefined {
-  const m = heading(name).exec(text)
-  if (!m) return undefined
-  const rest = text.slice(m.index + m[0].length)
-  const next = /^## /m.exec(rest)
-  return (next ? rest.slice(0, next.index) : rest).replace(/^\r?\n/, "").replace(/\s+$/, "")
-}
-
-/** Replaces the body of `## name`, or appends the section when the note has none. */
-export function replaceSection(text: string, name: string, body: string): string {
-  const nl = text.includes("\r\n") ? "\r\n" : "\n"
-  const m = heading(name).exec(text)
-  if (!m) return `${text.replace(/\s+$/, "")}${nl}${nl}## ${name}${nl}${nl}${body}${nl}`
-  const start = m.index + m[0].length
-  const next = /^## /m.exec(text.slice(start))
-  const end = next ? start + next.index : text.length
-  return `${text.slice(0, start)}${nl}${nl}${body}${nl}${next ? nl : ""}${text.slice(end)}`
-}
-
+// The note format (frontmatter, sections, names, dates) lives in ./note.ts; re-exported so a
+// vault consumer keeps importing it here.
+export { BAD_NAME, NAME_RULE, badName, frontmatter, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, serialize, type Fields, type Value } from "./note.ts"
 export type PlanItem = { done: boolean; text: string }
 const ITEM = /^\s*- \[([ xX])\] (.+?)\s*$/
 
@@ -173,8 +64,6 @@ export type Spec = {
   text: string
 }
 
-export const strings = (v: Value | undefined): string[] => (Array.isArray(v) ? v : v == null || v === "" ? [] : [v]).map(String).filter(Boolean)
-export const str = (v: Value | undefined) => (v == null ? "" : String(v))
 /** Note names from a frontmatter value: `[[A]]` wiki links, inline lists and nested lists all flatten to plain names. */
 export const noteRefs = (v: Value | undefined): string[] =>
   (Array.isArray(v) ? (v.flat(Infinity) as Value[]) : [v]).map((x) => str(x).replace(/[[\]]/g, "").trim()).filter(Boolean)
@@ -219,151 +108,9 @@ export function specsOf(notes: Map<string, string>): Spec[] {
   return [...notes].filter(([p]) => p.startsWith(SPECS + "/")).map(([p, t]) => parseSpec(p, t)).filter((s) => UNIT_STATUSES.has(s.status))
 }
 
-// --- plan ---
-
-type Row = {
-  name: string; path: string; category: string; status: string; owner: string; since: string; blocked: string
-  effort: number; start: number; end: number; wave: number; after: string[]; paths: string[]
-  held: string; mark: string; open: number; stale: boolean
-}
-type Done = { name: string; path: string; category: string; effort: number; proven: boolean; updated: string }
-type PlanData = {
-  progress: Record<string, number>
-  parallel: number
-  critical: number
-  clashes: string[][]
-  rows: Row[]
-  done: Done[]
-  warnings: string[]
-}
-
-/** Whether an owner's claim is stale: undated claims cannot be waited out, so they are stale. */
-export const claimStale = (since: string, now = Date.now()): boolean => {
-  if (!since) return true
-  const at = Date.parse(since)
-  return !Number.isFinite(at) || now - at > CLAIM_TTL_MS
-}
-
-/** Friction units (kit Plan.md): each issue and open question 2, the status weight, more than one proposal 1; at least 1. */
-function effort(s: Spec): number {
-  const issues = strings(s.fields.issues).length, proposals = strings(s.fields.proposals).length
-  return Math.max(1, 2 * issues + 2 * s.openQuestions + (STATUS_EFFORT[s.status] ?? 0) + (proposals > 1 ? 1 : 0))
-}
-
-/**
- * Waves from explicit `depends` only: a unit's wave is one more than the latest wave among its
- * unfinished prerequisites. Ceiling: the kit also inferred edges from historical unit ids and
- * Related links; add that here when a vault needs it. Cycles, missing prerequisites and
- * prerequisites left out of the plan hold the unit instead of guessing an order.
- */
-export function computePlan(all: Spec[]): PlanData {
-  const included = all.filter((s) => str(s.fields.plan) !== "skip")
-  const byName = new Map(all.map((s) => [s.name, s]))
-  const done = included.filter((s) => s.status === "implemented")
-  const open = included.filter((s) => s.status !== "implemented")
-  const openNames = new Set(open.map((s) => s.name))
-  const warnings: string[] = []
-
-  const wave = new Map<string, number>(), cyclic = new Set<string>()
-  const visit = (s: Spec, stack: string[]): number => {
-    if (wave.has(s.name)) return wave.get(s.name)!
-    if (stack.includes(s.name)) { for (const n of stack.slice(stack.indexOf(s.name))) cyclic.add(n); return 0 }
-    let w = 1
-    for (const d of s.depends) {
-      const dep = byName.get(d)
-      if (dep && openNames.has(d)) w = Math.max(w, visit(dep, [...stack, s.name]) + 1)
-    }
-    wave.set(s.name, w)
-    return w
-  }
-  for (const s of open) visit(s, [])
-  if (cyclic.size) warnings.push(`dependency cycle held: ${[...cyclic].sort().join(", ")}`)
-
-  const rows: Row[] = []
-  const ends = new Map<string, number>()
-  for (const s of [...open].sort((a, b) => wave.get(a.name)! - wave.get(b.name)! || cmp(a.name, b.name))) {
-    const after = s.depends.filter((d) => openNames.has(d))
-    const missing = s.depends.filter((d) => !byName.has(d))
-    const excluded = s.depends.filter((d) => byName.has(d) && byName.get(d)!.status !== "implemented" && !openNames.has(d))
-    const owner = str(s.fields.owner), since = str(s.fields.since), blocked = str(s.fields.blocked)
-    const open = openItems(s), rep = repeatedItem(open)
-    const held = s.depends.includes(s.name) ? "self dependency" : cyclic.has(s.name) ? "cycle" : missing.length ? `missing ${missing.join(", ")}`
-      : excluded.length ? `waiting on excluded ${excluded.join(", ")}` : s.status === "deferred" ? "deferred" : blocked ? "blocked" : after.length ? "waiting" : owner ? "claimed" : !open.length ? "no open Plan items" : rep ? `repeats the Plan item "${rep}"` : ""
-    if (missing.length) warnings.push(`${s.name} depends on missing ${missing.join(", ")}`)
-    const e = effort(s)
-    const start = Math.max(0, ...after.map((d) => ends.get(d) ?? 0))
-    ends.set(s.name, start + e)
-    rows.push({
-      name: s.name, path: s.path, category: s.category, status: s.status, owner, since, blocked,
-      effort: e, start, end: start + e, wave: wave.get(s.name)!, after, paths: s.paths,
-      held, mark: PRIO_MARK[str(s.fields.prio)] ?? "", open: open.length, stale: claimStale(since),
-    })
-  }
-
-  // Scope clashes: two units of one wave that can start now and claim overlapping paths.
-  const clashes: string[][] = []
-  const free = rows.filter((r) => !r.held).map((r) => ({ ...r, paths: r.paths.map(normPath) }))
-  for (let i = 0; i < free.length; i++)
-    for (let j = i + 1; j < free.length; j++) {
-      if (free[i].wave === free[j].wave && free[i].paths.some((x) => free[j].paths.some((y) => coversPath(x, y)))) clashes.push([free[i].name, free[j].name])
-    }
-
-  // Dependency concurrency: the most units whose [start, end) spans overlap.
-  const edges = rows.flatMap((r) => [[r.start, 1], [r.end, -1]] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1])
-  let parallel = 0, live = 0
-  for (const [, d] of edges) parallel = Math.max(parallel, (live += d))
-
-  const count = (st: string) => included.filter((s) => s.status === st).length
-  const progress: Record<string, number> = {
-    implemented: done.length,
-    proven: done.filter((s) => str(s.fields.proof)).length,
-    ...Object.fromEntries(["partial", "target", "proposed", "deferred", "open-question"].map((st) => [st, count(st)])),
-    total: included.length,
-    open: open.length,
-    ready: rows.filter((r) => !r.held).length,
-    scoped: rows.filter((r) => !r.held && r.paths.length).length,
-    effort: rows.reduce((n, r) => n + r.effort, 0),
-  }
-  return {
-    progress,
-    parallel,
-    critical: Math.max(0, ...rows.map((r) => r.end)),
-    clashes,
-    rows,
-    done: done.map((s) => ({
-      name: s.name, path: s.path, category: s.category, effort: effort(s), proven: !!str(s.fields.proof), updated: str(s.fields.updated),
-    })),
-    warnings,
-  }
-}
-
-/** The open rows by wave, with the wave's effort (its longest unit). */
-function waves(d: PlanData): { wave: number; effort: number; rows: Row[] }[] {
-  const by = new Map<number, Row[]>()
-  for (const r of d.rows) by.set(r.wave, [...(by.get(r.wave) ?? []), r])
-  return [...by].sort((a, b) => a[0] - b[0]).map(([wave, rows]) => ({ wave, effort: Math.max(...rows.map((r) => r.effort)), rows }))
-}
-
-function renderTasks(d: PlanData): string {
-  const p = d.progress
-  const lines = [
-    "---", "title: Plan Tasks", "category: Meta", "status: index", "generated: true", "tags: [meta, plan]",
-    ...["implemented", "proven", "total", "open", "ready", "effort"].map((k) => `${k}: ${p[k] ?? 0}`), "---", "",
-    "# Plan Tasks", "",
-    "Generated by overwatch (`vault_plan`). Do not edit; change the specs instead. Waves are dependency depth, not days. Effort is in friction units.", "",
-    `**${p.implemented} / ${p.total} implemented** · ${p.proven} with proof · ${p.open} open · ${p.effort}u remaining · ${p.ready} ready · ${d.parallel} dependency concurrency · ${d.critical}u critical chain`,
-  ]
-  for (const w of waves(d)) {
-    lines.push("", `## Wave ${w.wave}`, "", `${w.rows.length} tasks · ${w.effort}u`, "")
-    for (const r of w.rows)
-      lines.push(`- [${r.owner ? "/" : " "}] ${r.mark ? r.mark + " " : ""}[[${r.name}]] · ${r.effort}u #plan/${r.category || "none"}${r.after.length ? ` · after ${r.after.join(", ")}` : ""}${r.owner ? ` %% ${r.owner} %%` : ""}${r.held ? ` %% held: ${r.held} %%` : ""}`)
-  }
-  lines.push("", "## Done", "")
-  for (const x of d.done) lines.push(`- [x] [[${x.name}]]${x.proven ? "" : " · no proof"}`)
-  if (d.warnings.length) lines.push("", "## Warnings", "", ...d.warnings.map((w) => `- ${w}`))
-  return lines.join("\n") + "\n"
-}
-
+// The wave plan and its projections live in ./wave.ts; re-exported so vault consumers keep one import.
+export { claimStale, computePlan, planReport, progressLine } from "./wave.ts"
+export type { PlanData, Row } from "./wave.ts"
 export async function sha256(text: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("")
@@ -398,21 +145,6 @@ export async function vaultPlan(io: Io): Promise<string> {
   const { data, wrote } = await writePlan(io)
   return planReport(data, wrote)
 }
-
-/** The one progress line every vault view prints. */
-const progressLine = (d: PlanData) => `${d.progress.implemented}/${d.progress.total} implemented (${d.progress.proven} with proof) · ${d.progress.open} open · ${d.progress.ready} ready · ${d.parallel} parallel · ${d.critical}u critical`
-
-function planReport(d: PlanData, wrote: string[] = []): string {
-  const out = [`${progressLine(d)}${wrote.length ? ` · wrote ${wrote.join(", ")}` : ""}`]
-  for (const w of d.warnings) out.push(`warning: ${w}`)
-  for (const w of waves(d)) {
-    out.push(`wave ${w.wave} · ${w.rows.length} units · ${w.effort}u`)
-    for (const r of w.rows)
-      out.push(`  ${r.mark ? r.mark + " " : ""}${r.name} (${r.effort}u, ${r.open} open item(s))${r.held ? ` [${r.held}${r.stale ? ", stale claim" : ""}]` : " [start now]"}${r.after.length ? ` after ${r.after.join(", ")}` : ""}`)
-  }
-  return out.join("\n")
-}
-
 // --- scaffold and unit notes ---
 
 async function copyTree(io: Io, from: string, to: string): Promise<string[]> {
@@ -441,7 +173,6 @@ export async function vaultInit(io: Io): Promise<string> {
     : `vault at ${root} is complete; nothing added`
 }
 
-export const BAD_NAME = /[\\/:*?"<>|#^[\]]/
 
 function findSpec(io: Io, specs: Spec[], name: string): Spec | string {
   const hit = specs.find((s) => s.name === name) ?? specs.find((s) => s.name.toLowerCase() === name.toLowerCase())
@@ -451,23 +182,20 @@ function findSpec(io: Io, specs: Spec[], name: string): Spec | string {
 
 export async function unitNew(io: Io, e: { title?: unknown; category?: unknown; summary?: unknown; tasks?: unknown; depends?: unknown; checks?: unknown; paths?: unknown }): Promise<string> {
   const title = trimmed(e.title)
-  if (!title || BAD_NAME.test(title) || /^[._]/.test(title)) throw new Error(`unit_new needs a title usable as a note name (none of \\ / : * ? " < > | # ^ [ ]; not starting with . or _)`)
+  if (badName(title)) throw new Error(`unit_new needs a title usable as a note name (${NAME_RULE})`)
   const category = trimmed(e.category)
   if (!CATEGORIES.includes(category)) throw new Error(`category must be one of ${CATEGORIES.join(", ")}`)
-  const list = (v: unknown) => (Array.isArray(v) ? v : []).map(trimmed).filter(Boolean)
-  const tasks = list(e.tasks)
+  const tasks = toList(e.tasks)
   if (!tasks.length) throw new Error("unit_new needs tasks: one test-sized Plan item each")
   if (!(await io.exists(vaultPath(io, TEMPLATE)))) await copyScaffold(io)
   const file = vaultPath(io, SPECS, `${title}.md`)
-  if (await io.exists(file)) throw new Error(`${SPECS}/${title}.md exists; edit it instead`)
   const template = (await io.read(vaultPath(io, TEMPLATE))) ?? ""
-  const date = new Date().toISOString().slice(0, 10)
-  let text = template.replaceAll("{{title}}", title).replaceAll("{{date}}", date)
-  const depends = list(e.depends), checks = list(e.checks), paths = list(e.paths)
-  text = patchFrontmatter(text, { category, depends: depends.length ? depends : null, checks: checks.length ? checks : null, paths: paths.length ? paths : null })
-  if (trimmed(e.summary)) text = replaceSection(text, "Summary", trimmed(e.summary))
-  text = replaceSection(text, "Plan", tasks.map((t) => `- [ ] ${t}`).join("\n"))
-  await io.write(file, text)
+  const depends = toList(e.depends), checks = toList(e.checks), paths = toList(e.paths)
+  await writeNote(io, {
+    template, file, title, exists: `${SPECS}/${title}.md`,
+    fields: { category, depends: depends.length ? depends : null, checks: checks.length ? checks : null, paths: paths.length ? paths : null },
+    sections: { Summary: trimmed(e.summary), Plan: tasks.map((t) => `- [ ] ${t}`).join("\n") },
+  })
   const { data } = await writePlan(io)
   const row = data.rows.find((r) => r.name === title)
   return `Added ${SPECS}/${title}.md (${tasks.length} Plan item(s), wave ${row?.wave ?? "?"}${row?.held ? `, held: ${row.held}` : ""}). unit_load loads it into the session plan.`
@@ -483,7 +211,7 @@ export function closeNote(text: string, c: Closeout): { text: string; status: st
   let next = tickItems(text, new Set(c.done))
   const status = planItems(next).some((i) => !i.done) ? "partial" : "implemented"
   const proof = `${c.commit} guards: ${c.guards.join("; ") || "none"}; limitations: ${c.limitations || "none"}`
-  next = patchFrontmatter(next, { status, proof, evidence: c.run, updated: new Date().toISOString().slice(0, 10), owner: null, since: null })
+  next = patchFrontmatter(next, { status, proof, evidence: c.run, updated: today(), owner: null, since: null })
   if (c.summary) next = replaceSection(next, "Status", c.summary)
   return { text: next, status }
 }
@@ -572,10 +300,8 @@ const stateSpec = (root: string, io: Io) => {
 }
 
 /** The spec's open Plan item texts, in note order. */
-const openItems = (s: Spec) => s.items.filter((i) => !i.done).map((i) => i.text)
 
 /** The first open Plan item text that appears twice, or undefined. */
-const repeatedItem = (open: string[]) => open.find((t, i, all) => all.indexOf(t) !== i)
 
 /** unit_load: read the vault once, then load the named unit. */
 export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown; owner?: unknown }): Promise<Result> {

@@ -1,4 +1,5 @@
 import { test, expect } from "claude-code/testing"
+import { session } from "./test-session.ts"
 import { COMMAND_TOOLS } from "./commands.ts"
 
 test("tools: flat, no action switch, required fields named in the schema", () => {
@@ -10,7 +11,7 @@ test("tools: flat, no action switch, required fields named in the schema", () =>
   }
 })
 
-test("session: a command tool runs in-process; a refusal is an error result", async ($, on) => {
+session("session: a command tool runs in-process; a refusal is an error result", async ($, on) => {
   on("session.cwd" as any, async () => ({ value: "/nonexistent-overwatch-test" }) as any)
   const runs: any[] = []
   on("process.run", async (_: any, e: any) => (runs.push(e), { value: { exitCode: 0, stdout: "", stderr: "" } }) as any)
@@ -23,7 +24,7 @@ test("session: a command tool runs in-process; a refusal is an error result", as
   expect((bad as any).isError).toBe(true)
 })
 
-test("surface: built once from the active tools, added to the prompt, reused after", async ($, on) => {
+session("surface: built once from the active tools, added to the prompt, reused after", async ($, on) => {
   on("tool.list", async () => ({ value: [{ name: "Agent", description: "", mcp: false }] }) as any)
   on("prompt.compose", async () => ({ sections: [{ id: "intro", text: "x", scope: "shared" }] }) as any)
   const reads: string[] = []

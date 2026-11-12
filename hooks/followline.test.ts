@@ -1,4 +1,5 @@
 import { test, expect } from "claude-code/testing"
+import { session } from "./test-session.ts"
 import { face, gauge, line, slotOrder } from "./followline.ts"
 
 test("gauge: percent centred across fill and trough, base16 slots only", () => {
@@ -36,7 +37,7 @@ const producer = {
   },
 }
 
-test("a producer's put draws the line above the prompt", { plugins: [producer] }, async ($, on) => {
+session("a producer's put draws the line above the prompt", { plugins: [producer] }, async ($, on) => {
   on("turn.complete", async () => ({ text: "" }))
   on("clock.after", async () => ({ value: { cancel() {} } }) as any)
   on("session.usage", async () => ({ value: { context: { tokens: 0 } } }) as any)

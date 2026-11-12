@@ -8,7 +8,7 @@
  * plan; key by session once every host passes a session id to its MCP servers.
  */
 import type { Plan, StopBook } from "../types/index.d.ts"
-import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, checkReport, detail, gateReason, openLine, pickChecks, reminder, runCheck, stopVerdict, withDecided } from "../hooks/plan.ts"
+import { CLEAN, EDIT_TOOLS as CLAUDE_EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, detail, gateReason, openLine, reminder, runCheck, runPicked, stopVerdict, withDecided } from "../hooks/plan.ts"
 import { openGuards } from "../hooks/guards.ts"
 import { note } from "../hooks/incidents.ts"
 import { learned } from "../hooks/surface.ts"
@@ -17,7 +17,8 @@ import { COMMAND_TOOLS } from "../hooks/commands.ts"
 import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
 import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
 import { VAULT_TOOLS } from "../hooks/vault.ts"
-const ALL_PLAN_TOOLS = { ...PLAN_TOOLS, ...VAULT_TOOLS }
+import { CHANGELOG_TOOLS } from "../hooks/changelog.ts"
+const ALL_PLAN_TOOLS = { ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS }
 
 export { schemaOf }
 
@@ -73,10 +74,9 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
     if (name === "plan_show") return withState(io, root, (s) => [s, { text: plain(detail(s.plan, CLEAN)) }])
     if (name === "guard_check") {
       return withState(io, root, async (s) => {
-        const pick = pickChecks(s.plan, args.guard_id, args.tier)
-        if (typeof pick === "string") return [s, { text: pick, error: true }]
-        const decided = await Promise.all(pick.map((g) => runCheck(io.run, g, root)))
-        return [{ ...s, plan: withDecided(s.plan, decided) }, { text: checkReport(decided) }]
+        const out = await runPicked(s.plan, args.guard_id, args.tier, io.run, root)
+        if (typeof out === "string") return [s, { text: out, error: true }]
+        return [{ ...s, plan: withDecided(s.plan, out.decided) }, { text: out.report }]
       })
     }
     const t = ALL_PLAN_TOOLS[name]

@@ -7,7 +7,8 @@
 // Ported from pearde's board flow (scan, next, brief, refine, review, collect).
 import { type Io } from "./io.ts"
 import { checkReport, runChecks } from "./plan.ts"
-import { BAD_NAME, frontmatter, gitState, patchFrontmatter, readVault, replaceSection, section, sha256, specsOf, str, strings, vaultInit, vaultPath, vaultPlan, writePlan, type Fields, type Spec } from "./vault.ts"
+import { badName, frontmatter, NAME_RULE, patchFrontmatter, replaceSection, section, str, strings, toList, today, writeNote, type Fields } from "./note.ts"
+import { gitState, readVault, sha256, specsOf, vaultInit, vaultPath, vaultPlan, writePlan, type Spec } from "./vault.ts"
 
 export const PRDS = "02 PRDs"
 export const PRD_TEMPLATE = "00 Meta/PRD Template.md"
@@ -52,7 +53,6 @@ export type Prd = {
 
 /** One note line from user text: whitespace collapsed, so no value can split a section. */
 const nonEmpty = (v: unknown) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "")
-const list = (v: unknown) => strings(Array.isArray(v) ? v : v == null || v === "" ? [] : [v]).map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean)
 
 /** Template guidance lives in HTML comments; nothing inside one is a box, a unit link or a round. */
 const comments = (t: string) => t.replace(/<!--[\s\S]*?-->/g, "")
@@ -265,31 +265,27 @@ type Note = { title: string; parent?: string; summary?: string; priority?: unkno
 async function addNote(io: Io, e: Note): Promise<string> {
   if (!(await io.exists(vaultPath(io, PRD_TEMPLATE)))) await vaultInit(io)
   const file = vaultPath(io, PRDS, `${e.title}.md`)
-  if (await io.exists(file)) throw new Error(`${PRDS}/${e.title}.md exists; edit it instead`)
   const template = (await io.read(vaultPath(io, PRD_TEMPLATE))) ?? ""
-  const date = new Date().toISOString().slice(0, 10)
   const priority = Number(e.priority)
-  const changes: Fields = {}
-  if (e.priority !== undefined && Number.isFinite(priority)) changes.priority = priority
-  if (e.parent) changes.parent = e.parent
-  if (e.needs?.length) changes.needs = e.needs
-  if (e.footprint?.length) changes.footprint = e.footprint
-  if (e.checks?.length) changes.checks = e.checks
-  let text = template.replaceAll("{{title}}", e.title).replaceAll("{{date}}", date)
-  if (Object.keys(changes).length) text = patchFrontmatter(text, changes)
-  if (e.summary) text = replaceSection(text, "Summary", e.summary)
-  if (e.acceptance?.length) text = replaceSection(text, "Acceptance", e.acceptance.map((a) => `- [ ] ${a}`).join("\n"))
-  await io.write(file, text)
+  const fields: Fields = {}
+  if (e.priority !== undefined && Number.isFinite(priority)) fields.priority = priority
+  if (e.parent) fields.parent = e.parent
+  if (e.needs?.length) fields.needs = e.needs
+  if (e.footprint?.length) fields.footprint = e.footprint
+  if (e.checks?.length) fields.checks = e.checks
+  await writeNote(io, {
+    template, file, title: e.title, exists: `${PRDS}/${e.title}.md`, fields,
+    sections: { Summary: e.summary, Acceptance: e.acceptance?.length ? e.acceptance.map((a) => `- [ ] ${a}`).join("\n") : undefined },
+  })
   return `${PRDS}/${e.title}.md`
 }
 
-const nameProblem = (title: string) => !title || BAD_NAME.test(title) || /^[._]/.test(title)
 
 /** Adds a PRD note from the template; the vault (and its template) is created first when missing. */
 export async function prdAdd(io: Io, e: { title?: unknown; summary?: unknown; acceptance?: unknown; needs?: unknown; footprint?: unknown; checks?: unknown; parent?: unknown; priority?: unknown }): Promise<string> {
   const title = nonEmpty(e.title)
-  if (nameProblem(title)) throw new Error(`prd_add needs a title usable as a note name (none of ${`\\ / : * ? " < > | # ^ [ ]`}; not starting with . or _)`)
-  const name = nonEmpty(e.parent), needsIn = list(e.needs)
+  if (badName(title)) throw new Error(`prd_add needs a title usable as a note name (${NAME_RULE})`)
+  const name = nonEmpty(e.parent), needsIn = toList(e.needs, true)
   const b = await board(io)
   // The vault is hand-editable, so creation is checked by name rather than trusting the lookup.
   const twin = at(b.all, title)
@@ -300,7 +296,7 @@ export async function prdAdd(io: Io, e: { title?: unknown; summary?: unknown; ac
     if (typeof found === "string") throw new Error(found)
     parent = found.name
   }
-  const acceptance = list(e.acceptance), footprint = list(e.footprint), checks = list(e.checks)
+  const acceptance = toList(e.acceptance, true), footprint = toList(e.footprint, true), checks = toList(e.checks, true)
   // A need that names no PRD is kept as written: it holds the PRD until that note exists.
   const needs = needsIn.map((n) => { const found = pick(b, n); return typeof found === "string" ? n : found.name })
   await addNote(io, { title, parent, summary: nonEmpty(e.summary), priority: e.priority, acceptance, needs, footprint, checks })
@@ -316,16 +312,16 @@ export async function prdRefine(io: Io, e: { prd?: unknown; children?: unknown; 
   const found = pick(b, name)
   if (typeof found === "string") throw new Error(found)
   if (found.status !== "open" && found.status !== "question") throw new Error(`prd_refine needs an open or question PRD; "${found.name}" is ${found.status}`)
-  const children = list(e.children)
+  const children = toList(e.children, true)
   if (!children.length) throw new Error("prd_refine needs children: one title per independent outcome")
-  for (const c of children) if (nameProblem(c)) throw new Error(`"${c}" is not usable as a note name`)
+  for (const c of children) if (badName(c)) throw new Error(`"${c}" is not usable as a note name`)
   const taken = new Set(b.prds.map((p) => p.name.toLowerCase()))
   const seen = new Set<string>()
   const clash = children.filter((c) => { const k = c.toLowerCase(); const hit = taken.has(k) || seen.has(k); seen.add(k); return hit })
   if (clash.length) throw new Error(`already in ${PRDS}: ${clash.join(", ")}`)
   const summary = nonEmpty(e.summary)
   const added = await Promise.all(children.map(async (c) => `Added ${await addNote(io, { title: c, parent: found.name, summary })} (parent ${found.name})`))
-  await io.write(vaultPath(io, found.path), patchFrontmatter(found.text, { status: "refine", updated: new Date().toISOString().slice(0, 10) }))
+  await io.write(vaultPath(io, found.path), patchFrontmatter(found.text, { status: "refine", updated: today() }))
   await writePlan(io)
   return `Refined "${found.name}" into ${children.length} child PRD(s): ${children.join(", ")} (parent set to refine).\n${added.join("\n")}`
 }
@@ -341,7 +337,7 @@ export async function prdSet(io: Io, e: { prd?: unknown; state?: unknown; reason
   if (state === "specced" && !found.specs.length) throw new Error(`"${found.name}" has no linked units; write them in 01 Specs and link them under "## Specs" first`)
   const reason = nonEmpty(e.reason)
   if (state === "blocked" && !reason) throw new Error("blocked needs a reason: what holds it and what would unblock it")
-  const date = new Date().toISOString().slice(0, 10)
+  const date = today()
   let text = patchFrontmatter(found.text, { status: state, blocked: state === "blocked" ? reason : null, updated: date })
   const reopened = startsAttempt(state, found.status)
   if (reopened) {
@@ -381,7 +377,7 @@ export async function prdReview(io: Io, e: { prd?: unknown; score?: unknown; rev
   if (used >= GATE_ROUNDS) throw new Error(`"${found.name}" used all ${GATE_ROUNDS} review rounds since it was opened; the allowance is exhausted`)
   const digest = await contractDigest(io, found, b.specs)
   const round = found.rounds.length + 1
-  const date = new Date().toISOString().slice(0, 10)
+  const date = today()
   const findings = nonEmpty(e.findings)
   const blocked = Math.round(score) < GATE_SCORE
   const spent = blocked && used + 1 >= GATE_ROUNDS
@@ -433,7 +429,7 @@ export async function prdCollect(io: Io, e: { prd?: unknown; summary?: unknown }
   const git = await gitState(io)
   if (typeof git === "string") throw new Error(git)
   if (git.dirty.length) throw new Error(`prd_collect: commit the work first; uncommitted: ${git.dirty.slice(0, 8).join(", ")}${git.dirty.length > 8 ? " …" : ""}`)
-  const date = new Date().toISOString().slice(0, 10)
+  const date = today()
   const summary = nonEmpty(e.summary) || `Collected at ${git.commit.slice(0, 12)} with ${linked.length} implemented unit(s).`
   const proof = `${git.commit} · ${g.line} · ${decided.length} check(s) exit 0`
   const receipt = [

@@ -2,6 +2,7 @@
 import { clean, disk } from "../hooks/gardener.ts"
 import { hygiene } from "../hooks/hygiene.ts"
 import { vaultInit, vaultPlan } from "../hooks/vault.ts"
+import { changelogCommand } from "../hooks/changelog.ts"
 import { prdAdd, prdBrief, prdCollect, prdNext, prdRefine, prdReview, prdScan, prdSet } from "../hooks/prd.ts"
 import { loadout } from "../hooks/loadout.ts"
 import { launch, launched } from "../hooks/launch.ts"
@@ -25,6 +26,8 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch disk-clean [--apply] <path…>  delete surveyed leftovers; a dry run without --apply
   overwatch launch [--wait] <cmd>  run a command in the background; --wait blocks instead
   overwatch launched [id]          background runs, or one run with its log tail
+  overwatch changelog [what changed] [--version v] [--file path] [--date YYYY-MM-DD] [--lts] [--backfill]
+                                   add a versioned changelog entry, or rebuild it from git history
   overwatch vault init|plan        create the spec vault (.overwatch/vault) / compute and write the wave plan
   overwatch prd scan|next [n]      PRDs and why each is held / the ready ones
   overwatch prd add <title> [summary]             write a PRD note
@@ -50,6 +53,7 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
       if (args[0] === "init") return ok(await vaultInit(io))
       if (args[0] === "plan") return ok(await vaultPlan(io))
       return { text: "usage: overwatch vault init|plan", code: 2 }
+    case "changelog": return changelogCommand(io, args)
     case "checks": return ok(await checklist(io, args[0] || undefined))
     case "mistake": return ok(await mistake(io, rest))
     case "report": return ok(await report(io))

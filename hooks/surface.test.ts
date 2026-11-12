@@ -1,4 +1,5 @@
 import { test, expect } from "claude-code/testing"
+import { session } from "./test-session.ts"
 import { memIo, type Io } from "./io.ts"
 import { asBlock, discover, draw, evaluation, firedBy, index, load, rate, report, save, shellBinary, surface, tally } from "./surface.ts"
 import { EVALUATE_AFTER_CALLS } from "./commands.ts"
@@ -90,7 +91,7 @@ test("surface: the block without the question, the drawn tool returned with it; 
   expect(evaluation({ name: "Read", uses: 3 })).toContain('name: "Read"')
 })
 
-test("session: rating held back while the session is unused, asked once after real work", async ($, on) => {
+session("session: rating held back while the session is unused, asked once after real work", async ($, on) => {
   on("tool.list", async () => ({ value: [{ name: "Agent", description: "", mcp: false }] }) as any)
   on("prompt.compose", async () => ({ sections: [] }) as any)
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))

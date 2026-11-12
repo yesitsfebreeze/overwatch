@@ -1,4 +1,5 @@
 import { test, expect } from "claude-code/testing"
+import { session } from "./test-session.ts"
 import { catalog, declareCatalog, guardCall, hash, misfit, TOOL_PREFIX } from "./catalog.ts"
 
 const V1 = { rate: { description: "Rate a tool.", properties: { name: { type: "string" }, verdict: { type: "string", enum: ["useful", "dead"] } }, required: ["name", "verdict"] } }
@@ -73,7 +74,7 @@ test("reload in a session: re-declaring a changed catalog re-registers every too
   expect(stale.deny).toContain("stale or invalid call")
 })
 
-test("session: an overwatch tool result carries the stamp; a stale call never reaches the tool", async ($, on) => {
+session("session: an overwatch tool result carries the stamp; a stale call never reaches the tool", async ($, on) => {
   on("session.cwd" as any, async () => ({ value: "/nonexistent-overwatch-test" }) as any)
   const ok: any = await $.tool.call({ tool: TOOL_PREFIX + "checks" } as any)
   expect(JSON.stringify(ok.context)).toContain("overwatch tools v")

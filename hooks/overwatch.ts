@@ -7,6 +7,7 @@ import { FULL_PERCENT, fullNotice } from "./gardener.ts"
 import { ignoreHint, sessionIo } from "./io.ts"
 import { PLAN_TOOLS } from "./plan.ts"
 import { VAULT_TOOLS } from "./vault.ts"
+import { CHANGELOG_TOOLS } from "./changelog.ts"
 import { planReminder, register as plan, startPlan } from "./plan-hooks.ts"
 
 // The plugin's one hooks module. Each part (followline, compaction, commands, plan)
@@ -46,7 +47,7 @@ export const register: Register = async (on, options) => {
   diskTold = false
   const full = typeof options.diskFullPercent === "number" ? options.diskFullPercent : FULL_PERCENT
   const compacting = compactionEnabled(options)
-  const cat = catalog({ ...COMMAND_TOOLS, ...PLAN_TOOLS, ...VAULT_TOOLS, ...(compacting ? COMPACTION_TOOLS : {}) })
+  const cat = catalog({ ...COMMAND_TOOLS, ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS, ...(compacting ? COMPACTION_TOOLS : {}) })
   // First: a stale call is refused before any part sees it.
   for (const name of Object.keys(cat.specs)) on("tool.call", { tool: TOOL_PREFIX + name }, ($, e, next) => guardCall(cat, $, e, next))
   // followline before the other parts, so its $.followline.put exists before a part publishes a slot.

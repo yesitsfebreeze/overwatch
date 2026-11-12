@@ -1,4 +1,5 @@
 import { test, expect } from "claude-code/testing"
+import { session } from "./test-session.ts"
 import { memIo } from "./io.ts"
 import { add, incidentReport, lessons, load, note, REPEAT_AT, tallyLine, totals, WINDOW_DAYS, type Incidents } from "./incidents.ts"
 import { learned } from "./surface.ts"
@@ -54,7 +55,7 @@ test("note and learned: a catch lands in the state file; habits and the repo's m
   expect(totals(await load(broken))).toEqual([["stalled", 1]])
 })
 
-test("session: a refused edit, an invalid call and a refused stop are each recorded; the habit rides the next session's prompt", async ($, on) => {
+session("session: a refused edit, an invalid call and a refused stop are each recorded; the habit rides the next session's prompt", async ($, on) => {
   const files: Record<string, string> = {}
   on("session.cwd", async () => ({ value: "/repo" }) as any)
   on("fs.read", async (_: any, e: any) => (norm(e?.path ?? e) in files ? { value: files[norm(e?.path ?? e)] } : { deny: "ENOENT" }) as any)

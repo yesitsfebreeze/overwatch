@@ -2,9 +2,10 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, runCheck, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, detail, edited, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
+import { CHANGELOG_TOOLS } from "./changelog.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
@@ -34,11 +35,10 @@ const record = async ($: any, decided: Guard[]): Promise<Plan> => {
 
 async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: string }> {
   const [s, root] = await Promise.all([read($, PLAN), read($, ROOT)])
-  const pick = pickChecks(s, e.guard_id, e.tier)
-  if (typeof pick === "string") return { deny: pick }
-  const decided = await Promise.all(pick.map((g) => runCheck(engineRun($), g, root || undefined)))
-  await record($, decided)
-  return { result: checkReport(decided) }
+  const out = await runPicked(s, e.guard_id, e.tier, engineRun($), root || undefined)
+  if (typeof out === "string") return { deny: out }
+  await record($, out.decided)
+  return { result: out.report }
 }
 
 async function planShow($: any): Promise<{ result: string }> {
@@ -68,7 +68,7 @@ export async function startPlan($: any, e: any): Promise<void> {
 export const register: Register = (on) => {
   on("tool.call", { tool: tool("guard_check") }, async ($, e: any) => guardCheck($, e))
   on("tool.call", { tool: tool("plan_show") }, async ($) => planShow($))
-  for (const [name, { run, act }] of Object.entries({ ...PLAN_TOOLS, ...VAULT_TOOLS })) {
+  for (const [name, { run, act }] of Object.entries({ ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS })) {
     if (!run && !act) continue
     on("tool.call", { tool: tool(name) }, async ($, e: any) => {
       let out!: Result

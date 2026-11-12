@@ -1,0 +1,7 @@
+#!/usr/bin/env bun
+import { changelogCommand } from "../hooks/changelog.ts"
+import { fromNode } from "./node-io.ts"
+
+const { text, code } = await changelogCommand(fromNode(), process.argv.slice(2))
+if (text) (code ? console.error : console.log)(text)
+process.exit(code)

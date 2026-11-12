@@ -127,6 +127,14 @@ export const pickChecks = (s: Plan, guard_id: unknown, tier?: unknown): Guard[] 
 
 export const checkReport = (decided: Guard[]): string => decided.map((g) => `${g.id}: ${g.met ? "upheld" : `failing (${ran(g)})${tail(g)}`}`).join("\n")
 
+/** guard_check over every host: the picked guards' checks run through `run`, returning the decision or the refusal. */
+export async function runPicked(s: Plan, guard_id: unknown, tier: unknown, run: Runner, cwd?: string): Promise<{ decided: Guard[]; report: string } | string> {
+  const pick = pickChecks(s, guard_id, tier)
+  if (typeof pick === "string") return pick
+  const decided = await Promise.all(pick.map((g) => runCheck(run, g, cwd)))
+  return { decided, report: checkReport(decided) }
+}
+
 /** The open items of a refused stop in one line, for the incident ledger. */
 export const openLine = (reason: string): string => reason.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2)).join("; ")
 
