@@ -153,12 +153,12 @@ export const detail = (s: Plan, v: Verify): string =>
   ].join("\n")
 
 /** Exact detail pages. The content revision prevents joining pages from different plans. */
-export function planPage(s: Plan, v: Verify, args: Record<string, unknown> = {}) {
+export function planPage(s: Plan, v: Verify, args: Record<string, unknown> = {}, maxChars = 7800) {
   const text = detail(s, v)
   const id = hash(text)
   if (args.id !== undefined && args.id !== id) throw new Error("plan changed or id is invalid; restart plan_show at offset 0 without id")
   if (typeof args.offset === "number" && args.offset > 0 && args.id === undefined) throw new Error("pass the first page's id when continuing plan_show")
-  return originalPage(text, id, args.offset === undefined ? 0 : args.offset as number, args.limit === undefined ? 6000 : args.limit as number, 7800)
+  return originalPage(text, id, args.offset === undefined ? 0 : args.offset as number, args.limit === undefined ? 6000 : args.limit as number, maxChars)
 }
 
 /** Only previews are abbreviated; identifiers and shell commands are never shortened. */

@@ -1,3 +1,6 @@
+/** Shared live-output setting: finite numeric input, default 8000, minimum 512. */
+export const liveResultBudget = (value: unknown): number => Math.max(512, typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : 8000)
+
 /** Exact string slices; offsets count JavaScript string characters, including UTF-16 code units. */
 export function originalPage(text: string, id: string, offset = 0, limit = 6000, maxChars = 8000) {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > text.length) throw new Error('offset must be an integer within the original');

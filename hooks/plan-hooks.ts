@@ -7,6 +7,7 @@ import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
 import { measured, trackEdit } from "./review.ts"
+import { liveResultBudget } from "./paging.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
@@ -44,9 +45,9 @@ async function guardCheck($: any, e: any): Promise<{ result: string } | { deny: 
   return { result: out.report }
 }
 
-async function planShow($: any, e: any) {
+async function planShow($: any, e: any, maxChars: number) {
   const [s, v] = await Promise.all([read($, PLAN), read($, VERIFY)])
-  try { return { result: planPage(s, v, e) } }
+  try { return { result: planPage(s, v, e, maxChars) } }
   catch (err: any) { return { deny: String(err?.message ?? err) } }
 }
 
@@ -74,7 +75,8 @@ export async function startPlan($: any, e: any): Promise<void> {
 
 export const register: Register = (on, options) => {
   on("tool.call", { tool: tool("guard_check") }, async ($, e: any) => guardCheck($, e))
-  on("tool.call", { tool: tool("plan_show") }, async ($, e: any) => planShow($, e))
+  const pageBudget = Math.min(7800, liveResultBudget(options.liveResultMaxChars) - 16)
+  on("tool.call", { tool: tool("plan_show") }, async ($, e: any) => planShow($, e, pageBudget))
   for (const [name, { run, act }] of Object.entries({ ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS })) {
     if (!run && !act) continue
     on("tool.call", { tool: tool(name) }, async ($, e: any) => {

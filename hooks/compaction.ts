@@ -15,7 +15,7 @@ import { TOOL_PREFIX, type ToolSpec } from './catalog.ts';
 import { STATE_DIR } from './io.ts';
 import { today } from './io.ts';
 import { incident } from './incidents.ts';
-import { originalPage } from './paging.ts';
+import { liveResultBudget, originalPage } from './paging.ts';
 
 type Limits = { keepRecentTokens: number; toolResultMaxChars: number; outcomeMaxChars: number; cutUserChars?: number };
 
@@ -325,7 +325,7 @@ function session(options: Record<string, unknown>): Session {
   const n = (k: string, d: number) => (typeof options[k] === 'number' ? (options[k] as number) : d);
   return {
     limits: { keepRecentTokens: n('keepRecentTokens', 6000), toolResultMaxChars: n('toolResultMaxChars', 2000), outcomeMaxChars: n('outcomeMaxChars', 120) },
-    liveMax: Math.max(512, Number.isFinite(n('liveResultMaxChars', 8000)) ? Math.floor(n('liveResultMaxChars', 8000)) : 8000),
+    liveMax: liveResultBudget(options.liveResultMaxChars),
     // After a fold every message is written to the prompt cache again (measured on logged request bodies:
     // Claude Code merges the fold block into the first user message). That pays only once the context is
     // big, so a fold waits for `foldFromTokens`, then runs every `compactEveryTokens` (bench/replay.ts
