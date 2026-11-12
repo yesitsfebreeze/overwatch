@@ -100,7 +100,7 @@ Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and op
 ## Tasks and guards
 
 - **Plan first.** Every prompt reminds the model to add tasks and at least one guard: a yes/no question, decided by a shell `check` (exit 0 = upheld) or, without one, judged by Jev. The edit tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`, git-fs `write`/`edit`) are refused until both exist.
-- **Stop.** On Claude Code, refused while a task is open, a guard is not upheld, or the review pass is due: 10+ changed lines without `/simplify`, 50+ without `/code-review` before it. A whole-file write or replace_all counts as 10+. Edits during the pass do not reopen it; new work does, sized by the lines changed since each skill last ran.
+- **Stop.** On Claude Code, refused while a task is open, a guard is not upheld, or the review pass is due: 10+ changed lines without `/simplify`, 50+ without `/code-review` before it. Counts use actual net file differences, including whole-file writes and replace_all. Failed calls without changes add nothing; unmeasurable changes conservatively require both passes. Edits during the pass do not reopen it; new work does, sized by the lines changed since each skill last ran.
 - **No loops.** Three refusals with nothing changed, or eight refused stops in one prompt (the ninth stop is let through). Background work or a cron pauses the check.
 - **Limits.** Writes through Bash or kern `fs` are not seen. `plan_clear`, `guard_drop` and `task_remove` are open to the model: "only the user drops a guard" is not enforced. Checks run from the session's start directory.
 

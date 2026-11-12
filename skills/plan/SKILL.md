@@ -24,7 +24,7 @@ When the project has a spec vault (`.overwatch/vault`), work that belongs to a u
 
 ## Finishing
 
-Every stop is refused while a task is open, a guard is not upheld, or 10+ lines changed without `/simplify` since (a whole-file write or replace_all counts as 10+). 50+ changed lines need `/code-review` before `/simplify`. Invoke them with the Skill tool once tasks and guards are clear.
+Every stop is refused while a task is open, a guard is not upheld, or 10+ net lines changed without `/simplify` since. Failed and unchanged writes add nothing; unmeasurable changes conservatively require both passes. 50+ net changed lines need `/code-review` before `/simplify`. Invoke them with the Skill tool once tasks and guards are clear.
 
 - Need the user's input: AskUserQuestion, then continue.
 - A guard that cannot be met: say so and why. Only the user drops a guard (`guard_drop {guard_id}`). Never reword or drop one to get past a refusal.

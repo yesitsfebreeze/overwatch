@@ -1,6 +1,6 @@
 import { test, expect } from "claude-code/testing"
 import { session } from "./test-session.ts"
-import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, changedLines, detail, gateReason, edited, newWork, reminder, reviewLine, skillRan as ran, slot, stopVerdict, tool } from "./plan.ts"
+import { CLEAN, EMPTY, FRESH, LARGE_CHANGE_LINES, MAX_STALLS, SMALL_CHANGE_LINES, PLAN_TOOLS, detail, gateReason, edited, newWork, reminder, reviewLine, skillRan as ran, slot, stopVerdict, tool } from "./plan.ts"
 import { cannotFail, fitResults, guardId, lastTurn, makeGuard, openGuards, selectResults } from "./guards.ts"
 import type { Guard, Plan } from "../types/index.d.ts"
 
@@ -144,27 +144,6 @@ test("verify: a small change needs no review pass", () => {
   expect(held(small, P([OPEN], [TESTS])).verdict.kind).toBe("block")
 })
 
-test("changedLines: replaced or new text, summed over edits and items", () => {
-  expect(changedLines({ old_string: "a\nb\nc", new_string: "x\n" })).toBe(3)
-  expect(changedLines({ old_string: "a\nb", new_string: "x" })).toBe(2)
-  expect(changedLines({ edits: [{ old_string: "a", new_string: "b\nc" }, { oldText: "q", newText: "r" }] })).toBe(3)
-  expect(changedLines({ items: [{ path: "f", old: "a", new: "b\nc\nd" }, { path: "g", edits: [{ old: "x", new: "y" }] }] })).toBe(4)
-  expect(changedLines({})).toBe(0)
-})
-
-test("changedLines: an unmeasurable call is never a small change", () => {
-  // A whole-file write (Write, git-fs write) hides the replaced text; replace_all hides how often it hits.
-  for (const i of [{ content: "a" }, { path: "f", text: "a\nb" }, { items: [{ path: "f", text: "x" }] }, { old_string: "a", new_string: "b", replace_all: true }])
-    expect(changedLines(i)).toBeGreaterThanOrEqual(SMALL_CHANGE_LINES)
-  expect(changedLines({ content: "x\n".repeat(400) })).toBe(400)
-  // A notebook cell replace or delete hides the old cell; an insert shows everything it adds.
-  expect(changedLines({ notebook_path: "n.ipynb", edit_mode: "replace", new_source: "x = 1" })).toBe(SMALL_CHANGE_LINES)
-  expect(changedLines({ notebook_path: "n.ipynb", edit_mode: "delete" })).toBe(SMALL_CHANGE_LINES)
-  expect(changedLines({ notebook_path: "n.ipynb", edit_mode: "insert", new_source: "x = 1" })).toBe(1)
-  // The floor is per call: five one-line new files are one small change, not five.
-  expect(changedLines({ items: Array.from({ length: 5 }, (_, k) => ({ path: `f${k}`, text: "x" })) })).toBe(SMALL_CHANGE_LINES)
-})
-
 // ── the flat tools ───────────────────────────────────────────────────
 test("tools: one flat tool per change, no action switch, every schema names its required fields", () => {
   const names = Object.keys(PLAN_TOOLS)
@@ -200,7 +179,7 @@ test("verify: new work counts lines only since each skill last ran", () => {
   expect(reasonOf(held(fixed))).not.toContain("run /code-review")
   expect(newWork(ran(fixed, "simplify"))).toMatchObject({ unreviewed: LARGE_CHANGE_LINES, lines: 0 })
   // The fix for a /code-review finding, added as a task: /code-review is not asked for again, /simplify still is.
-  const fix = edited(newWork(ran(big, "review")), 3)
+  const fix = edited(newWork(ran(big, "review")), big.lines + 3, 3)
   expect(fix).toMatchObject({ lines: big.lines + 3, unreviewed: 3 })
   const r = reasonOf(held(fix))
   expect(r).toContain("run /simplify")
@@ -305,6 +284,7 @@ session("session: a git repo that does not ignore .overwatch/ is asked to, once;
 
 // ── end to end ───────────────────────────────────────────────────────
 session("session: gate, plan, large edit, stop refused until checks pass and code-review + simplify ran", async ($, on) => {
+  on("session.cwd", async () => ({ value: "/repo" }) as any)
   on("prompt.submit", async (_: any, e: any) => ({ ...e }))
   on("skill.prompt", async (_: any, e: any) => ({ text: e.text }))
   on("env.get", async () => ({ value: undefined }) as any)
@@ -314,7 +294,14 @@ session("session: gate, plan, large edit, stop refused until checks pass and cod
   // followline stores each gauge in its slots: record the writes
   const slots: any[] = []
   on("state.set" as any, async (_: any, e: any, next: any) => (e?.key === "slots" && slots.push(e.value), next(e)))
-  on("tool.call", async () => ({ result: "written" }) as any)
+  const files: Record<string, string> = {}
+  const fileKey = (p: any) => String(p?.path ?? p).replaceAll("\\", "/").replace(/^[A-Za-z]:/, "")
+  on("fs.read", async (_: any, e: any) => (fileKey(e) in files ? { value: files[fileKey(e)] } : { deny: "ENOENT" }) as any)
+  on("fs.exists", async (_: any, e: any) => ({ value: fileKey(e) in files }) as any)
+  on("tool.call", async (_: any, e: any) => {
+    if (e.file_path && typeof e.content === "string") files[fileKey(e.file_path)] = e.content
+    return { result: "written" } as any
+  })
 
   const denied = (await $.tool.call({ tool: "Write", file_path: "/tmp/x", content: "x" } as any)) as any
   expect(JSON.stringify(denied)).toContain("no tasks and no guards")

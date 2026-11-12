@@ -64,11 +64,15 @@ export type LoadedUnit = { name: string; tasks: Record<number, string>; guards: 
 
 /**
  * Whether changed code went through /code-review and /simplify. The first file edit sets `dirty`
- * and voids a pass run before it. `lines` sums the lines edited since /simplify last ran and
+ * and voids a pass run before it. `lines` counts net lines changed since /simplify last ran and
  * decides whether it is asked for; `unreviewed` is the same for /code-review. A stop that passes
- * clears all of it.
+ * clears all of it. Counts saturate at the largest review threshold.
  */
-export type Verify = { dirty: boolean; review: boolean; simplify: boolean; lines: number; unreviewed: number }
+export type Verify = {
+  dirty: boolean; review: boolean; simplify: boolean; lines: number; unreviewed: number
+  files?: Record<string, { current: string; review: string; simplify: string }>
+  unknown?: { review: boolean; simplify: boolean }
+}
 
 /** What the next stop compares against. */
 export type StopBook = {

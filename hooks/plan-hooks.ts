@@ -2,10 +2,11 @@ import { atom, read, update, type Register } from "claude-code"
 import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
-import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, detail, edited, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
+import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, detail, gateReason, newWork, openLine, reminder, runCheck, runPicked, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
 import { engineRun, sessionIo } from "./io.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
+import { measured, trackEdit } from "./review.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
@@ -80,8 +81,7 @@ export const register: Register = (on) => {
     })
   }
 
-  // The gate: no file change before the plan has tasks and guards. Every edit adds
-  // its lines to the review counts (plan.ts: edited, skillRan, newWork).
+  // The gate precedes execution; review counts come from the actual resulting files.
   for (const tool of EDIT_TOOLS)
     on("tool.call", { tool }, async ($, e, next) => {
       const why = gateReason(await read($, PLAN))
@@ -89,9 +89,8 @@ export const register: Register = (on) => {
         await incident($, "unplanned_edit", String(e.tool))
         return { deny: why }
       }
-      const n = changedLines(e)
-      await update($, VERIFY, (v) => edited(v, n))
-      return next(e)
+      return trackEdit(await sessionIo($), e, () => next(e),
+        (before, after, failed) => update($, VERIFY, (v) => measured(v, before, after, failed)))
     })
 
   // /code-review and /simplify, typed or through the Skill tool.

@@ -26,35 +26,6 @@ export const LARGE_CHANGE_LINES = 50
 /** Under this many changed lines no review pass is due. */
 export const SMALL_CHANGE_LINES = 10
 
-/** Lines in `s`; a trailing newline starts none. No copy: whole-file writes pass through here. */
-const lineCount = (s: unknown) => {
-  if (typeof s !== "string" || !s) return 0
-  let n = 1
-  for (let i = s.indexOf("\n"); i !== -1 && i < s.length - 1; i = s.indexOf("\n", i + 1)) n++
-  return n
-}
-const parts = (i: any): unknown[] => [i?.edits, i?.items].filter(Array.isArray).flat()
-const oldText = (i: any) => i?.old_string ?? i?.old ?? i?.oldText
-const wholeText = (i: any) => i?.content ?? i?.text
-const newText = (i: any) => i?.new_string ?? i?.new ?? i?.newText ?? wholeText(i) ?? i?.new_source
-
-/** The larger of the replaced and the new text, summed over `edits` and git-fs `items`. */
-const shownLines = (i: any): number => {
-  const ps = parts(i)
-  if (ps.length) return ps.reduce((n: number, x) => n + shownLines(x), 0)
-  return Math.max(lineCount(oldText(i)), lineCount(newText(i)))
-}
-
-/** The call replaces text its input does not show: a whole-file write, a replace_all, a notebook cell replace or delete. */
-const hidesReplaced = (i: any): boolean =>
-  parts(i).some(hidesReplaced) ||
-  i?.replace_all === true ||
-  (oldText(i) === undefined && wholeText(i) !== undefined) ||
-  (i?.notebook_path !== undefined && i?.edit_mode !== "insert")
-
-/** Lines one edit call touches. A call hiding what it replaces counts at least SMALL_CHANGE_LINES, once per call, so it is never exempt as small. */
-export const changedLines = (i: any): number => Math.max(shownLines(i), hidesReplaced(i) ? SMALL_CHANGE_LINES : 0)
-
 const clamp = (p: number) => Math.max(0, Math.min(100, Math.round(p)))
 const openTasks = (s: Plan) => s.tasks.filter((t) => t.status !== "done")
 
@@ -72,14 +43,18 @@ const withTask = (s: Plan, e: any, f: (t: Task, tasks: Task[]) => Result): Resul
 
 /** The review passes still due, each judged by the lines changed since it last ran. */
 export const due = (v: Verify): string[] =>
-  [(v.unreviewed || 0) >= LARGE_CHANGE_LINES && !v.review && "/code-review", (v.lines || 0) >= SMALL_CHANGE_LINES && !v.simplify && "/simplify"].filter((x): x is string => !!x)
+  [((v.unreviewed || 0) >= LARGE_CHANGE_LINES || v.unknown?.review) && !v.review && "/code-review", ((v.lines || 0) >= SMALL_CHANGE_LINES || v.unknown?.simplify) && !v.simplify && "/simplify"].filter((x): x is string => !!x)
 
-/** One edit of `n` lines: the first marks the change dirty and voids an earlier pass; later ones add to both counts and keep it. */
-export const edited = (v: Verify, n: number): Verify =>
-  v.dirty ? { ...v, lines: (v.lines || 0) + n, unreviewed: (v.unreviewed || 0) + n } : { ...CLEAN, dirty: true, lines: n, unreviewed: n }
+/** Replace the measured net totals; a first real edit voids a pass run before it. */
+export const edited = (v: Verify, lines: number, unreviewed = lines): Verify =>
+  ({ ...(v.dirty ? v : CLEAN), dirty: true, lines, unreviewed })
 
-/** A review skill ran: its count restarts at 0, so the fixes it asks for are judged by their own size once new work starts. */
-export const skillRan = (v: Verify, skill: "review" | "simplify"): Verify => ({ ...v, [skill]: true, [skill === "review" ? "unreviewed" : "lines"]: 0 })
+/** Each pass gets its own baseline; fixes during that pass retain its completion flag. */
+export const skillRan = (v: Verify, skill: "review" | "simplify"): Verify => ({
+  ...v, [skill]: true, [skill === "review" ? "unreviewed" : "lines"]: 0,
+  ...(v.files ? { files: Object.fromEntries(Object.entries(v.files).map(([p, f]) => [p, { ...f, [skill]: f.current }])) } : {}),
+  ...(v.unknown ? { unknown: { ...v.unknown, [skill]: false } } : {}),
+})
 
 /** New work ends a review pass: each skill is due again by the lines changed since it last ran. */
 export const newWork = (v: Verify): Verify => ({ ...v, review: false, simplify: false })
@@ -143,7 +118,7 @@ export const reviewLine = (v: Verify): string => {
   if (!v.dirty) return "Review: no file changes since the last passed stop."
   const lines = Math.max(v.lines || 0, v.unreviewed || 0)
   const left = due(v)
-  if (left.length) return `Review: ${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; due once tasks and guards are clear: ${left.join(", then ")}.`
+  if (left.length) return `Review: ${v.unknown?.review || v.unknown?.simplify ? "unmeasured changes; " : ""}${lines} changed line(s)${(v.unreviewed || 0) >= LARGE_CHANGE_LINES ? " (large)" : ""}; due once tasks and guards are clear: ${left.join(", then ")}.`
   if (v.review || v.simplify) return "Review: review pass done."
   if (lines < SMALL_CHANGE_LINES) return `Review: ${lines} changed line(s) (small); no review pass needed.`
   return `Review: ${lines} changed line(s) since the last pass; none due yet.`
