@@ -1,0 +1,10 @@
+{"type":"user","uuid":"u1","sessionId":"s1","message":{"content":"Inspect the file."}}
+{"type":"assistant","uuid":"a1","sessionId":"s1","requestId":"r1","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"source.ts"}}],"usage":{"input_tokens":10,"output_tokens":1,"cache_creation_input_tokens":0}}}
+{"type":"assistant","uuid":"a1","sessionId":"s1","requestId":"r1","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_read","name":"Read","input":{"file_path":"source.ts"}}],"usage":{"input_tokens":10,"output_tokens":3,"cache_creation_input_tokens":0},"stop_reason":"tool_use"}}
+{"type":"user","uuid":"u2","sessionId":"s1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_read","content":"FUTURE_RESULT_SENTINEL"}]}}
+{"type":"assistant","uuid":"w1","sessionId":"s1","agentId":"worker1","isSidechain":true,"requestId":"wr1","message":{"content":"worker answer","usage":{"input_tokens":4,"output_tokens":2}}}
+{"type":"assistant","uuid":"a2","sessionId":"s1","requestId":"r2","message":{"id":"m2","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"test"}}],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+{"type":"user","uuid":"u3","sessionId":"s1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_bash","is_error":true,"content":[{"type":"text","text":"ERROR failed probe"}]}]}}
+{"type":"assistant","uuid":"a3","sessionId":"s1","requestId":"r3","message":{"id":"m3","content":"Finished checking.","stop_reason":"end_turn"}}
+{"type":"user","uuid":"u4","sessionId":"s1","message":{"content":"Continue."}}
+{"type":"assistant","uuid":"a4","sessionId":"s1","requestId":"r4","message":{"id":"m4","content":"Done.","stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":0}}}

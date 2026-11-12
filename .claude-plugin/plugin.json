@@ -89,19 +89,19 @@
     "compactEveryTokens": {
       "type": "number",
       "title": "Context growth between folds",
-      "description": "A fold rewrites the prompt cache once; it runs after the context grew this many tokens since the last fold.",
+      "description": "Growth heuristic: consider a fold after context grows this many tokens. Cache effects and grading usage depend on the host and provider.",
       "default": 20000
     },
     "cacheTtlMinutes": {
       "type": "number",
       "title": "Prompt cache TTL (minutes)",
-      "description": "Idle this long, the prompt cache is cold; a fold then costs no cache rewrite, so one runs.",
+      "description": "Idle heuristic: consider a fold after this interval plus 30 seconds. This does not establish cache expiry or zero grading cost.",
       "default": 60
     },
     "foldFromTokens": {
       "type": "number",
       "title": "Context before the first fold",
-      "description": "A fold makes the next request write every message to the prompt cache again; it only pays on a big context. No fold below this many tokens.",
+      "description": "Minimum context for the growth-triggered fold heuristic. Idle or explicitly requested folds may run earlier; net savings are not guaranteed.",
       "default": 50000
     },
     "diskFullPercent": {

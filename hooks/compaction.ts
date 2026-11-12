@@ -75,12 +75,12 @@ export function minifyDeep(value: unknown, maxChars: number, id?: string): unkno
 }
 
 const safeId = (id: unknown): id is string => typeof id === 'string' && /^[\w.-]{1,160}$/.test(id);
-const hasMedia = (v: any): boolean => !!v && typeof v === 'object' && (
+export const isMediaNode = (v: any): boolean => !!v && typeof v === 'object' && (
   v.isImage === true || /^(?:image|image_url|audio|input_audio|video|document|file|blob)$/.test(v.type ?? '') ||
   (v.type === 'base64' && typeof v.data === 'string') || (typeof v.blob === 'string' && typeof (v.mimeType ?? v.mime_type) === 'string') ||
-  /^(?:image|audio|video)\//.test(v.mimeType ?? v.mime_type ?? '') ||
-  Object.values(v).some(hasMedia)
+  /^(?:image|audio|video)\//.test(v.mimeType ?? v.mime_type ?? '')
 );
+const hasMedia = (v: any): boolean => !!v && typeof v === 'object' && (isMediaNode(v) || Object.values(v).some(hasMedia));
 
 function boundedValue(value: unknown, max: number, id: string, error: boolean): unknown {
   const small = minifyDeep(value, max, id);
@@ -104,10 +104,21 @@ const stripRecap = (text: string) => text.replace(/<recap>[\s\S]*?<\/recap>\s*/g
 const cutBash = (text: string, max: number) =>
   text.replace(/(<bash-std(?:out|err)>)([\s\S]*?)(<\/bash-std(?:out|err)>)/g, (_, a, body, b) => a + cut(body, max) + b);
 
-const size = (m: SessionMessage) => m.text.length
-  + m.toolUses.reduce((k, u) => k + (u.text?.length ?? 0) + JSON.stringify(u.input).length, 0)
-  + (m.toolResults ?? []).reduce((k, r) => k + r.text.length, 0);
-export const chars = (ms: readonly SessionMessage[]) => ms.reduce((n, m) => n + size(m), 0);
+/** Count arrived results once; canonical results supersede the engine's call-side mirrors. */
+export function messageSizes(ms: readonly SessionMessage[]): number[] {
+  const canonical = new Set(ms.flatMap((m) => (m.toolResults ?? []).map((r) => r.tool_use_id)));
+  const seen = new Set<string>();
+  return ms.map((m) => m.text.length + m.toolUses.reduce((n, u) => {
+    const mirrored = !canonical.has(u.tool_use_id) && !seen.has(u.tool_use_id) ? u.text?.length ?? 0 : 0;
+    if (!canonical.has(u.tool_use_id)) seen.add(u.tool_use_id);
+    return n + JSON.stringify(u.input ?? {}).length + mirrored;
+  }, 0) + (m.toolResults ?? []).reduce((n, r) => {
+    if (seen.has(r.tool_use_id)) return n;
+    seen.add(r.tool_use_id);
+    return n + r.text.length;
+  }, 0));
+}
+export const chars = (ms: readonly SessionMessage[]) => messageSizes(ms).reduce((n, size) => n + size, 0);
 
 // Cut point: a message without tool results. Compaction runs between turns, so every call before it
 // has its result before it too, and a long autonomous turn still folds.
@@ -116,7 +127,8 @@ const cutPoint = (m: SessionMessage) => !m.toolResults?.length;
 // Oldest index kept whole: the newest `keepTokens` (chars/4), moved back to a cut point.
 export function keepFrom(messages: readonly SessionMessage[], keepTokens: number): number {
   let i = messages.length, budget = keepTokens;
-  while (i > 0 && budget > 0) budget -= tokens(size(messages[--i]));
+  const sizes = messageSizes(messages);
+  while (i > 0 && budget > 0) budget -= tokens(sizes[--i]);
   while (i > 0 && !cutPoint(messages[i])) i--;
   return i;
 }
@@ -363,10 +375,8 @@ function session(options: Record<string, unknown>): Session {
     limits: { keepRecentTokens: n('keepRecentTokens', 6000), toolResultMaxChars: n('toolResultMaxChars', 2000), outcomeMaxChars: n('outcomeMaxChars', 120) },
     liveMax: liveResultBudget(options.liveResultMaxChars),
     maxIndex: Math.max(0, Number.isFinite(n('maxFrozenIndexChars', 16000)) ? Math.floor(n('maxFrozenIndexChars', 16000)) : 16000),
-    // After a fold every message is written to the prompt cache again (measured on logged request bodies:
-    // Claude Code merges the fold block into the first user message). That pays only once the context is
-    // big, so a fold waits for `foldFromTokens`, then runs every `compactEveryTokens` (bench/replay.ts
-    // sweep: 50k/20k saved most, on every replayed session). A cold cache folds for free.
+    // Growth and idle thresholds are heuristics. Cache behavior depends on the host/provider;
+    // grading has its own usage, so these settings do not imply measured net savings.
     foldFrom: n('foldFromTokens', 50000),
     growthTokens: n('compactEveryTokens', 20000),
     cacheTtlMs: n('cacheTtlMinutes', 60) * 60000,
@@ -389,21 +399,18 @@ let foldInFlight = false;
 const status = (active: Session = c): Status => ({ saved: active.saved, folds: active.folds, lastFold: active.lastFold, jev: active.jev, compacting: active.compacting, failures: active.failures, nextCompactAt: active.lastCompactAt + active.growthTokens });
 
 /** Minifies every tool result before the model reads it and stores the original. Called from the plugin's one unmatched tool.call hook. */
-export async function compactToolCall($: EngineInterface, e: any, next: (e: any) => Promise<any>): Promise<any> {
-  const r = await next(e);
-  if (r.deny !== undefined) return r;
-  if (r.isError && !e.agentId) c.fails.push({ tool: e.tool, text: String(r.text ?? JSON.stringify(r.result)) });
-  if (VERBATIM.has(e.tool) || hasMedia(r) || e.tool === TOOL_PREFIX + 'decompress') return r;
+export function projectToolResult(tool: string, id: unknown, r: any, liveMax = 8000): { response: any; original?: string; savedChars: number } {
+  const unchanged = { response: r, savedChars: 0 };
+  if (r.deny !== undefined || VERBATIM.has(tool) || hasMedia(r) || tool === TOOL_PREFIX + 'decompress') return unchanged;
   try {
-    const id = e.tool_use_id;
-    if (!safeId(id)) return r;
+    if (!safeId(id)) return unchanged;
     const payload: Record<string, unknown> = {};
     if (r.result !== undefined) payload.result = r.result;
     if (typeof r.text === 'string') payload.text = r.text;
     const before = JSON.stringify(payload);
-    if (!Object.keys(payload).length) return r;
-    if (r.result?.next_offset !== undefined && typeof r.result?.total_chars === 'number' && before.length <= c.liveMax) return r;
-    let budget = c.liveMax - 32;
+    if (!Object.keys(payload).length) return unchanged;
+    if (r.result?.next_offset !== undefined && typeof r.result?.total_chars === 'number' && before.length <= liveMax) return unchanged;
+    let budget = liveMax - 32;
     const entries = Object.entries(payload).sort((a, b) => JSON.stringify(a[1]).length - JSON.stringify(b[1]).length);
     const limited: Record<string, unknown> = {};
     entries.forEach(([key, value], i) => {
@@ -411,41 +418,59 @@ export async function compactToolCall($: EngineInterface, e: any, next: (e: any)
       budget -= JSON.stringify(limited[key]).length;
     });
     const k = before.length - JSON.stringify(limited).length;
-    if (k <= 0) return r;
+    if (k <= 0) return unchanged;
     const original = Object.keys(payload).length > 1 ? before : typeof Object.values(payload)[0] === 'string' ? Object.values(payload)[0] as string : JSON.stringify(Object.values(payload)[0]);
-    if (!await keepOriginal($, c.state, id, original)) return r;
-    c.saved += tokens(k);
-    return { ...r, ...limited };
+    return { response: { ...r, ...limited }, original, savedChars: k };
   } catch {
-    return r;
+    return unchanged;
   }
 }
 
-/** After a turn: a failed turn leaves one line in the incident ledger, and a fold runs when it pays (growth or cold cache). Called from the plugin's one turn.complete hook. */
+export async function compactToolCall($: EngineInterface, e: any, next: (e: any) => Promise<any>): Promise<any> {
+  const r = await next(e);
+  if (r.deny !== undefined) return r;
+  if (r.isError && !e.agentId) c.fails.push({ tool: e.tool, text: String(r.text ?? JSON.stringify(r.result)) });
+  const projected = projectToolResult(e.tool, e.tool_use_id, r, c.liveMax);
+  if (projected.original === undefined || !await keepOriginal($, c.state, e.tool_use_id, projected.original)) return r;
+  c.saved += tokens(projected.savedChars);
+  return projected.response;
+}
+
+/** Shared growth/idle heuristic; replay supplies estimates, runtime supplies observed context usage. */
+export const shouldCompact = (now: number, last: number, minimum: number, growth: number, idle = false) => idle || now >= minimum && now - last >= growth;
+
+/** After a turn: record failures and consider a growth/idle fold. Neither trigger implies a free fold. */
 export async function compactTurnEnd($: EngineInterface, e: { agentId?: string }): Promise<void> {
   if (e.agentId) return;
-  if (c.fails.length) {
-    const line = failureLine(c.fails, c.limits.outcomeMaxChars);
-    c.fails = [];
-    c.failures++;
+  const active = c;
+  if (active.fails.length) {
+    const line = failureLine(active.fails, active.limits.outcomeMaxChars);
+    active.fails = [];
+    active.failures++;
     void incident($, 'failed_turn', line);
   }
   const tokensNow = (await $.session.usage()).context.tokens ?? 0;
-  const run = async () => {
-    if (c.compacting) return;
-    c.compacting = true;
-    c.lastFold = 0;
+  if (active !== c) return;
+  const run = async (idle = false) => {
+    if (active !== c || active.compacting) return;
+    let current: number;
+    try { current = (await $.session.usage()).context.tokens ?? 0; } catch { return; }
+    if (active !== c || active.compacting || !shouldCompact(current, active.lastCompactAt, active.foldFrom, active.growthTokens, idle)) return;
+    active.compacting = true;
+    active.lastFold = 0;
     try { await $.session.compact(); } catch { /* headless sessions cannot compact */ } finally {
-      c.compacting = false;
-      c.lastCompactAt = tokensNow - c.lastFold;
-      void publish($, status());
+      active.compacting = false;
+      if (active === c) {
+        active.lastCompactAt = current - active.lastFold;
+        void publish($, status(active));
+      }
     }
   };
-  if (tokensNow >= c.foldFrom && tokensNow - c.lastCompactAt >= c.growthTokens) void run();
-  // Idle past the cache TTL: the next request rewrites the cache anyway, so a fold then costs nothing.
-  c.idle?.cancel();
-  c.idle = $.clock.after(c.cacheTtlMs + 30000, () => { void run(); });
-  await publish($, status());
+  if (shouldCompact(tokensNow, active.lastCompactAt, active.foldFrom, active.growthTokens)) void run();
+  // An idle heuristic, not evidence of the provider's cache state or grading cost.
+  active.idle?.cancel();
+  active.idle = $.clock.after(active.cacheTtlMs + 30000, () => { void run(true); });
+  await publish($, status(active));
 }
 
 /** decompress: the exact original by id. */
@@ -569,6 +594,7 @@ export async function compactHistory($: EngineInterface, e: any, next: (e: any) 
 
 /** Compaction's own hooks. Off (the A/B baseline) it registers nothing; overwatch.ts then skips the two handlers above. */
 export const register: Register = (on, options) => {
+  c.idle?.cancel();
   c = session(options);
   if (!compactionEnabled(options)) return;
 
