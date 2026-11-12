@@ -172,6 +172,15 @@ Without a safe original id or a successful archive write, output stays unchanged
 their JSON escaping and metadata in the bound. Offsets count JavaScript string
 characters (UTF-16 code units); stored JSON and whitespace are returned exactly.
 
+Scheduled folds consolidate older indexes into one `maxFrozenIndexChars` block
+(default 16,000 characters). The first prompt and existing user/assistant summary
+lines stay unchanged; recent tool heads use the remaining space. Full indexes
+(`index-fN`), cumulative paths (`paths-fN`), short messages and tool aliases remain
+available through `decompress`. Fold IDs are reserved on disk and survive reloads.
+If mandatory lines exceed the limit or archival fails, the context is retained
+and no grading request is sent. Arbitrary durable history is not silently dropped
+to force a bound.
+
 ## Layout
 
 | path | role |

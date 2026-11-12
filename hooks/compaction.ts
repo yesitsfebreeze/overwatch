@@ -1,7 +1,7 @@
 // Compaction (once the componion plugin):
 //   live     every tool result is minified before the model reads it; the original stays on disk
-//   rolling  old history folds into an index block appended after the earlier folds. Nothing before it
-//            is rewritten, and every folded message stays reachable by id (decompress, search_context).
+//   rolling  old history and earlier indexes consolidate into one bounded index at each fold.
+//            The first prompt stays exact; folded originals remain reachable by id (decompress).
 //            Jev decides how much of each folded tool result the index keeps. A fold runs in the
 //            background after a turn, once the context grew enough to pay for the one prompt-cache
 //            rewrite it causes, or once the cache has gone cold anyway.
@@ -192,27 +192,67 @@ const mainArg = (u: { input: Record<string, unknown> }) => {
   return typeof v === 'string' ? v : JSON.stringify(i);
 };
 
-// Rolling fold: messages [frozen, tail) become one index block, in order, each by id; the frozen run and the
-// tail (newest `keepTokens`, from a cut point) stay the engine's own objects. Null when nothing is worth folding.
-export function fold(messages: readonly SessionMessage[], keepTokens: number, heads: Heads, n: number): SessionMessage[] | null {
+export function foldBounds(messages: readonly SessionMessage[], keepTokens: number): { from: number; to: number } | null {
   const from = frozenEnd(messages);
   let to = keepFrom(messages, keepTokens);
   // One message holds the whole budget right past the frozen run: fold up to the next cut point instead.
   if (to - from < 2) to = messages.findIndex((m, i) => i > from + 1 && cutPoint(m));
   if (to < 0 || to - from < 2) return null;
+  return { from, to };
+}
+
+/** Preserve durable lines verbatim; older tool heads yield to the aggregate index budget. */
+export function foldIndex(messages: readonly SessionMessage[], { from, to }: { from: number; to: number }, heads: Heads, n: number, maxChars = 16000, priorPaths: string[] = []) {
   const region = messages.slice(from, to);
   const ids = lineIds(region, n);
-  const lines: string[] = [];
+  const entries: { line: string; durable: boolean }[] = [];
+  const paths = { read: new Set<string>(), modified: new Set<string>() };
+  const collect = (text: string) => {
+    let section: 'read' | 'modified' | undefined;
+    for (const line of text.split('\n')) {
+      if (line === '<read-files>') { section = 'read'; continue; }
+      if (line === '<modified-files>') { section = 'modified'; continue; }
+      if (/^<\/(?:read|modified)-files>$/.test(line)) { section = undefined; continue; }
+      if (section) { if (line) paths[section].add(line); continue; }
+      if (!line.trim() || /^\[overwatch fold F\d+:/.test(line) || /^(?:Archived indexes: index-f1 through index-f\d+ \(stored folds\)\.|Paths: decompress id=paths-f\d+)$/.test(line)) continue;
+      entries.push({ line, durable: !/^f\d+\.\d+ \S+ .* \(\d+ chars\)(?:: .*)?$/.test(line) });
+    }
+  };
+  for (const m of messages.slice(1, from)) collect(m.text);
+  for (const paths of priorPaths) collect(paths);
+  const results = new Map(region.flatMap((m) => (m.toolResults ?? []).map((r) => [r.tool_use_id, r] as const)));
   for (const m of region) {
-    if (m.text) lines.push(`${m.role === 'user' ? 'u' : 'a'} ${ids.get(m)}: ${oneLine(stripRecap(m.text), 240)}${m.text.length > 240 ? ` (+${m.text.length - 240} chars)` : ''}`);
+    if (m.text) entries.push({ line: `${m.role === 'user' ? 'u' : 'a'} ${ids.get(m)}: ${oneLine(stripRecap(m.text), 240)}${m.text.length > 240 ? ` (+${m.text.length - 240} chars)` : ''}`, durable: true });
     for (const u of m.toolUses) {
-      const out = u.text ?? '';
+      const out = results.get(u.tool_use_id)?.text ?? u.text ?? '';
       const head = heads.get(u.tool_use_id) ?? HEAD.drop_result;
-      lines.push(`${ids.get(u)} ${u.tool} ${oneLine(mainArg(u), 80)}${u.isError ? ' ERROR' : ''} (${out.length} chars)${head && out ? `: ${oneLine(out, head)}` : ''}`);
+      entries.push({ line: `${ids.get(u)} ${u.tool} ${oneLine(mainArg(u), 80)}${u.isError || results.get(u.tool_use_id)?.isError ? ' ERROR' : ''} (${out.length} chars)${head && out ? `: ${oneLine(out, head)}` : ''}`, durable: false });
     }
   }
-  const text = `${FOLD_TAG} F${n}: ${region.length} earlier messages, oldest first. Full text of any #id or fN.k: mcp__overwatch__decompress; search all: mcp__overwatch__search_context.]\n${lines.join('\n')}\n${fileLists(region)}`;
-  return [...messages.slice(0, from), { role: 'user', text, toolUses: [] }, ...messages.slice(to)];
+  collect(fileLists(region));
+  for (const path of paths.modified) paths.read.delete(path);
+  const pathText = `<read-files>\n${[...paths.read].join('\n')}\n</read-files>\n<modified-files>\n${[...paths.modified].join('\n')}\n</modified-files>`;
+  const header = `${FOLD_TAG} F${n}: consolidated history. Exact originals: mcp__overwatch__decompress id=fN.k.]\nArchived indexes: index-f1 through index-f${n} (stored folds).\n`;
+  const pathRef = `Paths: decompress id=paths-f${n}`;
+  const render = (lines: string[], files: string) => header + lines.join('\n') + '\n' + files;
+  const full = render(entries.map((e) => e.line), pathText);
+  const durable = entries.filter((e) => e.durable).map((e) => e.line);
+  if (render(durable, pathRef).length > maxChars) return { text: null, full, paths: pathText, reason: 'durable fold index exceeds maxFrozenIndexChars; context retained' };
+  const inlinePaths = pathText.length <= maxChars / 4 && render(durable, pathText).length <= maxChars ? pathText : pathRef;
+  let left = maxChars - render(durable, inlinePaths).length;
+  const keep = new Set<number>();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].durable) keep.add(i);
+    else if (entries[i].line.length + 1 <= left) { keep.add(i); left -= entries[i].line.length + 1; }
+  }
+  return { text: render(entries.filter((_, i) => keep.has(i)).map((e) => e.line), inlinePaths), full, paths: pathText };
+}
+
+export function fold(messages: readonly SessionMessage[], keepTokens: number, heads: Heads, n: number, maxChars = 16000): SessionMessage[] | null {
+  const bounds = foldBounds(messages, keepTokens);
+  if (!bounds) return null;
+  const index = foldIndex(messages, bounds, heads, n, maxChars);
+  return index.text === null ? null : [messages[0], { role: 'user', text: index.text, toolUses: [] }, ...messages.slice(bounds.to)];
 }
 
 // One line per failed turn: its tools (up to 8) and the first error, 120 chars.
@@ -316,7 +356,7 @@ export const compactionEnabled = (options: Record<string, unknown>) => options.e
 
 /** This session's settings and counters. Module state, set by `register` (a reload starts it over), so overwatch.ts can call the handlers below from the plugin's one hook per event. */
 type Session = {
-  limits: Limits; liveMax: number; foldFrom: number; growthTokens: number; cacheTtlMs: number; jevOptions: object;
+  limits: Limits; liveMax: number; maxIndex: number; foldFrom: number; growthTokens: number; cacheTtlMs: number; jevOptions: object;
   saved: number; folds: number; failures: number; lastFold: number; jev: string; compacting: boolean; lastCompactAt: number; foldedRestart: boolean;
   idle?: { cancel: () => void }; state: State; grade: { jev: string }; fails: { tool: string; text: string }[];
 };
@@ -326,6 +366,7 @@ function session(options: Record<string, unknown>): Session {
   return {
     limits: { keepRecentTokens: n('keepRecentTokens', 6000), toolResultMaxChars: n('toolResultMaxChars', 2000), outcomeMaxChars: n('outcomeMaxChars', 120) },
     liveMax: liveResultBudget(options.liveResultMaxChars),
+    maxIndex: Math.max(0, Number.isFinite(n('maxFrozenIndexChars', 16000)) ? Math.floor(n('maxFrozenIndexChars', 16000)) : 16000),
     // After a fold every message is written to the prompt cache again (measured on logged request bodies:
     // Claude Code merges the fold block into the first user message). That pays only once the context is
     // big, so a fold waits for `foldFromTokens`, then runs every `compactEveryTokens` (bench/replay.ts
@@ -348,7 +389,8 @@ function session(options: Record<string, unknown>): Session {
 }
 
 let c: Session = session({});
-const status = (): Status => ({ saved: c.saved, folds: c.folds, lastFold: c.lastFold, jev: c.jev, compacting: c.compacting, failures: c.failures, nextCompactAt: c.lastCompactAt + c.growthTokens });
+let foldInFlight = false;
+const status = (active: Session = c): Status => ({ saved: active.saved, folds: active.folds, lastFold: active.lastFold, jev: active.jev, compacting: active.compacting, failures: active.failures, nextCompactAt: active.lastCompactAt + active.growthTokens });
 
 /** Minifies every tool result before the model reads it and stores the original. Called from the plugin's one unmatched tool.call hook. */
 export async function compactToolCall($: EngineInterface, e: any, next: (e: any) => Promise<any>): Promise<any> {
@@ -438,6 +480,97 @@ async function searchContext($: EngineInterface, e: { query?: unknown }) {
   return { result: hits.join('\n') || `nothing matches ${q}` };
 }
 
+/** One fold transaction: reserve its identity, retain every original, then grade and replace. */
+export async function compactHistory($: EngineInterface, e: any, next: (e: any) => Promise<any>): Promise<any> {
+  if (foldInFlight) return { skip: 'fold already in progress' };
+  foldInFlight = true;
+  const active = c;
+  const main = !e.agentId;
+  if (main) { active.foldedRestart = false; active.lastFold = 0; }
+  const skip = async (reason: string) => {
+    const message = reason.slice(0, 180);
+    if (main) {
+      if (active.jev !== message) $.ui.log(`overwatch compaction: ${message}`, { to: 'debug' });
+      active.jev = message;
+      await publish($, status(active));
+    }
+    return { skip: message };
+  };
+  try {
+    const bounds = foldBounds(e.messages, active.limits.keepRecentTokens);
+    if (!bounds) {
+      if (e.trigger === 'plugin') return { skip: 'nothing to fold yet' };
+      const instructions = [e.instructions, SUMMARY_TEMPLATE, fileLists(e.messages)].filter(Boolean).join('\n\n');
+      const r = await next({ ...e, messages: slim(e.messages, active.limits), instructions });
+      if (active !== c) return skip('session changed during fold; context retained');
+      if (r.messages && main) active.saved += Math.max(0, tokens(chars(e.messages) - chars(r.messages)));
+      return r;
+    }
+    const home = await dir($, active.state);
+    const counterPath = `${home}/fold-counter.json`;
+    let highest = 0;
+    if (await $.fs.exists(counterPath)) {
+      highest = JSON.parse(await $.fs.read(counterPath));
+      if (!Number.isSafeInteger(highest) || highest < 0) return skip('invalid fold counter; context retained');
+    }
+    if (await $.fs.exists(home)) for (const entry of await $.fs.list(home)) {
+      const m = /^(?:index-f|paths-f|f)(\d+)(?:\.|$)/.exec(entry.name);
+      if (m) highest = Math.max(highest, Number(m[1]));
+    }
+    const old = e.messages.slice(1, bounds.from) as SessionMessage[];
+    const priorPaths: string[] = [];
+    for (const m of old) {
+      for (const match of m.text.matchAll(/(?:\bF(\d+):|\bf(\d+)\.)/g)) highest = Math.max(highest, Number(match[1] ?? match[2]));
+      for (const match of m.text.matchAll(/^Paths: decompress id=(paths-f\d+)$/gm)) priorPaths.push(await $.fs.read(`${home}/${match[1]}.txt`));
+    }
+    const n = highest + 1;
+    if (!Number.isSafeInteger(n)) return skip('fold id exhausted; context retained');
+    const region = e.messages.slice(bounds.from, bounds.to) as SessionMessage[];
+    const fullHeads = new Map(region.flatMap((m) => m.toolUses.map((u) => [u.tool_use_id, HEAD.keep] as const)));
+    const planned = foldIndex(e.messages, bounds, fullHeads, n, active.maxIndex, priorPaths);
+    if (planned.text === null) return skip(planned.reason!);
+    await $.fs.write(counterPath, JSON.stringify(n));
+    const retain = async (id: string, text: string, ext = 'txt') => {
+      if (!await keepOriginal($, active.state, id, text, ext)) throw new Error('original archive unavailable; context retained');
+    };
+    for (const m of old) {
+      const number = /^\[overwatch fold F(\d+):/.exec(m.text)?.[1];
+      if (!number) throw new Error('unrecognized old index; context retained');
+      await retain(`index-f${number}`, m.text);
+    }
+    const ids = lineIds(region, n);
+    const results = new Map(region.flatMap((m) => (m.toolResults ?? []).map((r) => [r.tool_use_id, r.text] as const)));
+    for (const m of region) {
+      if (m.text) await retain(ids.get(m)!, m.text);
+      for (const u of m.toolUses) {
+        const text = results.get(u.tool_use_id) ?? u.text;
+        if (text === undefined) throw new Error('tool result unavailable; context retained');
+        await retain(u.tool_use_id, text);
+        await retain(ids.get(u)!, u.tool_use_id, 'ref');
+      }
+      for (const r of m.toolResults ?? []) await retain(r.tool_use_id, r.text);
+    }
+    await retain(`index-f${n}`, planned.full);
+    await retain(`paths-f${n}`, planned.paths);
+    if (active !== c) return skip('session changed during fold; context retained');
+    const heads = await jevHeads($, region, active.jevOptions, active.grade);
+    if (active !== c) return skip('session changed during fold; context retained');
+    const index = foldIndex(e.messages, bounds, heads, n, active.maxIndex, priorPaths);
+    if (index.text === null) return skip(index.reason!);
+    const messages = [e.messages[0], { role: 'user', text: index.text, toolUses: [] }, ...e.messages.slice(bounds.to)];
+    if (main) {
+      const saved = Math.max(0, tokens(chars(e.messages) - chars(messages)));
+      active.saved += saved; active.lastFold = saved; active.folds++; active.foldedRestart = true;
+      active.jev = `F${n}: ${region.length} msgs folded · ${active.grade.jev}`;
+      await publish($, status(active));
+    }
+    if (active !== c) return skip('session changed during fold; context retained');
+    return { messages };
+  } catch {
+    return await skip('fold archive unavailable; context retained');
+  } finally { foldInFlight = false; }
+}
+
 /** Compaction's own hooks. Off (the A/B baseline) it registers nothing; overwatch.ts then skips the two handlers above. */
 export const register: Register = (on, options) => {
   c = session(options);
@@ -446,38 +579,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: `${TOOL_PREFIX}decompress` }, async ($, e) => decompress($, e as any));
   on('tool.call', { tool: `${TOOL_PREFIX}search_context` }, async ($, e) => searchContext($, e as any));
 
-  on('session.compact', async ($, e, next) => {
-    const main = !e.agentId;
-    if (main) c.foldedRestart = false;
-    const n = frozenEnd(e.messages);
-    const probe = fold(e.messages, c.limits.keepRecentTokens, new Map(), n);
-    const region = probe ? e.messages.slice(n, e.messages.length - (probe.length - n - 1)) : [];
-    // Originals first: every folded message stays readable by its id.
-    const ids = lineIds(region, n);
-    for (const m of region) {
-      if (m.text.length > 240) void keepOriginal($, c.state, ids.get(m)!, m.text);
-      for (const u of m.toolUses) if (u.text) {
-        void keepOriginal($, c.state, u.tool_use_id, u.text);
-        void keepOriginal($, c.state, ids.get(u)!, u.tool_use_id, 'ref');
-      }
-      for (const r of m.toolResults ?? []) void keepOriginal($, c.state, r.tool_use_id, r.text);
-    }
-    const folded = fold(e.messages, c.limits.keepRecentTokens, await jevHeads($, region, c.jevOptions, c.grade), n);
-    if (folded) {
-      const k = Math.max(0, tokens(chars(e.messages) - chars(folded)));
-      if (main) { c.saved += k; c.lastFold = k; c.folds++; c.foldedRestart = true; c.jev = `F${n}: ${region.length} msgs folded · ${c.grade.jev}`; void publish($, status()); }
-      return { messages: folded };
-    }
-    if (e.trigger === 'plugin') {
-      $.ui.log(`overwatch compaction: no fold: frozen ${n}, of ${e.messages.length}: ${e.messages.map((m) => `${m.role[0]}${m.toolUses.length ? 't' : ''}${m.toolResults?.length ? 'r' : ''}${Math.round(chars([m]) / 400)}`).join(' ')}`, { to: 'debug' });
-      return { skip: 'nothing to fold yet' };
-    }
-    // `/compact` or the engine's threshold with nothing foldable: the built-in summary over a slimmed transcript.
-    const instructions = [e.instructions, SUMMARY_TEMPLATE, fileLists(e.messages)].filter(Boolean).join('\n\n');
-    const r = await next({ ...e, messages: slim(e.messages, c.limits), instructions });
-    if (r.messages && main) c.saved += Math.max(0, tokens(chars(e.messages) - chars(r.messages)));
-    return r;
-  });
+  on('session.compact', async ($, e, next) => compactHistory($, e, next));
 
   // A fold is a compaction, so the engine re-runs every SessionStart hook with source `compact`. The frozen
   // first message still holds what they said at startup, so the re-run would only add a copy (a hook's stdout

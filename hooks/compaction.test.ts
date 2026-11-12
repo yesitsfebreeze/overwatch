@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { session } from './test-session.ts'
-import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads, compactToolCall } from './compaction.ts';
+import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads, compactToolCall, compactHistory, register as configureCompaction } from './compaction.ts';
 import { compact, resolveOptions } from '../jev/compact.ts';
 import { estimateTokens } from '../jev/state.ts';
 import { originalPage } from './paging.ts';
@@ -67,7 +67,7 @@ test('a fold preflights the entire grading budget before any request', async () 
     expect(bodies.reduce((sum, body) => sum + estimateTokens(body), 0)).toBeLessThanOrEqual(36000);
     if (!expected) {
       expect(heads.size).toBe(0);
-      expect(fold(gradingTranscript(count), 6000, heads, 1)).not.toBe(null);
+      expect(fold(gradingTranscript(count), 6000, heads, 1, 64000)).not.toBe(null);
     }
   }
   expect(resolveOptions({ maxRequests: NaN, maxTotalTokens: Infinity }).maxRequests).toBe(2);
@@ -174,22 +174,22 @@ test('rolling fold: index in order, frozen prefix and tail untouched, ids kept',
   // Every index line gets a short fN.k id; a call shows its bare main argument.
   expect(out[1].text).toContain('a f1.0: reading');
   expect(out[1].text).toContain('f1.1 Read /r.ts (10000 chars): xxxx');
-  expect(out[1].text).toContain('f1.2 Edit /m.ts (0 chars)');
+  expect(out[1].text).toContain('f1.2 Edit /m.ts ERROR (500 chars)');
   expect(out[1].text).not.toContain('#a ');
   expect(out[1].text).toContain('<modified-files>\n/m.ts');
   expect(out.slice(2)).toEqual([transcript[5], transcript[6]]);
-  // A second fold appends after the first; the first is never rewritten.
+  // A scheduled fold consolidates indexes without rewriting their durable summaries.
   const grown = [...out, { role: 'assistant', text: 'more', toolUses: [] }, { role: 'user', text: 'next', toolUses: [] }, { role: 'assistant', text: 'ok', toolUses: [] }] as never[];
   expect(frozenEnd(grown)).toBe(2);
   const again = fold(grown, 2, new Map(), 2)!;
-  expect(again[1]).toBe(out[1]);
-  expect(again[2].text).toContain('F2');
+  expect(again[1].text).toContain('F2');
+  expect(again[1].text).toContain('a f1.0: reading');
   expect(fold(again, 2, new Map(), 3)).toBe(null);
   // One message holds the whole budget right past the frozen run: fold up to the next cut point.
   const long = [transcript[0], out[1], { role: 'user', text: 'big', toolUses: [] }, { role: 'assistant', text: 'y'.repeat(40000), toolUses: [] }, { role: 'user', text: 'new', toolUses: [] }] as never[];
   const rolled = fold(long, 500, new Map(), 3)!;
-  expect(rolled.length).toBe(4);
-  expect(rolled[3]).toBe(long[4]);
+  expect(rolled.length).toBe(3);
+  expect(rolled[2]).toBe(long[4]);
 });
 
 test('one long autonomous turn folds, and never splits a call from its result', () => {
@@ -204,6 +204,95 @@ test('one long autonomous turn folds, and never splits a call from its result', 
   // Every result left in the tail answers a call also in the tail.
   const calls = new Set(out.flatMap((m: any) => m.toolUses.map((u: any) => u.tool_use_id)));
   for (const m of out.slice(2) as any[]) for (const r of m.toolResults ?? []) expect(calls.has(r.tool_use_id)).toBe(true);
+});
+
+test('successive folds bound one index while preserving earliest durable lines', () => {
+  const first = { role: 'user', text: 'Never remove the original constraint.', toolUses: [] };
+  let view: any[] = [first, { role: 'user', text: 'Keep the earliest decision.', toolUses: [] }];
+  for (let n = 1; n <= 20; n++) {
+    view.push(...longTurn('').slice(1), { role: 'user', text: `next ${n}`, toolUses: [] });
+    view = fold(view, 2, new Map(), n, 1600)!;
+    expect(view[0]).toBe(first);
+    expect(view.filter((m) => m.text.startsWith(FOLD_TAG)).length).toBe(1);
+    expect(view[1].text.length).toBeLessThanOrEqual(1600);
+    expect(view[1].text).toContain('u f1.0: Keep the earliest decision.');
+  }
+});
+
+test('mandatory durable index overflow preserves the input instead of folding it', () => {
+  const first = { role: 'user', text: 'original', toolUses: [] };
+  const old = { role: 'user', text: FOLD_TAG + ' F1: earlier]\n' + Array.from({ length: 20 }, (_, i) => `u f1.${i}: ${'constraint '.repeat(30)}`).join('\n'), toolUses: [] };
+  const messages = [first, old, ...longTurn('').slice(1), { role: 'user', text: 'next', toolUses: [] }] as never;
+  expect(fold(messages, 2, new Map(), 2, 1600)).toBe(null);
+});
+
+test('fold archives short text and result-only aliases, recovers IDs and fails without losing context', async () => {
+  const files: Record<string, string> = {};
+  let fail = false, requests = 0;
+  let pauseCounter = false, releaseCounter!: () => void, reachedCounter!: () => void;
+  const counterReached = new Promise<void>((resolve) => { reachedCounter = resolve; });
+  const counterReleased = new Promise<void>((resolve) => { releaseCounter = resolve; });
+  const $ = { session: { cwd: async () => '/h', id: async () => 'folds' },
+    fs: { exists: async (p: string) => p in files || Object.keys(files).some((k) => k.startsWith(p + '/')),
+      read: async (p: string) => { if (!(p in files)) throw new Error('missing'); return files[p]; },
+      write: async (p: string, t: string) => { if (pauseCounter && p.endsWith('fold-counter.json')) { pauseCounter = false; reachedCounter(); await counterReleased; } if (fail && !p.endsWith('fold-counter.json')) throw new Error('disk full'); files[p] = t; },
+      list: async (p: string) => Object.keys(files).filter((k) => k.startsWith(p + '/')).map((k) => ({ name: k.slice(p.length + 1) })) },
+    env: { get: async () => 'fake-key' }, settings: { read: async () => ({}) }, ui: { log: () => {} },
+    http: { fetch: async () => { requests++; throw new Error('no network'); } },
+  } as never;
+  const input = (id: string) => [{ role: 'user', text: 'Keep the exact first constraint.', toolUses: [] },
+    { role: 'user', text: 'short durable decision', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool: 'Read', tool_use_id: id, input: { file_path: '/a.ts' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'only in toolResults' }] },
+    { role: 'user', text: 'latest request', toolUses: [] }];
+  const configure = (maxFrozenIndexChars = 16000) => configureCompaction((() => {}) as never, { keepRecentTokens: 2, maxFrozenIndexChars });
+  const next = async () => { throw new Error('must not summarize'); };
+  configure();
+  const first = input('toolu_first');
+  const done = await compactHistory($, { messages: first, trigger: 'manual' }, next);
+  expect(done.messages[0]).toBe(first[0]);
+  expect(files['/h/.overwatch/context/folds/f1.0.txt']).toBe('short durable decision');
+  expect(files['/h/.overwatch/context/folds/f1.1.ref']).toBe('toolu_first');
+  expect(files['/h/.overwatch/context/folds/toolu_first.txt']).toBe('only in toolResults');
+  delete files['/h/.overwatch/context/folds/fold-counter.json'];
+  configure();
+  const recovered = await compactHistory($, { messages: input('toolu_second'), trigger: 'manual' }, next);
+  expect(recovered.messages[1].text).toContain('F2:');
+  expect(files['/h/.overwatch/context/folds/f1.0.txt']).toBe('short durable decision');
+  const previous = { ...done.messages[1], text: done.messages[1].text.replace(/<read-files>[\s\S]*?<\/modified-files>/, 'Paths: decompress id=paths-f1') + '\nArchived indexes: operator decision must remain\nf1.99 custom constraint' };
+  const changed = input('toolu_modified');
+  (changed[2].toolUses[0] as any).tool = 'Edit';
+  const hydrated = await compactHistory($, { messages: [changed[0], previous, ...changed.slice(1)], trigger: 'manual' }, next);
+  expect(files['/h/.overwatch/context/folds/paths-f3.txt']).toBe('<read-files>\n\n</read-files>\n<modified-files>\n/a.ts\n</modified-files>');
+  expect(hydrated.messages[1].text).toContain('Archived indexes: operator decision must remain');
+  expect(hydrated.messages[1].text).toContain('f1.99 custom constraint');
+  expect(requests).toBeGreaterThan(0);
+  requests = 0;
+  fail = true;
+  expect((await compactHistory($, { messages: input('toolu_fail'), trigger: 'manual' }, next)).skip).toContain('context retained');
+  expect(requests).toBe(0);
+  fail = false; configure();
+  expect((await compactHistory($, { messages: input('toolu_retry'), trigger: 'manual' }, next)).messages[1].text).toContain('F5:');
+  requests = 0;
+  fail = false; configure(20);
+  expect((await compactHistory($, { messages: input('toolu_overflow'), trigger: 'manual' }, next)).skip).toContain('durable');
+  expect(requests).toBe(0);
+  configure();
+  pauseCounter = true;
+  requests = 0;
+  const pending = compactHistory($, { messages: input('toolu_delayed'), trigger: 'manual' }, next);
+  await counterReached;
+  configure(20);
+  const concurrent = await compactHistory($, { messages: input('toolu_concurrent'), trigger: 'manual' }, next);
+  releaseCounter();
+  const completed = await pending;
+  expect(concurrent.skip).toBe('fold already in progress');
+  expect(completed.skip).toContain('session changed');
+  expect(requests).toBe(0);
+  expect(files['/h/.overwatch/context/folds/fold-counter.json']).toBe('6');
+  expect((await compactHistory($, { messages: input('toolu_new_session'), trigger: 'manual' }, next)).skip).toContain('durable');
+  configure();
+  expect((await compactHistory($, { messages: input('toolu_after_reload'), trigger: 'manual' }, next)).messages[1].text).toContain('F7:');
 });
 
 test('failure lines and cut ids', () => {
@@ -270,6 +359,13 @@ test('exact pages fit the serialized envelope and reconstruct escaped originals'
 });
 
 session('after a fold the SessionStart re-run adds no second copy; after a summary it does', async ($, on) => {
+  const files: Record<string, string> = {};
+  on('session.cwd', async () => ({ value: '/h' }));
+  on('session.id', async () => ({ value: 'native-fold' }));
+  on('fs.exists', async (_: any, e: any) => ({ value: norm(e.path) in files || Object.keys(files).some((p) => p.startsWith(norm(e.path) + '/')) }));
+  on('fs.read', async (_: any, e: any) => norm(e.path) in files ? { value: files[norm(e.path)] } : { deny: 'missing' });
+  on('fs.write', async (_: any, e: any) => { files[norm(e.path)] = e.text; return { value: undefined }; });
+  on('fs.list', async (_: any, e: any) => ({ value: Object.keys(files).filter((p) => p.startsWith(norm(e.path) + '/')).map((p) => ({ name: p.slice(norm(e.path).length + 1), kind: 'file' })) }));
   on('classic.SessionStart' as never, (async () => ({ additionalContext: ['CAVEMAN MODE ACTIVE'] })) as never);
   on('session.compact' as never, (async () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] })) as never);
   const long = longTurn('work');

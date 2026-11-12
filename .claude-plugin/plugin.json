@@ -80,6 +80,12 @@
       "description": "Newest tokens (chars/4) a fold leaves as they are; the cut moves back to a turn start.",
       "default": 6000
     },
+    "maxFrozenIndexChars": {
+      "type": "number",
+      "title": "Fold: maximum consolidated index characters",
+      "description": "One index keeps durable summary lines and recent tool heads. If mandatory lines cannot fit, folding is skipped and context retained. Originals and full indexes stay archived.",
+      "default": 16000
+    },
     "compactEveryTokens": {
       "type": "number",
       "title": "Context growth between folds",
