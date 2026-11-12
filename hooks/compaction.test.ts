@@ -173,6 +173,31 @@ test('a failed Jev grade names its reason in the status, clipped to 80 chars', a
   expect(out.jev.length).toBe('jev failed: '.length + 80);
 });
 
+test('Jev grades change folded results by original tool id, preserving pinned and fallback heads', async () => {
+  const region = ['p', 'r'].flatMap((char, i) => [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: `toolu_${i}`, tool: 'Read', input: { file_path: `${i}.ts` }, text: char.repeat(500) }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `toolu_${i}`, text: char.repeat(500) }] },
+  ]);
+  const messages = [{ role: 'user', text: 'original request', toolUses: [] }, ...region, { role: 'user', text: 'next request', toolUses: [] }] as never;
+  const grade = async (probability?: number) => jevHeads({
+    env: { get: async () => probability === undefined ? undefined : 'key' },
+    settings: { read: async () => ({}) }, ui: { log: () => {} }, process: { run: async () => ({}) },
+    http: { fetch: async (_: string, init: any) => ({
+      status: 200, ok: true,
+      text: JSON.stringify({ answers: Object.fromEntries(Object.keys(JSON.parse(init.body).questions).map((q) => [q, { noul: probability }])) }),
+    }) },
+  } as never, region as never, { preserveRecentMessages: 0, keepThreshold: 0.6 }, { jev: '' });
+  const kept = fold(messages, 1, await grade(1), 1)![1].text;
+  const dropped = fold(messages, 1, await grade(0), 1)![1].text;
+  const fallback = fold(messages, 1, await grade(), 1)![1].text;
+  expect(kept).toContain('r'.repeat(400));
+  expect(dropped).not.toContain('r'.repeat(2));
+  expect(kept).toContain('p'.repeat(400));
+  expect(dropped).toContain('p'.repeat(400));
+  expect(fallback).toContain('r'.repeat(100));
+  expect(fallback).not.toContain('r'.repeat(101));
+});
+
 test('an answered Jev call appends one dataset line; a failed log write still folds', async () => {
   const region = transcript.slice(0, 3) as never;
   const runs: any[] = [];

@@ -255,7 +255,7 @@ export async function jevHeads($: EngineInterface, region: readonly SessionMessa
       return res;
     } };
     const result = await compact(region as never, asker as never, options);
-    for (const d of result.decisions) heads.set(d.id, HEAD[d.action as keyof typeof HEAD] ?? HEAD.drop_result);
+    for (const d of result.decisions) heads.set(d.tool_use_id, HEAD[d.action as keyof typeof HEAD] ?? HEAD.drop_result);
     out.jev = 'jev';
   } catch (err) {
     const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim();

@@ -99,11 +99,11 @@ export function batchCalls(
 }
 
 export function decideCall(
-  call: Pick<ToolCall, 'id' | 'tool' | 'pinned'>,
+  call: Pick<ToolCall, 'id' | 'tool_use_id' | 'tool' | 'pinned'>,
   answer: CallAnswer,
   options: Pick<ResolvedCompactOptions, 'keepThreshold'>,
 ): CallDecision {
-  const base = { id: call.id, tool: call.tool, ...answer };
+  const base = { id: call.id, tool_use_id: call.tool_use_id, tool: call.tool, ...answer };
   if (call.pinned) return { ...base, action: 'keep', reason: 'pinned' };
   if (answer.keepResult >= options.keepThreshold) {
     return { ...base, action: 'keep', reason: 'kept' };
