@@ -85,11 +85,15 @@ test("state: everything lands in .overwatch/ in the project; a git repo is asked
   const { dir, io } = sandbox()
   expect((await onEvent(io, { kind: "start", cwd: dir })).context).not.toContain(".gitignore") // no repo: nothing to ignore
   Bun.spawnSync(["git", "init", "-q", dir])
-  expect((await onEvent(io, { kind: "start", cwd: dir })).context).toContain("printf '\\n.overwatch/\\n' >> .gitignore")
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).toContain("printf '\\n.overwatch/*\\n!.overwatch/vault/\\n' >> .gitignore")
   await callTool(io, "task_add", { titles: ["a task"] })
   await callTool(io, "mistake", { text: "a lesson" })
   await onEvent(io, { kind: "pre_tool", cwd: dir, tool: "Edit" }) // no guards yet: refused and recorded
   for (const f of ["plan.json", "mistakes.md", "incidents.json"]) expect(existsSync(join(dir, ".overwatch", f))).toBe(true)
   writeFileSync(join(dir, ".gitignore"), "\n.overwatch/\n")
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).not.toContain(".gitignore") // no vault yet: the old line is fine
+  await callTool(io, "vault_init")
+  expect((await onEvent(io, { kind: "start", cwd: dir })).context).toContain("hides the spec vault")
+  writeFileSync(join(dir, ".gitignore"), "\n.overwatch/*\n!.overwatch/vault/\n")
   expect((await onEvent(io, { kind: "start", cwd: dir })).context).not.toContain(".gitignore")
 })

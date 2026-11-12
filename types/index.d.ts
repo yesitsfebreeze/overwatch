@@ -50,7 +50,12 @@ export type Plan = {
   tasks: Task[]
   nextId: number
   guards: Guard[]
+  /** The vault unit unit_load brought in: which tasks are its Plan items, which guards its checks. */
+  unit?: LoadedUnit
 }
+
+/** A spec note's work in the session: task id to Plan item text, and the guards from its `checks`. */
+export type LoadedUnit = { name: string; tasks: Record<number, string>; guards: string[] }
 
 /**
  * Whether changed code went through /code-review and /simplify. The first file edit sets `dirty`

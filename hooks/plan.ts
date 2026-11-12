@@ -1,7 +1,7 @@
 import type { FollowlineSlot, Guard, Plan, StopBook, Task, Verify } from "../types/index.d.ts"
 import { TOOL_PREFIX } from "./catalog.ts"
 import { guardMark, makeGuard } from "./guards.ts"
-import { shellArgv, type Runner } from "./io.ts"
+import { shellArgv, type Io, type Runner } from "./io.ts"
 
 // The plan's pure logic: tools, reminder, gate and stop verdict. No engine import:
 // plan-hooks.ts (Claude Code) and host/core.ts (every other host) run the same code.
@@ -61,7 +61,7 @@ const openTasks = (s: Plan) => s.tasks.filter((t) => t.status !== "done")
 /** What a plan tool's `run` returns. `warn`: a refusal, the plan unchanged. `work`: new work, which ends a review pass. */
 export type Result = { state: Plan; text: string; warn?: boolean; work?: boolean }
 
-const refuse = (s: Plan, text: string): Result => ({ state: s, text, warn: true })
+export const refuse = (s: Plan, text: string): Result => ({ state: s, text, warn: true })
 
 /** Runs `f` on a copy of the task `e.task_id` names, or refuses. `Number`: MCP clients may send `"3"`. */
 const withTask = (s: Plan, e: any, f: (t: Task, tasks: Task[]) => Result): Result => {
@@ -219,11 +219,12 @@ export function stopVerdict(s: Plan, decided: Guard[], v: Verify, book: StopBook
  * One tool: its schema and `run`, its pure change to the plan. guard_check and plan_show have named
  * handlers instead of `run`: the engine only lets `$` reach named functions, not ones read from a record.
  */
-type PlanTool = { description: string; properties?: Record<string, unknown>; required?: string[]; run?: (s: Plan, e: any) => Result }
+/** `run` is pure; `act` also reads and writes the project (the vault), so each host hands it an Io. */
+export type PlanTool = { description: string; properties?: Record<string, unknown>; required?: string[]; run?: (s: Plan, e: any) => Result; act?: (io: Io, s: Plan, e: any) => Promise<Result> }
 
 const TASK_ID = { type: "integer", minimum: 1, description: "The task's number as task_add or plan_show printed it (#3 → 3)." }
 const TASK_TITLE = { type: "string", description: "Short imperative title, e.g. \"split the parser\"." }
-const trimmed = (v: unknown) => (typeof v === "string" ? v.trim() : "")
+export const trimmed = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 
 export const PLAN_TOOLS: Record<string, PlanTool> = {
   task_add: {

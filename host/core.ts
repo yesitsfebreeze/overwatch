@@ -16,6 +16,8 @@ import { fullNotice } from "../hooks/gardener.ts"
 import { COMMAND_TOOLS } from "../hooks/commands.ts"
 import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
 import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
+import { VAULT_TOOLS } from "../hooks/vault.ts"
+const ALL_PLAN_TOOLS = { ...PLAN_TOOLS, ...VAULT_TOOLS }
 
 export { schemaOf }
 
@@ -37,7 +39,7 @@ const isEdit = (tool: string) => EDIT_TOOLS.has(tool.toLowerCase())
 
 /** Every overwatch tool a host can offer: the commands and the plan, by short name. */
 export const TOOLS: Record<string, ToolSpec> = Object.fromEntries(
-  [...Object.entries(COMMAND_TOOLS), ...Object.entries(PLAN_TOOLS)].map(([n, t]) => [n, { description: t.description, properties: t.properties, required: t.required }]),
+  [...Object.entries(COMMAND_TOOLS), ...Object.entries(ALL_PLAN_TOOLS)].map(([n, t]) => [n, { description: t.description, properties: t.properties, required: t.required }]),
 )
 
 /** Text written for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
@@ -77,10 +79,10 @@ export async function callTool(io: Io, name: string, args: Record<string, unknow
         return [{ ...s, plan: withDecided(s.plan, decided) }, { text: checkReport(decided) }]
       })
     }
-    const run = PLAN_TOOLS[name]?.run
-    if (!run) return { text: `unknown overwatch tool: ${name}; there are ${Object.keys(TOOLS).join(", ")}`, error: true }
-    return withState(io, root, (s) => {
-      const r = run(s.plan, args)
+    const t = ALL_PLAN_TOOLS[name]
+    if (!t?.run && !t?.act) return { text: `unknown overwatch tool: ${name}; there are ${Object.keys(TOOLS).join(", ")}`, error: true }
+    return withState(io, root, async (s) => {
+      const r = t.act ? await t.act(at, s.plan, args) : t.run!(s.plan, args)
       return [{ ...s, plan: r.state }, { text: plain(r.text), error: r.warn }]
     })
   } catch (err: any) {

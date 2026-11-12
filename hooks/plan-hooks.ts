@@ -3,7 +3,8 @@ import type { Guard, Plan } from "../types/index.d.ts"
 import { GUARD_MET, JUDGE_URL, judgeBody, judgeProbs, lastTurn, openGuards, type Msg } from "./guards.ts"
 import { incident } from "./incidents.ts"
 import { CLEAN, EDIT_TOOLS, EMPTY, FRESH, PLAN_TOOLS, REVIEW_SKILLS, changedLines, checkReport, detail, edited, gateReason, newWork, openLine, pickChecks, reminder, runCheck, skillRan, slot, stopVerdict, tool, withDecided, type Result } from "./plan.ts"
-import { engineRun } from "./io.ts"
+import { engineRun, sessionIo } from "./io.ts"
+import { VAULT_TOOLS } from "./vault.ts"
 
 const PLAN = atom({ plugin: "overwatch", key: "plan" } as const, EMPTY)
 const VERIFY = atom({ plugin: "overwatch", key: "verify" } as const, CLEAN)
@@ -67,11 +68,13 @@ export async function startPlan($: any, e: any): Promise<void> {
 export const register: Register = (on) => {
   on("tool.call", { tool: tool("guard_check") }, async ($, e: any) => guardCheck($, e))
   on("tool.call", { tool: tool("plan_show") }, async ($) => planShow($))
-  for (const [name, { run }] of Object.entries(PLAN_TOOLS)) {
-    if (!run) continue
+  for (const [name, { run, act }] of Object.entries({ ...PLAN_TOOLS, ...VAULT_TOOLS })) {
+    if (!run && !act) continue
     on("tool.call", { tool: tool(name) }, async ($, e: any) => {
       let out!: Result
-      const plan = await update($, PLAN, (s) => (out = run(s, e)).state)
+      // act reads the project first; its plan replaces the one it read. Ceiling: a plan call landing during that read is lost.
+      if (act) out = await act(await sessionIo($), await read($, PLAN), e)
+      const plan = await update($, PLAN, (s) => (act ? out : (out = run!(s, e))).state)
       await Promise.all([show($, plan), out.work && update($, VERIFY, newWork)])
       return out.warn ? { deny: out.text } : { result: out.text }
     })

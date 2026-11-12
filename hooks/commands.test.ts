@@ -2,7 +2,7 @@ import { test, expect } from "claude-code/testing"
 import { COMMAND_TOOLS } from "./commands.ts"
 
 test("tools: flat, no action switch, required fields named in the schema", () => {
-  expect(Object.keys(COMMAND_TOOLS)).toEqual(["checks", "scan", "status", "report", "rate", "mistake", "loadout", "hygiene_ledger", "disk", "disk_clean", "launch", "launched"])
+  expect(Object.keys(COMMAND_TOOLS)).toEqual(["vault_init", "vault_plan", "unit_new", "checks", "scan", "status", "report", "rate", "mistake", "loadout", "hygiene_ledger", "disk", "disk_clean", "launch", "launched"])
   for (const t of Object.values(COMMAND_TOOLS)) {
     expect(Object.keys(t.properties ?? {})).not.toContain("action")
     for (const r of t.required ?? []) expect(Object.keys(t.properties ?? {})).toContain(r)

@@ -48,6 +48,11 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 | `guard_drop` | `guard_id` | removes a guard, on the user's word only |
 | `plan_show` | | tasks, guards with last outcome, review state |
 | `plan_clear` | | empties the plan |
+| `vault_init` | | creates the spec vault `.overwatch/vault` (Obsidian, git-tracked); never overwrites |
+| `vault_plan` | | wave plan from the spec notes; regenerates Plan Tasks.md and Plan Data.json |
+| `unit_new` | `title`, `category`, `tasks[]`, `summary?`, `depends?`, `checks?`, `paths?` | adds a spec note |
+| `unit_load` | `unit` | the unit's open Plan items become tasks, its `checks` guards |
+| `unit_record` | `summary`, `limitations`, `partial?` | closes the loaded unit: tasks done, checks re-run, tree committed; writes proof to the note |
 | `decompress` | `id` | reads back a cut or folded message |
 | `search_context` | `query` | searches every cut or folded message this session |
 | `scan` | | discovers and freezes this repo's test/lint/build commands |
@@ -69,6 +74,13 @@ Each is `mcp__overwatch__<name>`. A refusal says what to do next.
 - **Stop.** Refused while a task is open, a guard is not upheld, or the review pass is due: 10+ changed lines without `/simplify`, 50+ without `/code-review` before it. A whole-file write or replace_all counts as 10+. Edits during the pass do not reopen it; new work does, sized by the lines changed since each skill last ran.
 - **No loops.** Three refusals with nothing changed, or eight since the user last spoke, let the stop through. Background work or a cron pauses the check.
 - **Limits.** Writes through Bash or kern `fs` are not seen. `plan_clear`, `guard_drop` and `task_remove` are open to the model: "only the user drops a guard" is not enforced. Checks run from the session's start directory.
+
+## Spec vault
+
+- **Units outlive the session.** `.overwatch/vault` is an Obsidian vault git tracks (ignore `.overwatch/*` and re-include `!.overwatch/vault/`). One note per unit under `01 Specs`: frontmatter `status`, `category`, `depends`, `checks`, `paths`, `prio`; a `## Plan` checklist of test-sized items. `00 Meta/Plan.md` documents the fields.
+- **Plan.** A unit's wave is one more than its latest unfinished prerequisite's. Cycles, missing or excluded prerequisites, `blocked`, `deferred` and claims (`owner`) hold a unit. The Plan View plugin (shipped in the vault) renders `Plan Data.json`: effort on x, overlap is parallel work.
+- **Closeout.** `unit_record` refuses while unit tasks are open, a unit check fails or the tree outside `.overwatch/` is dirty; the proof line names the commit and each guard's outcome.
+- **Limits.** Dependencies are explicit `depends` only (the workflow kit also inferred them). Claims are read, not taken: two sessions can load the same unit.
 
 ## Disk gardener
 

@@ -1,0 +1,9 @@
+{
+  "id": "plan-view",
+  "name": "Plan View",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Timeless effort and parallelism view of 00 Meta/Plan Data.json.",
+  "author": "overwatch",
+  "isDesktopOnly": true
+}

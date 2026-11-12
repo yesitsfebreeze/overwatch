@@ -2,6 +2,7 @@ import type { Register } from "claude-code"
 import { sessionIo as io, type Io } from "./io.ts"
 import { clean, disk, MIN_MIB } from "./gardener.ts"
 import { hygiene } from "./hygiene.ts"
+import { unitNew, vaultInit, vaultPlan, CATEGORIES } from "./vault.ts"
 import { loadout } from "./loadout.ts"
 import { launch, launched } from "./launch.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
@@ -14,6 +15,28 @@ const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 
 /** The commands exposed as `mcp__overwatch__<name>`; bin/overwatch runs the same functions from a terminal. */
 export const COMMAND_TOOLS: Record<string, CommandTool> = {
+  vault_init: {
+    description: "Create the project's spec vault in .overwatch/vault (an Obsidian vault git tracks): Home, the Plan note, the spec template and the Plan View plugin. Never overwrites a file. unit_new runs it when the vault is missing.",
+    run: (io) => vaultInit(io),
+  },
+  vault_plan: {
+    description: "Compute the wave plan from the vault's spec notes and regenerate Plan Tasks.md and Plan Data.json (written only when they change). Lists each wave's units with effort, open Plan items and why a unit is held; [start now] marks units unit_load accepts.",
+    run: (io) => vaultPlan(io),
+  },
+  unit_new: {
+    description: "Add a unit of work: a spec note in .overwatch/vault/01 Specs with its summary, test-sized Plan items, prerequisites and the check commands unit_load turns into guards. Refused when the note exists.",
+    properties: {
+      title: { type: "string", description: "The note's name, e.g. \"Parser Recovery\"." },
+      category: { type: "string", enum: CATEGORIES, description: "Kind of change." },
+      summary: { type: "string", description: "One paragraph: what the unit is and why it exists." },
+      tasks: { type: "array", items: { type: "string" }, minItems: 1, description: "Test-sized Plan items, in order." },
+      depends: { type: "array", items: { type: "string" }, description: "Names of units that must be implemented first." },
+      checks: { type: "array", items: { type: "string" }, description: "Shell commands that must pass to close the unit, e.g. [\"bun test\"]." },
+      paths: { type: "array", items: { type: "string" }, description: "Files or folders the unit changes; units of one wave sharing a path clash." },
+    },
+    required: ["title", "category", "tasks"],
+    run: unitNew,
+  },
   checks: {
     description: "The checklist to run before saying a change is done: this repo's frozen test/lint/build commands plus the recorded mistakes to avoid. Run from the repo root. Read-only. Empty until scan froze the checks.",
     run: checklist,

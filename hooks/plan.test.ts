@@ -166,8 +166,9 @@ test("tools: one flat tool per change, no action switch, every schema names its 
     expect(Object.keys(t.properties ?? {})).not.toContain("action")
     for (const r of t.required ?? []) expect(Object.keys(t.properties ?? {})).toContain(r)
     expect(t.description.length).toBeGreaterThan(40)
-    // A pure change to the plan, except the two named handlers.
+    // A change to the plan (pure run, or act over the project), except the two named handlers.
     expect(!!t.run).toBe(!["guard_check", "plan_show"].includes(name))
+    expect(!(t.run && t.act)).toBe(true)
   }
 })
 

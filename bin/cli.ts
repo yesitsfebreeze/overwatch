@@ -1,6 +1,7 @@
 // overwatch's one binary: every command over the modules the hooks run (hooks/*.ts), through the bun Io.
 import { clean, disk } from "../hooks/gardener.ts"
 import { hygiene } from "../hooks/hygiene.ts"
+import { vaultInit, vaultPlan } from "../hooks/vault.ts"
 import { loadout } from "../hooks/loadout.ts"
 import { launch, launched } from "../hooks/launch.ts"
 import { checklist, index, mistake, rate, report, scan, status } from "../hooks/surface.ts"
@@ -23,10 +24,11 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch disk-clean [--apply] <path…>  delete surveyed leftovers; a dry run without --apply
   overwatch launch [--wait] <cmd>  run a command in the background; --wait blocks instead
   overwatch launched [id]          background runs, or one run with its log tail
+  overwatch vault init|plan        create the spec vault (.overwatch/vault) / compute and write the wave plan
   overwatch mcp                    stdio MCP server with every overwatch tool (other agents)
   overwatch hook <host> <event>    command hook for another agent: host event JSON on stdin
 
-State: .overwatch/ in the working directory (gitignore it).`
+State: .overwatch/ in the working directory. Gitignore it as .overwatch/* plus !.overwatch/vault/ (the spec vault is tracked).`
 
 async function main(argv: string[]): Promise<{ text: string; code: number }> {
   const io = fromNode()
@@ -36,6 +38,10 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
   switch (act) {
     case "status": return ok(await status(io))
     case "scan": return ok(await scan(io))
+    case "vault":
+      if (args[0] === "init") return ok(await vaultInit(io))
+      if (args[0] === "plan") return ok(await vaultPlan(io))
+      return { text: "usage: overwatch vault init|plan", code: 2 }
     case "checks": return ok(await checklist(io))
     case "mistake": return ok(await mistake(io, rest))
     case "report": return ok(await report(io))

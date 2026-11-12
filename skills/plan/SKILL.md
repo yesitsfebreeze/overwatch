@@ -11,6 +11,8 @@ Everything goes through the plan tools (`mcp__overwatch__task_add`, `guard_add`,
 
 File edits are refused until the plan has both. A question or chat that changes nothing needs neither.
 
+When the project has a spec vault (`.overwatch/vault`), work that belongs to a unit starts from it: `vault_plan` shows the units ready now, `unit_load {unit}` brings one unit's Plan items in as tasks and its `checks` as guards, and `unit_record {summary, limitations}` closes it after the commit. New durable work becomes a unit with `unit_new`.
+
 1. **Tasks**: one `task_add {titles:[…]}` call, a short title per step.
 2. **Guards**: one per thing the request must deliver, 2 to 6 in all. Each is one yes/no question about evidence: a command result, a file's content, the final message. Taste words ("clean", "readable", "good") are refused unless a `check` decides them.
    - With a `check`, when a command decides it: `guard_add {question:"Do the tests pass with bun test?", check:"bun test"}`. Exit 0 upholds it; it re-runs at every stop.

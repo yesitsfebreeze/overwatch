@@ -61,16 +61,24 @@ export function shellArgv(run: Runner): Promise<readonly string[]> {
 
 /** All of overwatch's working data, inside the working directory: nothing goes to the home folder. */
 export const STATE_DIR = ".overwatch"
+/** The spec vault folder under STATE_DIR, the one part git tracks. */
+export const VAULT_DIR = "vault"
 export const state = (io: Io, ...parts: string[]) => join(io.cwd, STATE_DIR, ...parts)
 
 /**
- * The line that asks the agent to gitignore the state folder; empty outside a git repo
- * and once git ignores it (`git check-ignore -q`: 0 ignored, 1 not ignored, 128 no repo).
- * A shell command, so the edit gate does not ask for a plan first.
+ * The line that asks the agent to gitignore the state folder but keep the spec vault
+ * (.overwatch/vault) tracked; empty outside a git repo and once both hold
+ * (`git check-ignore -q`: 0 ignored, 1 not ignored, 128 no repo). A plain `.overwatch/`
+ * line hides the vault for good (git cannot re-include under an excluded folder), so it is
+ * asked to become `.overwatch/*`. A shell command, so the edit gate does not ask for a plan first.
  */
 export async function ignoreHint(io: Io): Promise<string> {
-  const r = await io.run(["git", "check-ignore", "-q", STATE_DIR], { timeoutMs: 5000 })
-  return r.code === 1 ? `[overwatch] overwatch keeps its working data in \`${STATE_DIR}/\` in this directory, and git does not ignore it yet. Ignore it now, before anything else: \`printf '\\n${STATE_DIR}/\\n' >> .gitignore\`.` : ""
+  const ignored = async (p: string) => (await io.run(["git", "check-ignore", "-q", p], { timeoutMs: 5000 })).code
+  const state = await ignored(`${STATE_DIR}/plan.json`)
+  if (state === 1) return `[overwatch] overwatch keeps its working data in \`${STATE_DIR}/\` in this directory, and git does not ignore it yet. Ignore it now, before anything else, keeping the spec vault tracked: \`printf '\\n${STATE_DIR}/*\\n!${STATE_DIR}/vault/\\n' >> .gitignore\`.`
+  if (state === 0 && (await io.exists(join(io.cwd, STATE_DIR, "vault"))) && (await ignored(`${STATE_DIR}/vault/Home.md`)) === 0)
+    return `[overwatch] .gitignore hides the spec vault \`${STATE_DIR}/vault/\`. Keep it tracked, before anything else: replace the \`${STATE_DIR}/\` line with \`${STATE_DIR}/*\` and \`!${STATE_DIR}/vault/\`.`
+  return ""
 }
 
 /** The session's Io in a hook. A function declaration: the one form `$` may be handed to. */
