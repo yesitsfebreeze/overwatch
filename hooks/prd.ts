@@ -8,7 +8,6 @@
 import { type Io } from "./io.ts"
 import { checkReport, runChecks } from "./plan.ts"
 import { BAD_NAME, frontmatter, gitState, patchFrontmatter, readVault, replaceSection, section, sha256, specsOf, str, strings, vaultInit, vaultPath, vaultPlan, writePlan, type Fields, type Spec } from "./vault.ts"
-import type { Guard } from "../types/index.d.ts"
 
 export const PRDS = "02 PRDs"
 export const PRD_TEMPLATE = "00 Meta/PRD Template.md"
@@ -103,7 +102,7 @@ export function parsePrd(path: string, text: string): Prd {
   }
 }
 
-type Board = { prds: Prd[]; all: Map<string, Prd>; specs: Spec[] }
+type Board = { prds: Prd[]; all: Map<string, Prd>; twins: Set<string>; specs: Spec[] }
 
 /** The PRD a need or a parent names, matched the way pick() matches a request. */
 const at = (all: Map<string, Prd>, name: string) => all.get(name.toLowerCase())
@@ -113,14 +112,20 @@ const key = (p: Prd) => p.name.toLowerCase()
 async function board(io: Io): Promise<Board> {
   const notes = await readVault(io)
   const prds = [...notes].filter(([p]) => p.startsWith(PRDS + "/")).map(([p, text]) => parsePrd(p, text))
-  return { prds, all: new Map(prds.map((p) => [key(p), p])), specs: specsOf(notes) }
+  const keys = prds.map(key)
+  return { prds, all: new Map(prds.map((p) => [key(p), p])), twins: new Set(keys.filter((k, i) => keys.indexOf(k) !== i)), specs: specsOf(notes) }
 }
 
 const none = (io: Io) => `no PRDs yet in ${vaultPath(io, PRDS)}; prd_add writes one`
 
+/** `prd_set open` is the advertised recovery, so it and any move out of a held state start a fresh
+ * review allowance; plain open -> specced does not. */
+const startsAttempt = (to: string, from: string) => STARTABLE.has(to) && (to === "open" || !STARTABLE.has(from))
+
 function pick(b: Board, name: string): Prd | string {
   const hit = b.prds.find((p) => p.name === name) ?? b.prds.find((p) => p.name.toLowerCase() === name.toLowerCase())
-  return hit ?? (b.prds.length ? `no PRD "${name}"; PRDs: ${b.prds.map((p) => p.name).join(", ")}` : "no PRDs yet; prd_add writes one")
+  if (!hit) return b.prds.length ? `no PRD "${name}"; PRDs: ${b.prds.map((p) => p.name).join(", ")}` : "no PRDs yet; prd_add writes one"
+  return b.twins.has(key(hit)) ? `"${hit.name}" is ambiguous: another PRD's note name differs by case only; rename one` : hit
 }
 
 export async function findPrd(io: Io, name: string): Promise<Prd | string> {
@@ -285,16 +290,19 @@ export async function prdAdd(io: Io, e: { title?: unknown; summary?: unknown; ac
   const title = nonEmpty(e.title)
   if (nameProblem(title)) throw new Error(`prd_add needs a title usable as a note name (none of ${`\\ / : * ? " < > | # ^ [ ]`}; not starting with . or _)`)
   const name = nonEmpty(e.parent), needsIn = list(e.needs)
-  const b = name || needsIn.length ? await board(io) : undefined
+  const b = await board(io)
+  // The vault is hand-editable, so creation is checked by name rather than trusting the lookup.
+  const twin = at(b.all, title)
+  if (twin) throw new Error(`"${twin.name}" already exists in ${PRDS}; names differ by case only`)
   let parent = name
-  if (name && b) {
+  if (name) {
     const found = pick(b, name)
     if (typeof found === "string") throw new Error(found)
     parent = found.name
   }
   const acceptance = list(e.acceptance), footprint = list(e.footprint), checks = list(e.checks)
   // A need that names no PRD is kept as written: it holds the PRD until that note exists.
-  const needs = needsIn.map((n) => { const found = b && pick(b, n); return typeof found === "string" || !found ? n : found.name })
+  const needs = needsIn.map((n) => { const found = pick(b, n); return typeof found === "string" ? n : found.name })
   await addNote(io, { title, parent, summary: nonEmpty(e.summary), priority: e.priority, acceptance, needs, footprint, checks })
   await writePlan(io)
   return `Added ${PRDS}/${title}.md (status open${acceptance.length ? `, ${acceptance.length} acceptance box(es)` : ""}${needs.length ? `, needs ${needs.join(", ")}` : ""}). Link its units under "## Specs"; prd_next lists it when its needs are done.`
@@ -335,8 +343,7 @@ export async function prdSet(io: Io, e: { prd?: unknown; state?: unknown; reason
   if (state === "blocked" && !reason) throw new Error("blocked needs a reason: what holds it and what would unblock it")
   const date = new Date().toISOString().slice(0, 10)
   let text = patchFrontmatter(found.text, { status: state, blocked: state === "blocked" ? reason : null, updated: date })
-  // Reopening a failed PRD is the advertised recovery, so it starts a fresh review allowance.
-  const reopened = found.status === "failed" && STARTABLE.has(state)
+  const reopened = startsAttempt(state, found.status)
   if (reopened) {
     text = appendReview(text, `- reopened ${date} · rounds reset`)
   }
@@ -356,8 +363,8 @@ const MAX_FINDINGS = 600
 /**
  * Records one attributed review round against the current contract digest. The contract is the
  * acceptance text, the PRD's checks and every linked unit's Plan items and checks, so any later
- * edit makes the round stale. At most five rounds per PRD; a sixth is refused, and a PRD still
- * below the gate on its fifth round is set failed.
+ * edit makes the round stale. At most five rounds per attempt; a sixth is refused, a PRD still
+ * below the gate on its fifth round is set failed, and `prd_set open` starts a fresh attempt.
  */
 export async function prdReview(io: Io, e: { prd?: unknown; score?: unknown; reviewer?: unknown; findings?: unknown }): Promise<string> {
   const name = nonEmpty(e.prd)
@@ -420,7 +427,7 @@ export async function prdCollect(io: Io, e: { prd?: unknown; summary?: unknown }
   const digest = await contractDigest(io, p, b.specs)
   const g = gate(p, digest)
   if (!g.ok) throw new Error(`prd_collect: ${g.line}`)
-  const decided = await runChecks(io.run, p.checks, io.cwd, "prd check")
+  const decided = await runChecks(io.run, p.checks, io.cwd)
   const failed = decided.filter((x) => !x.met)
   if (failed.length) throw new Error(`prd_collect: checks failing, nothing recorded:\n${checkReport(failed)}`)
   const git = await gitState(io)

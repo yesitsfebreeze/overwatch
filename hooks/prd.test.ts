@@ -104,7 +104,8 @@ test("prd_collect refuses each missing gate, then writes done, proof and the rec
 
   const failing = io({ ...prd("A", "checks: [\"bun test\"]\n", "[[U]]"), ...unit("U", "implemented") }, runner({ codes: { "bun test": 1 } }))
   await prdReview(failing as any, { prd: "A", score: 95, reviewer: "agent-r" })
-  await expect(prdCollect(failing as any, { prd: "A" })).rejects.toThrow("checks failing")
+  // The refusal names the command, not an ordinal, so the reader knows what to fix.
+  await expect(prdCollect(failing as any, { prd: "A" })).rejects.toThrow("bun test: failing")
 
   const good = io({ ...prd("A", "checks: [\"bun test\"]\n", "[[U]]"), ...unit("U", "implemented") }, runner())
   await prdReview(good as any, { prd: "A", score: 95, reviewer: "agent-r" })
@@ -198,16 +199,32 @@ test("prd_add keeps the template's defaults for fields the caller leaves out", a
   expect(text).toContain("checks: []")
 })
 
-test("reopening a failed PRD starts a fresh five-round allowance", async () => {
-  const at = io(prd("A", ""))
-  for (let i = 0; i < GATE_ROUNDS; i++) await prdReview(at as any, { prd: "A", score: 40, reviewer: "r" })
-  expect(at.files[`${V}/02 PRDs/A.md`]).toContain("status: failed")
-  await expect(prdReview(at as any, { prd: "A", score: 95, reviewer: "r" })).rejects.toThrow(`used all ${GATE_ROUNDS}`)
-  expect(await prdSet(at as any, { prd: "A", state: "open" })).toContain("rounds reset")
-  expect(at.files[`${V}/02 PRDs/A.md`]).toContain("- reopened")
-  // The round numbers keep counting; the allowance restarts.
-  expect(await prdReview(at as any, { prd: "A", score: 95, reviewer: "r" })).toContain(`round ${GATE_ROUNDS + 1}/${GATE_ROUNDS}`)
-  expect(await prdScan(at as any)).toContain(`review: round ${GATE_ROUNDS + 1} · 95/100`)
+test("prd_set open starts a fresh five-round allowance however the last attempt ended", async () => {
+  // Spent on failures the PRD is `failed`; spent with a passing last round it stays `open`.
+  for (const [status, last] of [["failed", 40], ["open", 95]] as const) {
+    const at = io(prd("A", ""))
+    for (let i = 0; i < GATE_ROUNDS - 1; i++) await prdReview(at as any, { prd: "A", score: 40, reviewer: "r" })
+    const text = await prdReview(at as any, { prd: "A", score: last, reviewer: "r" })
+    if (last >= 90) expect(text).toContain("passes the gate")
+    expect(at.files[`${V}/02 PRDs/A.md`]).toContain(`status: ${status}`)
+    await expect(prdReview(at as any, { prd: "A", score: 95, reviewer: "r" })).rejects.toThrow(`used all ${GATE_ROUNDS}`)
+    expect(await prdSet(at as any, { prd: "A", state: "open" })).toContain("rounds reset")
+    expect(at.files[`${V}/02 PRDs/A.md`]).toContain("- reopened")
+    // The round numbers keep counting; the allowance restarts.
+    expect(await prdReview(at as any, { prd: "A", score: 95, reviewer: "r" })).toContain(`round ${GATE_ROUNDS + 1}/${GATE_ROUNDS}`)
+    expect(await prdScan(at as any)).toContain(`review: round ${GATE_ROUNDS + 1} · 95/100`)
+  }
+})
+
+test("a hand-written case twin is refused by every read path, not silently shadowed", async () => {
+  const at = io({ ...prd("Base", ""), ...prd("base", "") })
+  await expect(prdSet(at as any, { prd: "Base", state: "blocked", reason: "waiting" })).rejects.toThrow("ambiguous")
+  await expect(prdAdd(at as any, { title: "Child", parent: "base" })).rejects.toThrow("ambiguous")
+})
+
+test("prd_add refuses a title that differs from a note only in case", async () => {
+  const at = io(prd("Base", ""))
+  await expect(prdAdd(at as any, { title: "base" })).rejects.toThrow("differ by case only")
 })
 
 test("a need or a parent written in another case still resolves", async () => {

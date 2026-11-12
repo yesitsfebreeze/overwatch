@@ -89,7 +89,7 @@ export const COMMAND_TOOLS: Record<string, CommandTool> = {
     run: (io, e) => prdSet(io, e),
   },
   prd_review: {
-    description: `Record one attributed review round against the PRD's current contract (its acceptance boxes plus every linked unit's Plan items and checks). A later edit makes the round stale. ${GATE_SCORE}/100 passes; at most ${GATE_ROUNDS} rounds per PRD.`,
+    description: `Record one attributed review round against the PRD's current contract (its acceptance boxes plus every linked unit's Plan items and checks). A later edit makes the round stale. ${GATE_SCORE}/100 passes; at most ${GATE_ROUNDS} rounds per attempt (prd_set open starts a new one).`,
     properties: {
       prd: { type: "string", description: "The PRD note's name." },
       score: { type: "number", minimum: 0, maximum: 100, description: "The reviewer's score." },

@@ -9,8 +9,10 @@ import { checkReport, PLAN_TOOLS, refuse, runChecks, trimmed, type PlanTool, typ
 import { cmp, join, state, STATE_DIR, VAULT_DIR, type Io } from "./io.ts"
 
 const SPECS = "01 Specs"
-/** The one path rule scope checks share: separators and a leading `./` normalize away, Windows compares case-blind. */
-const normPath = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "").toLowerCase()
+/** The path spelling comparisons start from: separators and trailing slashes normalize away, case is kept. */
+const slash = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "")
+/** The one path rule scope checks share: `slash`, a leading `./`, and Windows' case fold. */
+const normPath = (p: string) => slash(p).replace(/^\.\//, "").toLowerCase()
 /** A path covers itself and everything under it, so `src/a` and `src/a/lex.ts` overlap. */
 const coversPath = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
 export const PLAN_DATA = "00 Meta/Plan Data.json"
@@ -272,8 +274,9 @@ export function computePlan(all: Spec[]): PlanData {
     const missing = s.depends.filter((d) => !byName.has(d))
     const excluded = s.depends.filter((d) => byName.has(d) && byName.get(d)!.status !== "implemented" && !openNames.has(d))
     const owner = str(s.fields.owner), blocked = str(s.fields.blocked)
+    const open = openItems(s), rep = repeatedItem(open)
     const held = s.depends.includes(s.name) ? "self dependency" : cyclic.has(s.name) ? "cycle" : missing.length ? `missing ${missing.join(", ")}`
-      : excluded.length ? `waiting on excluded ${excluded.join(", ")}` : s.status === "deferred" ? "deferred" : blocked ? "blocked" : after.length ? "waiting" : owner ? "claimed" : !s.items.some((i) => !i.done) ? "no open Plan items" : ""
+      : excluded.length ? `waiting on excluded ${excluded.join(", ")}` : s.status === "deferred" ? "deferred" : blocked ? "blocked" : after.length ? "waiting" : owner ? "claimed" : !open.length ? "no open Plan items" : rep ? `repeats the Plan item "${rep}"` : ""
     if (missing.length) warnings.push(`${s.name} depends on missing ${missing.join(", ")}`)
     const e = effort(s)
     const start = Math.max(0, ...after.map((d) => ends.get(d) ?? 0))
@@ -281,7 +284,7 @@ export function computePlan(all: Spec[]): PlanData {
     rows.push({
       name: s.name, path: s.path, category: s.category, status: s.status, owner, since: str(s.fields.since), blocked,
       effort: e, start, end: start + e, wave: wave.get(s.name)!, after, paths: s.paths,
-      held, mark: PRIO_MARK[str(s.fields.prio)] ?? "", open: s.items.filter((i) => !i.done).length,
+      held, mark: PRIO_MARK[str(s.fields.prio)] ?? "", open: open.length,
     })
   }
 
@@ -484,10 +487,8 @@ export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<
   const row = computePlan(specs).rows.find((r) => r.name === spec.name)
   if (!row) return refuse(s, `"${spec.name}" is ${spec.status === "implemented" ? "implemented" : "left out of the plan"}; nothing to load`)
   if (row.held) return refuse(s, `"${spec.name}" is held: ${row.held}${row.held === "claimed" ? ` by ${row.owner}; clear its owner to take it` : ""}`)
-  const open = spec.items.filter((i) => !i.done).map((i) => i.text)
+  const open = openItems(spec)
   if (!open.length) return refuse(s, `${spec.path} has no open "## Plan" items; add test-sized ones first`)
-  const repeated = open.filter((t, i) => open.indexOf(t) !== i)
-  if (repeated.length) return refuse(s, `${spec.path} repeats the Plan item "${repeated[0]}"; one task per item needs unique text`)
   const unit = { name: spec.name, tasks: { ...(s.unit?.tasks ?? {}) }, guards: [...(s.unit?.guards ?? [])], checks: [...new Set([...(s.unit?.checks ?? []), ...spec.checks])] }
   const loaded = new Set(Object.values(unit.tasks))
   const titles = open.filter((i) => !loaded.has(i))
@@ -517,10 +518,15 @@ export async function unitLoad(io: Io, s: Plan, e: { unit?: unknown }): Promise<
 
 /** This session's state folder as a pathspec from the repository root, or its bare name when it sits outside. */
 const stateSpec = (root: string, io: Io) => {
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()
-  const r = norm(root), d = norm(state(io))
-  return d.startsWith(`${r}/`) ? d.slice(r.length + 1) : STATE_DIR
+  const r = slash(root), d = slash(state(io))
+  return normPath(d).startsWith(`${normPath(r)}/`) ? d.slice(r.length + 1) : STATE_DIR
 }
+
+/** The spec's open Plan item texts, in note order. */
+const openItems = (s: Spec) => s.items.filter((i) => !i.done).map((i) => i.text)
+
+/** The first open Plan item text that appears twice, or undefined. */
+const repeatedItem = (open: string[]) => open.find((t, i, all) => all.indexOf(t) !== i)
 
 /** Git's view of the work: HEAD and the changed paths outside .overwatch. */
 export async function gitState(io: Io): Promise<{ commit: string; dirty: string[] } | string> {
@@ -533,7 +539,7 @@ export async function gitState(io: Io): Promise<{ commit: string; dirty: string[
   if (top.code !== 0) return `unit_record needs a git work tree: ${top.stderr.trim() || "git rev-parse --show-toplevel failed"}`
   const root = top.stdout.trim()
   // The state folder sits under the session's cwd, so exclude its path from the root, not a literal name.
-  const st = await io.run(["git", "status", "--porcelain", "--untracked-files=all", "--", ".", `:(exclude)${stateSpec(root, io)}`], { cwd: root, timeoutMs: 20_000 })
+  const st = await io.run(["git", "status", "--porcelain", "--untracked-files=all", "--", ".", `:(exclude,literal)${stateSpec(root, io)}`], { cwd: root, timeoutMs: 20_000 })
   if (st.code !== 0) return `git status failed: ${st.stderr.trim()}`
   const dirty = st.stdout.split("\n").map((l) => l.slice(3).replace(/^"|"$/g, "")).filter(Boolean)
   return { commit: head.stdout.trim(), dirty }
@@ -561,11 +567,11 @@ export async function unitRecord(io: Io, s: Plan, e: { summary?: unknown; limita
   // The unit's checks are re-run from the commands unit_load kept, so a plan whose guards were
   // dropped or re-added still cannot record the unit without them passing.
   const checks = [...new Set([...(unit.checks ?? []), ...spec.checks])]
-  const decided = await runChecks(io.run, checks, io.cwd, "unit check")
-  const failing = decided.filter((g) => !g.met)
-  if (failing.length) return refuse(s, `unit checks failing, nothing recorded:\n${checkReport(failing)}`)
+  const decided = await runChecks(io.run, checks, io.cwd)
   // The plan's guards learn the outcome when their command is one of the unit's checks.
-  const state: Plan = { ...s, guards: s.guards.map((g) => { const hit = decided.find((d) => d.check === g.check); return hit ? { ...g, met: hit.met } : g }) }
+  const state: Plan = { ...s, guards: s.guards.map((g) => decided.find((d) => d.check === g.check) ?? g) }
+  const failing = decided.filter((g) => !g.met)
+  if (failing.length) return refuse(state, `unit checks failing, nothing recorded:\n${checkReport(failing)}`)
   const done = Object.entries(unit.tasks).filter(([id]) => byId.get(Number(id))?.status === "done").map(([, text]) => text)
   const { text, status } = closeNote(spec.text, {
     done,

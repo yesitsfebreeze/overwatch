@@ -104,7 +104,7 @@ test("round trip: unit_new, unit_load turns Plan items into tasks and checks int
   s = { ...s, tasks: s.tasks.map((t) => ({ ...t, status: "done" as const, progress: 100 })) }
   expect((await unitRecord(x, s, close)).text).toContain("uncommitted: src/a.ts")
   dirty = ""
-  expect(ran.some((c) => c.endsWith("-- . :(exclude).overwatch"))).toBe(true) // git, not a prefix test, leaves out the state dir
+  expect(ran.some((c) => c.endsWith("-- . :(exclude,literal).overwatch"))).toBe(true) // git, not a prefix test, leaves out the state dir
   const rec = await unitRecord(x, s, close)
   expect(rec.warn).toBeUndefined()
   expect(rec.text).toContain("as implemented at 0123456789ab")
@@ -164,6 +164,27 @@ test("unit_record re-runs the unit's checks even after its guards left the plan"
   const rec = await unitRecord(x, done, { summary: "s", limitations: "none" })
   expect(rec.warn).toBe(true)
   expect(rec.text).toContain("unit checks failing")
+})
+
+test("the plan holds a unit whose open Plan items repeat, so nothing points at an unloadable unit", () => {
+  const d = computePlan([parseSpec("01 Specs/D.md", "---\nstatus: target\n---\n\n## Plan\n\n- [ ] same\n- [ ] same\n")])
+  expect(d.rows[0].held).toContain("repeats the Plan item")
+})
+
+test("the state folder exclusion keeps the folder's real case", async () => {
+  const ran: string[] = []
+  const run: Runner = async (argv) => {
+    ran.push(argv.join(" "))
+    if (argv[0] === "git" && argv[1] === "rev-parse" && argv.includes("--show-toplevel")) return { code: 0, stdout: "/Repo\n", stderr: "" }
+    if (argv[0] === "git" && argv[1] === "rev-parse") return { code: 0, stdout: "abc\n", stderr: "" }
+    if (argv[0] === "git" && argv[1] === "status") return { code: 0, stdout: "", stderr: "" }
+    return { code: 0, stdout: "ok", stderr: "" }
+  }
+  const note = "---\nstatus: target\ncategory: behavior\n---\n\n# A\n\n## Plan\n\n- [ ] do it\n"
+  const x = { ...memIo({ ...scaffold(), ["/Repo/Sub/.overwatch/vault/01 Specs/A.md"]: note }, "/Repo/Sub"), root: "/Repo", run }
+  const s = (await unitLoad(x, EMPTY, { unit: "A" })).state
+  await unitRecord(x, { ...s, tasks: s.tasks.map((t) => ({ ...t, status: "done" as const, progress: 100 })) }, { summary: "s", limitations: "none" })
+  expect(ran.find((c) => c.includes("git status"))).toContain(":(exclude,literal)Sub/.overwatch")
 })
 
 test("Plan items match by trimmed text, and a repeated item is refused", async () => {

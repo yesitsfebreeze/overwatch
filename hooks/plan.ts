@@ -104,8 +104,8 @@ export const runCheck = async (run: Runner, g: Guard, cwd?: string): Promise<Gua
  * One outcome per check command, run from `cwd`. The guard objects are throwaway: a note's checks
  * are not plan guards, so only the command and its `met` matter.
  */
-export const runChecks = (run: Runner, checks: string[], cwd?: string, id = "check"): Promise<Guard[]> =>
-  Promise.all(checks.map((check, i) => runCheck(run, { id: `${id} ${i + 1}`, question: id, check, met: false }, cwd)))
+export const runChecks = (run: Runner, checks: string[], cwd?: string): Promise<Guard[]> =>
+  Promise.all(checks.map((check) => runCheck(run, { id: check, question: `Does \`${check}\` pass?`, check, met: false }, cwd)))
 
 /** The plan with the decided guards written back by id, onto whatever it holds now. */
 export const withDecided = (s: Plan, decided: Guard[]): Plan => {
