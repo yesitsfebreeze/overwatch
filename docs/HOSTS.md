@@ -41,7 +41,7 @@ cd "$OW" && bun test ./host/host.check.ts                 # expect 0 fail
 
 ## Claude Code
 
-Native plugin: every part and tool.
+Native plugin: core tools by default; optional groups are configurable.
 
 ```sh
 claude plugin marketplace add "$OW"

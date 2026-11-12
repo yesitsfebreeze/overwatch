@@ -8,7 +8,7 @@ Long-form detail behind the [README](../README.md). Per-host install steps live 
 |---|---|
 | catch | Refused: an edit before the plan has tasks and guards, a stop with work open, a call that does not fit a tool's schema. Noticed: a turn's failed tool calls. |
 | record | One entry per catch in `.overwatch/incidents.json`: counts per day for 30 days, the newest 40 entries. `mistake` adds a lesson by hand. |
-| improve | A kind caught 3 times in 30 days puts its one-line lesson into every later session's prompt, beside the newest 5 mistakes and the learned tool triggers. It drops out as its days leave the window. |
+| improve | A kind caught 3 times in 30 days puts its one-line lesson into every later session's prompt, beside up to five recent distinct mistakes within the reminder budget and the learned tool triggers. It drops out as its days leave the window. |
 
 ## Parts
 
@@ -131,7 +131,7 @@ Routine reminders show counts and up to three open task and guard previews; comp
 
 ## Disk gardener
 
-- **Watch.** One `df` at most every 5 minutes. From `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space.
+- **Watch.** With maintenance enabled, one `df` at most every 5 minutes. From `diskFullPercent` (default 88, 0 = off) the agent is asked once per crossing to free space.
 - **Proof.** `node_modules` needs its `package.json`, `target` its `CACHEDIR.TAG` or manifest, `.venv` its `pyvenv.cfg`; `dist`, `build`, `out`, `coverage` only where git ignores the folder and tracks nothing in it.
 - **Classes.** Leftover: an idle temp entry, or output of a project whose last commit is 30 days old. Rebuildable: proven output of a live project. In use: changed in the last 2 hours, or a process works there. Unverified: everything else. Only the first two are deleted.
 - **Deleting.** `disk_clean` refuses links and open files, then runs `rm -rf --`. Caches go only through their owner's command.
@@ -230,7 +230,7 @@ Each compaction grading request is sent once. A connection rejection, lost respo
 `status` reads the shared usage snapshots even with compaction disabled. Each actual
 HTTP invocation is counted once, with operation (`compaction` or `guard`), a session
 operation id, batch number, attempt number, outcome, and estimated serialized input.
-Cache hits and local preflight rejection create no request record. Retries are zero.
+Reused guard judgments and local preflight rejection create no request record. Provider cache hits within an HTTP request are still recorded. Retries are zero.
 Successful compaction dataset rows retain `client: componion` and their existing
 state/questions/answers/model fields; guard and failure rows contain metadata only.
 Rows append to `~/.jev/log/YYYY-MM-DD.jsonl` and include the new accounting fields.

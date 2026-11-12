@@ -18,7 +18,7 @@ When the project has a spec vault (`.overwatch/vault`), work that belongs to a u
 
 1. **Tasks**: one `task_add {titles:[…]}` call, a short title per step.
 2. **Guards**: one per thing the request must deliver, 2 to 6 in all. Each is one yes/no question about evidence: a command result, a file's content, the final message. Taste words ("clean", "readable", "good") are refused unless a `check` decides them.
-   - With a `check`, when a command decides it: `guard_add {question:"Do the tests pass with bun test?", check:"bun test"}`. Exit 0 upholds it; it re-runs at every stop.
+   - With a `check`, when a command decides it: `guard_add {question:"Do the tests pass with bun test?", check:"bun test"}`. Exit 0 upholds it; it re-runs after tasks finish while automatic verification is allowed. Timed-out checks wait for an explicit `guard_check`.
    - Without: `guard_add {question:"Does README.md list every plugin in exactly one tier?", files:["README.md"]}`. Jev judges it (needs `TYPESAFE_API_KEY`; without it such guards do not hold the stop).
 
 ## While working
