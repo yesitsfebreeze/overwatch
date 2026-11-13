@@ -1,0 +1,9 @@
+{
+  "id": "hotmap",
+  "name": "Hotmap",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Call-graph hotness cube over .mosaic/map, plus Dataview notes for the map.",
+  "author": "Mosaic",
+  "isDesktopOnly": true
+}

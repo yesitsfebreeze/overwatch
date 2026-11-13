@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mosaic Hotness Cube</title>
+<style>
+  :root { --bg:#fafafa; --fg:#18181b; --mute:#71717a; --line:#e4e4e7; --panel:#fff; --card:#f4f4f5; --accent:#7c3aed; --accent-soft:rgba(124,58,237,.12); --callers:#f97316; --callees:#22c55e; --mark:#38bdf8; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0b0b0e; --fg:#f4f4f5; --mute:#a1a1aa; --line:#27272a; --panel:#131317; --card:#1c1c22; --accent:#a78bfa; --accent-soft:rgba(167,139,250,.16); } }
+  :root[data-theme="dark"] { --bg:#0b0b0e; --fg:#f4f4f5; --mute:#a1a1aa; --line:#27272a; --panel:#131317; --card:#1c1c22; --accent:#a78bfa; --accent-soft:rgba(167,139,250,.16); }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  #app { display:grid; grid-template-columns:1fr 44px 400px; height:100%; }
+  #peelcol { background:#000; border-left:1px solid var(--line); display:flex; flex-direction:column; align-items:center; padding:14px 0; gap:8px; }
+  #peelcol span { font-size:10px; color:#a1a1aa; writing-mode:vertical-lr; }
+  #peelrange { position:relative; flex:1; width:18px; }
+  #peelrange::before { content:''; position:absolute; left:50%; top:0; bottom:0; width:2px; transform:translateX(-50%); background:#3f3f46; }
+  #peelrange input { position:absolute; inset:0; width:18px; height:100%; margin:0; background:none; appearance:none; -webkit-appearance:none; writing-mode:vertical-lr; direction:ltr; pointer-events:none; }
+  #peelrange input::-webkit-slider-runnable-track { background:none; border:0; }
+  #peelrange input::-webkit-slider-thumb { -webkit-appearance:none; width:15px; height:15px; border:0; border-radius:50%; background:#a78bfa; pointer-events:auto; cursor:ns-resize; }
+  #peelrange input::-moz-range-track { background:none; border:0; }
+  #peelrange input::-moz-range-thumb { width:15px; height:15px; border:0; border-radius:50%; background:#a78bfa; pointer-events:auto; cursor:ns-resize; }
+  #status { position:absolute; left:14px; bottom:12px; color:#a1a1aa; font-size:12px; pointer-events:none; }
+  #mode { position:absolute; top:14px; left:14px; display:flex; gap:4px; z-index:2; }
+  #mode button { font:inherit; font-size:12px; border:1px solid #3f3f46; background:rgba(0,0,0,.55); color:#a1a1aa; border-radius:999px; padding:3px 10px; cursor:pointer; }
+  #mode button.on { background:#a78bfa; border-color:#a78bfa; color:#0b0b0e; }
+  #stage { position:relative; overflow:hidden; background:#000; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; cursor:grab; color:#fff; touch-action:none; } canvas:active { cursor:grabbing; } #overlay { pointer-events:none; }
+  #drop { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--mute); text-align:center; padding:16px; pointer-events:none; }
+
+  aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  .section { padding:12px 14px; border-bottom:1px solid var(--line); }
+  .label { font-size:11px; font-weight:600; color:var(--mute); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; display:flex; align-items:center; gap:6px; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+  .peelinfo { margin-top:8px; font-size:12px; color:var(--mute); }
+  .stat { background:var(--card); border-radius:8px; padding:6px 8px; } .stat b { display:block; font-size:15px; font-variant-numeric:tabular-nums; } .stat span { font-size:11px; color:var(--mute); }
+  .seg { display:flex; flex-wrap:wrap; gap:4px; }
+  .seg button, .tabs button { font:inherit; font-size:12px; border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:999px; padding:3px 10px; cursor:pointer; transition:background .12s,border-color .12s; }
+  .seg button:hover, .tabs button:hover { border-color:var(--accent); }
+  .seg button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .tabs { display:flex; gap:4px; }
+  .tabs button { border-radius:8px; border:0; padding:5px 10px; color:var(--mute); } .tabs button.on { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+  input[type=search] { font:inherit; width:100%; padding:6px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); outline:none; }
+  input[type=search]:focus { border-color:var(--accent); }
+  .tools { display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  .dir { margin-left:auto; }
+
+  #sel { display:none; } #sel.on { display:block; }
+  #sel h2 { margin:0 0 2px; font-size:14px; word-break:break-all; } #sel .where { color:var(--mute); font-size:12px; word-break:break-all; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; margin:8px 0 4px; } .chip { background:var(--card); border-radius:6px; padding:2px 7px; font-size:12px; } .chip i { font-style:normal; color:var(--mute); }
+  .neighbors { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:6px; }
+  .neighbors ul { list-style:none; margin:0; padding:0; max-height:120px; overflow:auto; }
+  .neighbors li { font-size:12px; padding:1px 4px; border-radius:4px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .neighbors li:hover { background:var(--accent-soft); }
+  .dot { width:8px; height:8px; border-radius:2px; display:inline-block; }
+  .x { margin-left:auto; border:0; background:none; color:var(--mute); cursor:pointer; font-size:14px; }
+
+  #listwrap { flex:1; min-height:0; display:flex; flex-direction:column; }
+  #list { flex:1; min-height:0; overflow:auto; position:relative; outline:none; }
+  #list .row { position:absolute; left:0; right:0; height:30px; display:flex; align-items:center; gap:8px; padding:0 14px; cursor:pointer; font-size:12px; }
+  #list .row .bar { position:absolute; left:0; top:4px; bottom:4px; background:var(--accent-soft); border-radius:0 4px 4px 0; pointer-events:none; }
+  #list .row > :not(.bar) { position:relative; }
+  #list .row:hover { background:var(--card); }
+  #list .row.on { box-shadow:inset 3px 0 0 var(--accent); background:var(--accent-soft); }
+  #list .n { color:var(--mute); width:44px; text-align:right; font-variant-numeric:tabular-nums; flex:none; }
+  #list .name { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } #list .name i { font-style:normal; color:var(--mute); }
+  #list .v { font-variant-numeric:tabular-nums; flex:none; }
+  #list .empty { padding:16px; color:var(--mute); }
+  details { padding:8px 14px; border-top:1px solid var(--line); color:var(--mute); font-size:12px; } summary { cursor:pointer; } details ul { margin:6px 0 0; padding-left:16px; }
+  @media (max-width:760px) { #app { grid-template-columns:1fr 36px; grid-template-rows:55vh 1fr; } aside { grid-column:1/3; border-left:0; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage"><canvas id="cube"></canvas><canvas id="overlay"></canvas><div id="mode"><button data-mode="cubes" class="on">Cubes</button><button data-mode="nodes">Nodes</button></div><div id="drop">loading index.json…</div><div id="status"></div></div>
+  <div id="peelcol" title="peel: the top handle removes from the best end, the bottom handle from the worst end ( [ ] ten boxes, { } one box, in sidebar order )">
+    <span>whole</span>
+    <div id="peelrange"><input type="range" id="peelLo" min="0" max="0" value="0" aria-label="peel from the best end"><input type="range" id="peelHi" min="0" max="0" value="0" aria-label="peel from the worst end"></div>
+    <span>last</span>
+  </div>
+  <aside>
+    <div class="section"><div class="stats" id="stats"></div><div class="peelinfo" id="peeltext"></div></div>
+    <div class="section">
+      <div class="label">Arrange cube by</div>
+      <div class="seg" id="arrange"></div>
+    </div>
+    <div class="section" id="sel">
+      <div class="label">Selected <button class="x" id="unsel" title="clear (Esc)">✕</button></div>
+      <h2 class="mono" id="selname"></h2><div class="where mono" id="selwhere"></div>
+      <div class="chips" id="selchips"></div>
+      <div class="neighbors">
+        <div><div class="label"><span class="dot" style="background:var(--callers)"></span><span id="ncallers"></span></div><ul id="callers" class="mono"></ul></div>
+        <div><div class="label"><span class="dot" style="background:var(--callees)"></span><span id="ncallees"></span></div><ul id="callees" class="mono"></ul></div>
+      </div>
+    </div>
+    <div id="listwrap">
+      <div class="section">
+        <div class="tabs" id="tabs"></div>
+        <div class="tools"><input type="search" id="find" placeholder="filter…"></div>
+        <div class="tools"><div class="seg" id="sort"></div><button class="seg dir" id="dir" title="flip order" style="border:0;background:none;color:var(--mute);cursor:pointer;font:inherit">↓ top first</button></div>
+      </div>
+      <div id="list" tabindex="0"></div>
+    </div>
+    <details><summary>How to read it</summary><ul>
+      <li>The flat treemap wrapped inside itself: box volume is the arrange metric.</li>
+      <li>Each axis is its own metric: the top corner is best on all three, the bottom worst, and each side corner names its one odd axis. Volume is the view's metric.</li>
+      <li>Each box splits 2×2×2 into equal-weight parts, biggest first; only the leaf boxes are drawn, one procedure each, so there are no container boxes. Cubes / Nodes (top left) switches to a dot cloud: one dot per procedure placed by its three metric values, 75% pulled to that spot and 25% toward its call neighbours, so it glides and clusters.</li>
+      <li>Colour is position: x red→cyan, y green→magenta, z blue→yellow; white = most of the metric.</li>
+      <li>Selecting outlines callers <span style="color:var(--callers)">orange</span> and callees <span style="color:var(--callees)">green</span>; packages and cycles mark <span style="color:var(--mark)">blue</span>.</li>
+      <li>Peel hides one box per step in sidebar order: the top handle peels from the best end, the bottom handle from the worst end.</li>
+      <li>Drag spins with momentum · wheel zooms · [ ] peel ten boxes · { } one box, on the handle you last moved · ↑ ↓ walk the list · Esc clears.</li>
+    </ul></details>
+  </aside>
+</div>
+<script src="graph-core.js"></script>
+<script src="cube.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  const { METRICS, PACKAGE_SORTS: PKG_SORTS, CYCLE_SORTS } = GraphCore;
+  const TABS = { procs: 'Procedures', pkgs: 'Packages', cycles: 'Cycles' };
+
+  let nodes = [], stats = null, model = null, cube = null, packages = [], cycles = [];
+  let arrangeBy = 'hot', tab = 'procs', sortBy = { procs: 'hot', pkgs: 'inCalls', cycles: 'size' }, desc = true, filter = '';
+  let rows = [], selected = null, marked = null;   // selected: node; marked: package or cycle row
+  let links = [];                                   // call edges, for node mode's relational pull
+  let peelSide = 'lo';                             // which peel handle the [ ] { } keys move
+  let mode = 'cubes';                              // 'cubes' draws leaf boxes, 'nodes' a dot cloud
+
+  const ready = HotCube.view($('cube'), $('overlay'), {
+    onHover: p => { $('status').textContent = p ? `${name(p.item.ref)} · ${METRICS[arrangeBy].label} ${METRICS[arrangeBy].fmt(METRICS[arrangeBy].get(p.item.ref))}` : summary(); },
+    onPick: p => select(p ? p.item.ref : null, true),
+  }).then(v => { cube = v; if (v) v.cloud(mode === 'nodes'); return v; });
+  const name = n => `${n.pkg}.${n.name}`;
+  const summary = () => model ? `${nodes.length} procedures · ${model.leaves.length} boxes` : '';
+
+  // ---- controls -----------------------------------------------------------------------
+  function seg(host, entries, current, onPick) {
+    host.innerHTML = '';
+    for (const [key, label] of entries) { const b = el('button', key === current ? 'on' : '', label); b.onclick = () => onPick(key); host.appendChild(b); }
+  }
+  function controls() {
+    seg($('arrange'), Object.entries(METRICS).map(([k, m]) => [k, m.label]), arrangeBy, k => { arrangeBy = k; sortBy.procs = k; arrange(); refresh(); controls(); });
+    seg($('tabs'), Object.entries(TABS), tab, k => { tab = k; filter = $('find').value = ''; refresh(); controls(); });
+    const sorts = tab === 'procs' ? Object.entries(METRICS).map(([k, m]) => [k, m.label]).concat([['name', 'name']])
+      : Object.entries(tab === 'pkgs' ? PKG_SORTS : CYCLE_SORTS).map(([k, [l]]) => [k, l]);
+    seg($('sort'), sorts, sortBy[tab], k => {
+      sortBy[tab] = k;
+      const before = arrangeBy;
+      if (tab === 'procs' && k !== 'name') arrangeBy = k;
+      refresh();
+      if (arrangeBy !== before) arrange();
+      controls();
+    });
+    $('dir').textContent = desc ? '↓ top first' : '↑ reversed';
+    $('find').placeholder = `filter ${TABS[tab].toLowerCase()}…`;
+  }
+  $('dir').onclick = () => { desc = !desc; refresh(); controls(); };
+  $('mode').onclick = e => {
+    const b = e.target.closest('button[data-mode]'); if (!b) return;
+    mode = b.dataset.mode;
+    for (const x of $('mode').children) x.classList.toggle('on', x === b);
+    if (cube) cube.cloud(mode === 'nodes');
+  };
+  $('find').oninput = e => { filter = e.target.value.toLowerCase(); refresh(); };
+
+  // ---- the list: every row of the current tab, virtualised ----------------------------------
+  const ROW = 30;
+  // Peel walks the sidebar: one box per row, in the procedure list's order.
+  const peelRefs = () => (tab === 'procs' ? rows.map(r => r.ref) : GraphCore.list('procs', nodes, { sort: sortBy.procs, desc, filter }).map(r => r.ref));
+  function refresh() {
+    const source = tab === 'procs' ? nodes : tab === 'pkgs' ? packages : cycles;
+    rows = GraphCore.list(tab, source, { sort: sortBy[tab], desc, filter }).map(r => tab === 'procs'
+      ? { kind: 'proc', ref: r.ref, label: r.ref.name, sub: r.ref.pkg + '.', value: r.value, fmt: r.fmt }
+      : { kind: tab, ref: r.ref, label: r.label, sub: '', value: r.value, fmt: r.fmt });
+    const top = Math.max(1e-9, ...rows.map(r => Math.abs(r.value || 0)));
+    for (const r of rows) r.bar = r.value == null ? 0 : Math.abs(r.value) / top;
+    if (cube && model) { cube.order(peelRefs()); syncPeel(); }
+    $('list').scrollTop = 0; paint();
+  }
+  function paint() {
+    const list = $('list'), from = Math.max(0, Math.floor(list.scrollTop / ROW) - 5), to = Math.min(rows.length, from + Math.ceil(list.clientHeight / ROW) + 10);
+    list.innerHTML = '';
+    if (!rows.length) { list.appendChild(el('div', 'empty', tab === 'cycles' ? 'no cycles' : 'nothing matches')); return; }
+    const spacer = el('div'); spacer.style.height = rows.length * ROW + 'px'; list.appendChild(spacer);
+    for (let i = from; i < to; i++) {
+      const r = rows[i], row = el('div', 'row' + (r.ref === selected || r.ref === marked ? ' on' : ''));
+      row.style.top = i * ROW + 'px';
+      const bar = el('div', 'bar'); bar.style.width = (r.bar * 100).toFixed(1) + '%'; row.appendChild(bar);
+      row.appendChild(el('span', 'n', String(i + 1)));
+      const nm = el('span', 'name mono'); if (r.sub) nm.appendChild(el('i', '', r.sub)); nm.appendChild(document.createTextNode(r.label)); nm.title = r.sub + r.label; row.appendChild(nm);
+      if (r.value != null) row.appendChild(el('span', 'v mono', r.fmt(r.value)));
+      row.onclick = () => activate(r);
+      row.onmouseenter = () => { if (cube && r.kind === 'proc') cube.hover(r.ref); };
+      row.onmouseleave = () => { if (cube) cube.hover(null); };
+      list.appendChild(row);
+    }
+  }
+  $('list').addEventListener('scroll', () => requestAnimationFrame(paint), { passive: true });
+  addEventListener('resize', () => { paint(); if (cube) cube.draw(); });
+  function activate(r) {
+    if (r.kind === 'proc') select(r.ref);
+    else { marked = marked === r.ref ? null : r.ref; selected = null; $('sel').classList.remove('on'); highlight(); paint(); }
+  }
+  function scrollTo(ref) {
+    const i = rows.findIndex(r => r.ref === ref); if (i < 0) return;
+    const list = $('list'), y = i * ROW;
+    if (y < list.scrollTop || y + ROW > list.scrollTop + list.clientHeight) list.scrollTop = y - list.clientHeight / 2 + ROW / 2;
+  }
+  $('list').addEventListener('keydown', e => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const cur = rows.findIndex(r => r.ref === (selected || marked)), next = Math.max(0, Math.min(rows.length - 1, cur + (e.key === 'ArrowDown' ? 1 : -1)));
+    if (rows[next]) { activate(rows[next]); scrollTo(rows[next].ref); }
+  });
+
+  // ---- selection and highlights -------------------------------------------------------------
+  function highlight() {
+    if (!cube) return;
+    if (selected) cube.mark([[selected.in, css('--callers')], [selected.out, css('--callees')]]);
+    else if (marked) cube.mark([[marked.members, css('--mark')]]);
+    else cube.mark([]);
+  }
+  function select(n, fromCube) {
+    selected = n; marked = null;
+    if (!n) { if (cube) cube.clear(); $('sel').classList.remove('on'); paint(); return; }
+    if (cube && !fromCube) cube.select(n);
+    if (cube) syncPeel();
+    highlight(); detail(n); if (tab === 'procs') scrollTo(n); paint();
+  }
+  function detail(n) {
+    $('sel').classList.add('on');
+    $('selname').textContent = name(n); $('selwhere').textContent = GraphCore.spanText(n.span);
+    const chips = $('selchips'); chips.innerHTML = '';
+    for (const [k, m] of Object.entries(METRICS)) { const c = el('span', 'chip'); c.append(el('i', '', m.label + ' '), m.fmt(m.get(n))); chips.appendChild(c); }
+    if (n.external) { const c = el('span', 'chip'); c.append(el('i', '', 'external calls '), String(n.external)); chips.appendChild(c); }
+    const leaf = model && model.byRef.get(n);
+    if (leaf) { const c = el('span', 'chip'); c.append(el('i', '', 'box '), `level ${leaf.depth} · ${(leaf.weight / model.cells[0].weight * 100).toPrecision(2)}%`); chips.appendChild(c); }
+    for (const [id, list, label] of [['callers', n.in, 'callers'], ['callees', n.out, 'callees']]) {
+      $('n' + id).textContent = `${label} (${list.length})`;
+      const ul = $(id); ul.innerHTML = '';
+      const sorted = list.slice().sort((a, b) => METRICS.hot.get(b) - METRICS.hot.get(a));
+      for (const m of sorted.slice(0, 200)) { const l = el('li', '', name(m)); l.title = name(m); l.onclick = () => select(m); l.onmouseenter = () => cube && cube.hover(m); l.onmouseleave = () => cube && cube.hover(null); ul.appendChild(l); }
+      if (!list.length) ul.appendChild(el('li', '', 'none'));
+    }
+  }
+  $('unsel').onclick = () => select(null);
+
+  // ---- cube ---------------------------------------------------------------------------------
+  // Each view gives the three axes three different metrics. x is the view's own metric, which also
+  // sets box volume; y and z are the two most useful companions to read it against.
+  const VIEW_AXES = {
+    hot:     ['hot', 'callers', 'tests'],
+    rank:    ['rank', 'callees', 'tests'],
+    callers: ['callers', 'callees', 'hot'],
+    callees: ['callees', 'callers', 'tests'],
+    tests:   ['tests', 'hot', 'callers'],
+    similar: ['similar', 'hot', 'tests'],
+  };
+  // Sort key: the larger value sits nearer the low corner, as in the lists.
+  function arrange() {
+    const m = METRICS[arrangeBy], axes = VIEW_AXES[arrangeBy];
+    model = HotCube.layout(nodes.map(n => ({ weight: m.weight(m.get(n)), keys: axes.map(k => METRICS[k].get(n)), ref: n })));
+    $('peelLo').max = $('peelHi').max = model.leaves.length;
+    $('peelLo').value = 0; $('peelHi').value = model.leaves.length;
+    if (!cube) return;
+    cube.set(model); cube.order(peelRefs()); cube.links(links); cube.axis(axes.map(k => METRICS[k].label));
+    if (selected) cube.select(selected);
+    highlight(); peelText(); $('status').textContent = summary();
+    if (selected) detail(selected);
+  }
+  function peelText() {
+    if (!model) { $('peeltext').textContent = ''; return; }
+    const lo = +$('peelLo').value, hi = +$('peelHi').value, n = model.leaves.length;
+    const shown = model.leaves.filter(c => c.order >= lo && c.order < hi).length;
+    $('peeltext').textContent = `${lo + (n - hi)} of ${n} boxes hidden · ${shown} procedures`;
+  }
+  function syncPeel() {
+    if (!cube) return;
+    const [lo, hi] = cube.peeled;
+    $('peelLo').value = lo; $('peelHi').value = hi;
+    peelText();
+  }
+  // Both handles share one range: the top one peels the best end, the bottom one the worst end.
+  function applyPeel() {
+    let lo = +$('peelLo').value, hi = +$('peelHi').value;
+    if (lo > hi) { if (peelSide === 'lo') { lo = hi; $('peelLo').value = hi; } else { hi = lo; $('peelHi').value = lo; } }
+    if (cube) cube.peelRange(lo, hi);
+    peelText();
+  }
+  for (const [id, side] of [['peelLo', 'lo'], ['peelHi', 'hi']]) {
+    $(id).oninput = () => { peelSide = side; applyPeel(); };
+    $(id).addEventListener('pointerdown', () => { peelSide = side; });
+  }
+  addEventListener('keydown', e => {
+    if (e.target.type === 'search') return;
+    if ((e.key === '[' || e.key === ']' || e.key === '{' || e.key === '}') && model) {
+      // { } step one box down the sidebar, [ ] ten, on the peel handle touched last.
+      const p = peelSide === 'hi' ? $('peelHi') : $('peelLo'), up = e.key === ']' || e.key === '}';
+      const step = e.key === '[' || e.key === ']' ? 10 : 1;
+      p.value = Math.max(0, Math.min(+p.max, +p.value + (up ? step : -step)));
+      applyPeel();
+    }
+    if (e.key === 'Escape') { marked = null; select(null); }
+  });
+
+  function load(doc) {
+    for (const s of doc.symbols || []) if (Array.isArray(s.tests)) s.tests = s.tests.length;
+    const g = GraphCore.build(doc, { kinds: new Set(['procedure']) }); stats = GraphCore.stats(g);   // also writes node.rank
+    nodes = g.nodes;
+    links = nodes.flatMap(n => n.out.map(o => [n, o]));
+    ({ packages, cycles } = GraphCore.groups(g, stats));
+    const st = $('stats'); st.innerHTML = '';
+    for (const [k, v] of [['procedures', stats.symbols], ['call edges', stats.edges], ['packages', stats.packages], ['untested', stats.untested]]) {
+      const c = el('div', 'stat'); c.append(el('b', '', v.toLocaleString()), el('span', '', k)); st.appendChild(c);
+    }
+    if (!cube) { $('drop').textContent = 'This view needs WebGPU: use a current Chrome or Edge (or enable WebGPU in Firefox/Safari).'; }
+    else $('drop').style.display = 'none';
+    arrange(); controls(); refresh();
+  }
+
+  // index.json next to the page, served by serve.mjs from .mosaic/map/<program>/.
+  (async () => {
+    try {
+      const res = await fetch('index.json'); if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+      const total = +res.headers.get('content-length') || 0, reader = res.body.getReader(), chunks = []; let got = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length; $('drop').textContent = `loading index.json: ${(got / 1048576).toFixed(0)}${total ? ' of ' + (total / 1048576).toFixed(0) : ''} MB`; }
+      $('drop').textContent = 'parsing…'; await new Promise(r => setTimeout(r, 0));
+      const doc = JSON.parse(await new Blob(chunks).text()); await ready.catch(() => null);
+      load(doc);
+    } catch (e) { $('drop').textContent = `could not load index.json: ${e.message}. Build a program (it writes .mosaic/map/), then run: node dev/tools/hotmap/serve.mjs`; }
+  })();
+})();
+</script>
+</body>
+</html>

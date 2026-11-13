@@ -1,0 +1,31 @@
+/* The cube page owns its own palette; this only gives it the leaf's area. */
+.hotmap-view { display: flex; flex-direction: column; height: 100%; padding: 0; }
+.hotmap-bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--background-modifier-border); flex: none; }
+.hotmap-bar select { font: inherit; }
+.hotmap-program { color: var(--text-muted); font-size: 12px; padding: 0 4px; }
+.hotmap-frame { flex: 1; width: 100%; border: 0; background: transparent; display: block; }
+.hotmap-note { padding: 16px; color: var(--text-muted); }
+
+/* Right-sidebar panel: stats, filter, list. */
+.hotmap-panel { display: flex; flex-direction: column; height: 100%; padding: 0; }
+.hotmap-panel-bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; flex: none; }
+.hotmap-panel-bar .dropdown { flex: 1; font: inherit; }
+.hotmap-panel-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 8px 6px; flex: none; }
+.hotmap-panel-stat { background: var(--background-secondary); border-radius: 6px; padding: 4px 6px; }
+.hotmap-panel-stat b { display: block; font-variant-numeric: tabular-nums; }
+.hotmap-panel-stat span { font-size: 10px; color: var(--text-muted); }
+.hotmap-panel-tools { display: flex; gap: 4px; padding: 0 8px 6px; flex: none; }
+.hotmap-panel-tools input[type=search] { flex: 1; min-width: 0; }
+.hotmap-panel-dir { flex: none; font-size: 11px; }
+.hotmap-panel-keys { display: flex; gap: 4px; padding: 0 8px 6px; flex: none; }
+.hotmap-panel-key { flex: 1; min-width: 0; display: flex; align-items: center; gap: 3px; }
+.hotmap-panel-key-label { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.hotmap-panel-key .dropdown { flex: 1; min-width: 0; }
+.hotmap-panel-list { flex: 1; overflow: auto; min-height: 0; border-top: 1px solid var(--background-modifier-border); padding: 2px 0; }
+.hotmap-panel-row { display: flex; gap: 6px; align-items: center; padding: 2px 8px; cursor: pointer; font-size: 12px; }
+.hotmap-panel-row:hover { background: var(--background-modifier-hover); }
+.hotmap-panel-row.is-selected { background: var(--background-modifier-active-hover); box-shadow: inset 2px 0 0 var(--interactive-accent); }
+.hotmap-panel-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-monospace); }
+.hotmap-panel-name i { font-style: normal; color: var(--text-muted); }
+.hotmap-panel-value { font-variant-numeric: tabular-nums; color: var(--text-muted); flex: none; }
+.hotmap-panel-row.hotmap-untested .hotmap-panel-value { color: var(--text-warning, var(--text-muted)); }
