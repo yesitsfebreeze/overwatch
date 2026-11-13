@@ -38,8 +38,7 @@ const USAGE = `overwatch — the terminal side of the overwatch plugin (the same
   overwatch prd state <prd> <state> [reason]      open|question|refine|specced|blocked|failed
   overwatch prd review <prd> <score> <reviewer> [findings]   record a review round
   overwatch prd collect <prd> [summary]           verify every gate and mark it done
-  overwatch tool-groups            enabled groups and configuration help
-  overwatch mcp                    stdio MCP server with configured tool groups
+  overwatch mcp                    stdio MCP server
   overwatch hook <host> <event>    command hook for another agent: host event JSON on stdin
 
 State: .overwatch/ in the working directory. Gitignore it as .overwatch/* plus !.overwatch/vault/ (the spec vault is tracked).`
@@ -70,7 +69,6 @@ async function main(argv: string[]): Promise<{ text: string; code: number }> {
     case "disk-clean": return ok(await clean(io, args.filter((a) => a !== "--apply"), args.includes("--apply")))
     case "launch": { const wait = args[0] === "--wait"; return ok(await launch(io, (wait ? args.slice(1) : args).join(" "), wait)) }
     case "launched": return ok(await launched(io, args[0]))
-    case "tool-groups": return ok((await callTool(io, "tool_groups")).text)
     case "mcp": await serve(io); return ok("")
     case "hook": return hook(io, args[0] ?? "", args[1] ?? "", await Bun.stdin.text())
     case "index": return ok(await index(io, args.includes("--active") ? JSON.parse(await Bun.stdin.text()) : undefined))

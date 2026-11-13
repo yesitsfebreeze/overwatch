@@ -41,7 +41,7 @@ cd "$OW" && bun test ./host/host.check.ts                 # expect 0 fail
 
 ## Claude Code
 
-Native plugin: core tools by default; optional groups are configurable.
+Native plugin: every tool enabled.
 
 ```sh
 claude plugin marketplace add "$OW"
@@ -193,18 +193,3 @@ Codex CLI, Copilot CLI and opencode: rerun the host's install step and VERIFY li
 
 A project's state is its `.overwatch/` folder. To start fresh, delete everything in it except `.overwatch/vault/`: the spec vault is git-tracked durable work.
 
-## Optional tool groups
-
-New sessions expose core planning, guard checks, feedback, mistake history and `tool_groups` by default. Native Claude Code also keeps `decompress` and `search_context` while compaction is enabled. Call `tool_groups` once for the installed groups and exact setup help; the catalog stays fixed until the host restarts.
-
-For native Claude Code, set overwatch user configuration `toolGroups` to a comma-separated string such as `vault,background`. For MCP, Pi, OpenCode and other portable hosts, set `OVERWATCH_TOOL_GROUPS=vault,background` in the server or host process environment. Set `all` to restore the complete catalog. Restart the host after changing either setting. Unknown values produce an explicit configuration error and retain core enforcement with optional groups disabled.
-
-| Group | Capabilities |
-|---|---|
-| `vault` | Unit notes, claims, dependencies and evidence |
-| `prd` | PRD planning and collection; includes `vault` |
-| `maintenance` | Loadout, hygiene and disk tools; enables disk notices |
-| `background` | Launch and inspect background commands |
-| `changelog` | Changelog updates |
-
-MCP does not advertise dynamic list changes. Direct terminal subcommands remain explicit operations; `overwatch tool-groups` shows the configured tool catalog.

@@ -3,8 +3,6 @@ name: loadout
 description: Show which Claude Code plugins are active per layer (global base, each account, project, local) as one condensed table. Use when the user asks what is loaded, what plugins are on, or types /loadout.
 ---
 
-Tool availability: enable the `maintenance` group through native `toolGroups` or portable `OVERWATCH_TOOL_GROUPS`, then restart. `tool_groups` shows the configuration.
-
 
 Call `mcp__overwatch__loadout` (no input), or run `${CLAUDE_PLUGIN_ROOT}/bin/overwatch loadout`. Print the table verbatim in a code block, nothing else; a trailing `global not installed:` line is part of it.
 

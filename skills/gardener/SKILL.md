@@ -6,8 +6,6 @@ allowed-tools: mcp__overwatch__disk, mcp__overwatch__disk_clean, Bash, Read, Wri
 
 # gardener
 
-Tool availability: enable the `maintenance` group through native `toolGroups` or portable `OVERWATCH_TOOL_GROUPS`, then restart. `tool_groups` shows the configuration.
-
 Stop as soon as the disk is below the threshold (`diskFullPercent`, default 88). Without the tools: `${CLAUDE_PLUGIN_ROOT}/bin/overwatch disk [disk]` and `${CLAUDE_PLUGIN_ROOT}/bin/overwatch disk-clean [--apply] <path…>`.
 
 ## 1. This project first

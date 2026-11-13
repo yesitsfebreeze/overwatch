@@ -26,7 +26,7 @@ Long-form detail behind the [README](../README.md). Per-host install steps live 
 
 ## Tools
 
-The default catalog contains core planning, checks and feedback, including `mistakes`. `tool_groups` lists optional capabilities and configuration instructions. Enable `vault`, `prd` (includes vault), `maintenance`, `background` or `changelog` through native `toolGroups` or portable `OVERWATCH_TOOL_GROUPS`, then restart. `all` restores the complete catalog. The tables below cover every group. Native compaction retrieval remains available whenever compaction is enabled. Invalid configuration reports an error and keeps core enforcement active.
+Every tool is enabled; there is no tool-group configuration. Native compaction retrieval is available whenever compaction is enabled. The tables below cover every tool.
 
 Each is `mcp__overwatch__<name>` in Claude Code, `overwatch_<name>` in pi and opencode, and the short `<name>` in every other host. A refusal says what to do next.
 

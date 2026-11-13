@@ -6,8 +6,6 @@ allowed-tools: Read, Glob, Grep, mcp__overwatch__hygiene_ledger, Bash(*/bin/over
 
 # hygiene
 
-Tool availability: enable the `maintenance` group through native `toolGroups` or portable `OVERWATCH_TOOL_GROUPS`, then restart. `tool_groups` shows the configuration.
-
 Goal: every skill in `skills/` carries its own weight and can be swapped without another noticing. The command measures; you judge, always.
 
 ## 1. Measure

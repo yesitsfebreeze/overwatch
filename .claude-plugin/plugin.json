@@ -115,12 +115,6 @@
       "title": "Gauges above the prompt",
       "description": "Comma-separated slot ids in draw order; a published slot not listed is not drawn. `plan` is the tasks-and-guards gauge.",
       "default": "componion,plan,kern"
-    },
-    "toolGroups": {
-      "type": "string",
-      "title": "Optional tool groups",
-      "description": "Comma-separated vault, prd (includes vault), maintenance, background, changelog; all enables every tool. Empty keeps core planning, checks and feedback. Restart the host after changing.",
-      "default": ""
     }
   }
 }
