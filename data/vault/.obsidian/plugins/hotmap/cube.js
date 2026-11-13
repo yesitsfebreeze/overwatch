@@ -273,7 +273,9 @@ const HIDDEN = vec4f(0.0, 0.0, 2.0, 1.0);                  // outside the clip v
     const dot = pipeline('vs_dot', 'triangle-list', dotBuffers, 'fs_dot');
     const upload = (data, usage) => { const b = device.createBuffer({ size: Math.max(16, data.byteLength), usage: usage | GPUBufferUsage.COPY_DST }); device.queue.writeBuffer(b, 0, data); return b; };
     const base = instances(model), scratch = new Float32Array(base.length);
-    const inst = upload(base, GPUBufferUsage.VERTEX);
+    // Boxes draw from `inst`, re-sorted by depth each frame; dots draw from `leafInst`, which stays
+    // in leaf order to line up with `dotPos`.
+    const inst = upload(base, GPUBufferUsage.VERTEX), leafInst = upload(base, GPUBufferUsage.VERTEX);
     const order = new Uint32Array(model.leaves.length), depth = new Float32Array(model.leaves.length);
     const faceCorners = upload(FACE_CORNERS, GPUBufferUsage.VERTEX), edgeCorners = upload(EDGE_CORNERS, GPUBufferUsage.VERTEX);
     const dotCorners = upload(DOT_CORNERS, GPUBufferUsage.VERTEX);
@@ -284,24 +286,22 @@ const HIDDEN = vec4f(0.0, 0.0, 2.0, 1.0);                  // outside the clip v
     return {
       draw(encoder, view, uniforms, cloud) {
         device.queue.writeBuffer(uniform, 0, uniforms);
-        reorder(base, scratch, model, uniforms, order, depth);
-        device.queue.writeBuffer(inst, 0, scratch);
         const pass = encoder.beginRenderPass({ colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
-        pass.setVertexBuffer(0, inst);
         if (cloud) {
-          pass.setPipeline(dot); pass.setBindGroup(0, dotGroup);
+          pass.setVertexBuffer(0, leafInst); pass.setPipeline(dot); pass.setBindGroup(0, dotGroup);
           pass.setVertexBuffer(1, dotCorners); pass.setVertexBuffer(2, dotPos); pass.draw(6, count);
         } else {
-          pass.setPipeline(face); pass.setBindGroup(0, faceGroup); pass.setVertexBuffer(1, faceCorners); pass.draw(36, count);
+          reorder(base, scratch, model, uniforms, order, depth); device.queue.writeBuffer(inst, 0, scratch);
+          pass.setVertexBuffer(0, inst); pass.setPipeline(face); pass.setBindGroup(0, faceGroup); pass.setVertexBuffer(1, faceCorners); pass.draw(36, count);
           pass.setPipeline(edge); pass.setBindGroup(0, edgeGroup); pass.setVertexBuffer(1, edgeCorners); pass.draw(24, count);
         }
         pass.end();
       },
       // Re-read the peel order after a caller reordered the leaves; the box count never changes.
-      rebase() { base.set(instances(model)); device.queue.writeBuffer(inst, 0, base); },
+      rebase() { base.set(instances(model)); device.queue.writeBuffer(leafInst, 0, base); },
       // Move the dots: the node simulation writes its positions here each frame.
       positions(arr) { device.queue.writeBuffer(dotPos, 0, arr); },
-      destroy() { for (const b of [inst, faceCorners, edgeCorners, dotCorners, dotPos, uniform]) b.destroy(); },
+      destroy() { for (const b of [inst, leafInst, faceCorners, edgeCorners, dotCorners, dotPos, uniform]) b.destroy(); },
     };
   }
 
