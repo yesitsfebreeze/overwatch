@@ -5,7 +5,7 @@
  * (bin/node-io.ts) in a terminal.
  */
 /** The environment variables overwatch reads; a new one is added here and in engineEnv. */
-type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "HYGIENE_TRANSCRIPTS" | "TMPDIR"
+type EnvName = "HOME" | "XDG_STATE_HOME" | "CLAUDE_CONFIG_DIR" | "TMPDIR"
 export type Run = { code: number; stdout: string; stderr: string; timedOut?: boolean }
 export type Entry = { name: string; kind: "file" | "dir" | "other"; mtimeMs: number }
 /** Runs argv; never rejects: a failure to start is code 127, a timeout has timedOut=true (code 124 is not proof of timeout). */
@@ -130,7 +130,6 @@ async function engineEnv($: any, name: EnvName): Promise<string | undefined> {
     case "HOME": return $.env.get("HOME")
     case "XDG_STATE_HOME": return $.env.get("XDG_STATE_HOME")
     case "CLAUDE_CONFIG_DIR": return $.env.get("CLAUDE_CONFIG_DIR")
-    case "HYGIENE_TRANSCRIPTS": return $.env.get("HYGIENE_TRANSCRIPTS")
     case "TMPDIR": return $.env.get("TMPDIR")
   }
 }

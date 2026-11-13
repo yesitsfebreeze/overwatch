@@ -47,10 +47,8 @@ export const TOOLS = ALL_TOOLS
 /** Text written for Claude Code names tools `mcp__overwatch__x`; other hosts get the short name. */
 const plain = (s: string) => s.replaceAll(TOOL_PREFIX, "")
 
-/** The git toplevel of `dir`, else `dir`. `OVERWATCH_PROJECT` overrides it (a host that starts MCP servers elsewhere). */
+/** The git toplevel of `dir`, else `dir`. */
 async function projectRoot(io: Io, dir = io.cwd): Promise<string> {
-  const pinned = process.env.OVERWATCH_PROJECT
-  if (pinned) return pinned
   const r = await io.run(["git", "rev-parse", "--show-toplevel"], { cwd: dir, timeoutMs: 5000 })
   return r.code === 0 && r.stdout.trim() ? r.stdout.trim() : dir
 }

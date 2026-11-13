@@ -161,7 +161,7 @@ VERIFY: a new droid session can call `plan_show`; an Edit before `task_add` is r
 
 ## Anything else
 
-MCP client: register a stdio server named `overwatch`, command `overwatch`, args `["mcp"]`, started in the project directory (or with `OVERWATCH_PROJECT` set to the project path). That gives the tools.
+MCP client: register a stdio server named `overwatch`, command `overwatch`, args `["mcp"]`, started in the project directory. That gives the tools.
 
 Command hooks in Claude Code's format (stdin JSON with `cwd` and `tool_name`; `hookSpecificOutput.additionalContext`; `permissionDecision: deny`; `decision: block` on stop): point them at `overwatch hook claude <Event>` for SessionStart, UserPromptSubmit, PreToolUse (file write/edit tools) and Stop.
 

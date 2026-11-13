@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 
-_BIN = os.environ.get("OVERWATCH_BIN") or shutil.which("overwatch") or os.path.expanduser("~/.local/bin/overwatch")
+_BIN = shutil.which("overwatch") or os.path.expanduser("~/.local/bin/overwatch")
 
 
 def _hook(event, payload):

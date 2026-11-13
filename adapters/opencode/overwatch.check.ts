@@ -9,8 +9,6 @@ const { default: plugin } = await import("./index.ts")
 
 async function session() {
   const dir = mkdtempSync(join(tmpdir(), "overwatch-opencode-"))
-  const previous = process.env.OVERWATCH_PROJECT
-  process.env.OVERWATCH_PROJECT = dir
   const hooks: Record<string, (event: any) => Promise<void>> = {}
   const tools: Record<string, any> = {}
   const prompts: any[] = []
@@ -58,8 +56,6 @@ async function session() {
     }),
     close: () => {
       stop()
-      if (previous === undefined) delete process.env.OVERWATCH_PROJECT
-      else process.env.OVERWATCH_PROJECT = previous
       rmSync(dir, { recursive: true, force: true })
     },
   }

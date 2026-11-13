@@ -13,7 +13,6 @@ import { CLEAN, detail } from "../hooks/plan.ts"
 
 test("portable plan_show forwards exact pages and rejects invalid or stale continuation", async () => {
   const io = memIo({}, "/plan-pages")
-  process.env.OVERWATCH_PROJECT = io.cwd
   const title = 'literal mcp__overwatch__prefix 😀 \\"\n'.repeat(300)
   await callTool(io, "task_add", { titles: [title] })
   let page = JSON.parse((await callTool(io, "plan_show", { limit: 1000 })).text)
@@ -35,7 +34,6 @@ test("portable plan_show forwards exact pages and rejects invalid or stale conti
 
 const sandbox = () => {
   const dir = mkdtempSync(join(tmpdir(), "ow-"))
-  process.env.OVERWATCH_PROJECT = dir
   return { dir, io: fromNode(dir) }
 }
 
@@ -64,7 +62,6 @@ test("portable timeout remains unmet, pauses automatic retry, and explicit overr
     calls++; budgets.push(init!.timeoutMs!)
     return { code: timedOut ? 124 : 0, stdout: "", stderr: "", timedOut }
   })
-  process.env.OVERWATCH_PROJECT = io.cwd
   await callTool(io, "guard_add", { question: "Does the timeout probe pass?", check: "timeout-probe" })
   expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toContain("timed out")
   expect((await onEvent(io, { kind: "stop", cwd: io.cwd })).block).toContain("timed out")
@@ -85,7 +82,6 @@ test("automatic checks: open work waits, the ninth stop spends nothing, explicit
     if (check) checks++
     return { code: check ? exit : 0, stdout: "", stderr: "" }
   })
-  process.env.OVERWATCH_PROJECT = io.cwd
   await callTool(io, "task_add", { titles: ["Finish work"] })
   await callTool(io, "guard_add", { question: "Does the guard probe pass?", check: "guard-probe" })
   await onEvent(io, { kind: "stop", cwd: io.cwd })

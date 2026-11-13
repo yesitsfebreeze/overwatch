@@ -7,7 +7,7 @@ import { abs, cmp, join, memIo, type Entry, type Io } from "./io.ts"
  *   overwatch hygiene [repo] --issues   also sync GitHub issues of <repo> (needs gh)
  *   overwatch hygiene --selftest
  *
- * Usage counts come from local Claude Code transcripts (~/.claude/projects, or HYGIENE_TRANSCRIPTS);
+ * Usage counts come from local Claude Code transcripts (~/.claude/projects);
  * without them the column is blank.
  */
 
@@ -149,7 +149,7 @@ const SKILL_CALL = /"name":"Skill","input":\{"skill":"([^"]+)"/g
  * else every *.jsonl is read here. Not BSD grep: its -o is an order of magnitude slower than either.
  */
 async function usageCounts(io: Io): Promise<Record<string, number>> {
-  const base = (await io.env("HYGIENE_TRANSCRIPTS")) ?? join((await io.env("HOME")) ?? "", ".claude/projects")
+  const base = join((await io.env("HOME")) ?? "", ".claude/projects")
   if (!(await io.exists(base))) return {}
   const counts: Record<string, number> = {}
   const count = (text: string) => {
