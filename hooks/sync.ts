@@ -236,7 +236,7 @@ async function inspectRuntime(io: Io, source: Source, root: string, apply: boole
     return result
   } catch { return { status: "blocked", commit: null, conflicts: [r.stderr.trim() || "runtime adapter did not return a valid result"] } }
 }
-async function prepare(io: Io, options: SyncOptions): Promise<Prepared> {
+async function prepare(io: Io, options: SyncOptions, automatic = false): Promise<Prepared> {
   const rt = await runtime(io)
   const before = (await io.read(join(io.cwd, STATE))) ?? null
   let old: Receipt | undefined
@@ -244,7 +244,14 @@ async function prepare(io: Io, options: SyncOptions): Promise<Prepared> {
     return { report: { ...reportBase(rt), status: "blocked", conflicts: [e.message] }, receiptBefore: before, files: [], interrupted: false }
   }
   const report = reportBase(rt, old)
-  const hint = !options.sourceRoot && !old ? await machineAuthority(io) : undefined
+  const hint = options.sourceRoot === undefined && !old ? await machineAuthority(io) : undefined
+  // An installed package is not a project enrollment decision.
+  if (automatic && options.sourceRoot === undefined && !old && !hint) {
+    const interrupted = await io.exists(join(io.cwd, JOURNAL))
+    return { report: { ...report, status: interrupted ? "blocked" : "current",
+      reason: interrupted ? "interrupted migration requires an explicit source or configured authority before recovery" : "unconfigured",
+      pending: interrupted ? ["recover-interrupted-migration"] : [] }, receiptBefore: before, files: [], interrupted }
+  }
   const root = options.sourceRoot ?? old?.source.root ?? hint?.sourceRoot ?? io.root
   const ref = options.sourceRef ?? old?.source.ref ?? hint?.sourceRef ?? "HEAD"
   const result: Prepared = { report, receiptBefore: before, files: [], interrupted: await io.exists(join(io.cwd, JOURNAL)) }
@@ -424,8 +431,8 @@ async function configureAuthority(io: Io, options: SyncOptions, recovery: number
   }
   return { ...report, source, status: "blocked", conflicts: ["authority recovery requires retry"] }
 }
-async function checked(io: Io, options: SyncOptions): Promise<Prepared> {
-  try { return await prepare(io, options) } catch (e: any) {
+async function checked(io: Io, options: SyncOptions, automatic = false): Promise<Prepared> {
+  try { return await prepare(io, options, automatic) } catch (e: any) {
     return { report: { ...reportBase(await runtime(io)), status: "error", reason: String(e?.message ?? e) }, receiptBefore: null, files: [], interrupted: false }
   }
 }
@@ -437,9 +444,9 @@ export async function syncVerify(io: Io, options: SyncOptions = {}): Promise<Syn
   if (p.report.reason === "unconfigured") { p.report.status = "uninitialized"; p.report.verification.ok = false }
   return p.report
 }
-export async function syncMigrate(io: Io, options: SyncOptions = {}): Promise<SyncReport> {
+async function migrate(io: Io, options: SyncOptions, automatic: boolean): Promise<SyncReport> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const p = await checked(io, options)
+    const p = await checked(io, options, automatic)
     if (["blocked", "offline", "error", "current"].includes(p.report.status)) return p.report
     if (!p.receiptAfter) return p.report
     if (p.report.sharedRuntime?.status === "outdated" && p.report.source) {
@@ -471,8 +478,11 @@ export async function syncMigrate(io: Io, options: SyncOptions = {}): Promise<Sy
   }
   throw new Error("unreachable synchronization retry")
 }
+export async function syncMigrate(io: Io, options: SyncOptions = {}): Promise<SyncReport> {
+  return migrate(io, options, false)
+}
 export async function syncAutomatic(io: Io, options: SyncOptions & { reason?: "initialize" | "reconnect" | "session.start" } = {}): Promise<SyncReport> {
-  return syncMigrate(io, options)
+  return migrate(io, options, true)
 }
 export function syncNotice(r: SyncReport): string {
   if (r.reason === "unconfigured") return ""

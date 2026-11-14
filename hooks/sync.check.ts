@@ -295,3 +295,91 @@ test("Copilot metadata proves no-Git runtime identity and loaded snapshots remai
   expect(reloaded.restartRequired).toBe(true)
   expect(existsSync(join(f.project, ".overwatch/sync/state.json"))).toBe(false)
 }, 60000)
+
+function committedInstallation(f: ReturnType<typeof fixture>) {
+  const root = join(f.base, "installed")
+  repository(root)
+  for (const path of ["hooks", "host", "bin", "types", "jev", "adapters", "data", ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".github/plugin", "package.json"])
+    cpSync(join(f.io.root, path), join(root, path), { recursive: true })
+  write(root, ".gitignore", "node_modules/\n.overwatch/\n")
+  if (existsSync(join(f.io.root, "node_modules")))
+    symlinkSync(join(f.io.root, "node_modules"), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir")
+  const head = commit(root, "committed runtime installation")
+  return { io: { ...f.io, root }, head }
+}
+
+test("automatic startup does not enroll an unconfigured project from a committed Git installation", async () => {
+  const f = fixture()
+  const { io, head } = committedInstallation(f)
+  expect(git(io.root, "status", "--porcelain")).toBe("")
+  expect(git(io.root, "show", head + ":data/sync-manifest.json")).toContain('"format": 1')
+  const ignore = at(f, ".gitignore")
+  for (const reason of ["initialize", "reconnect", "session.start"] as const) {
+    const result = await syncAutomatic(io, { reason })
+    expect({
+      status: result.status,
+      reason: result.reason,
+      notice: syncNotice(result),
+      vault: existsSync(join(f.project, ".overwatch/vault")),
+      receipt: existsSync(join(f.project, ".overwatch/sync/state.json")),
+      mcp: existsSync(join(f.project, ".mcp.json")),
+    }).toEqual({ status: "current", reason: "unconfigured", notice: "", vault: false, receipt: false, mcp: false })
+    expect(at(f, ".gitignore")).toBe(ignore)
+  }
+  expect((await syncCheck(io)).status).toBe("uninitialized")
+  const deliberate = await syncMigrate(io)
+  expect(deliberate.status).toBe("applied")
+  expect(deliberate.installedCommit).toBe(head)
+  const enrolled = await syncAutomatic(io, { reason: "reconnect" })
+  expect(enrolled.status).toBe("current")
+  expect(enrolled.installedCommit).toBe(head)
+
+  const area = join(f.project, ".overwatch/sync")
+  const archives = readdirSync(join(area, "transactions")).filter(n => n.endsWith(".json"))
+  expect(archives.length).toBe(1)
+  const journal = JSON.parse(readFileSync(join(area, "transactions", archives[0]!), "utf8"))
+  journal.phase = "apply"
+  const journalBytes = JSON.stringify(journal)
+  writeFileSync(join(area, "journal.json"), journalBytes)
+  unlinkSync(join(area, "state.json"))
+  const mcpBefore = at(f, ".mcp.json")
+  const interrupted = await syncAutomatic(io, { reason: "reconnect" })
+  expect(interrupted.status).toBe("blocked")
+  expect(interrupted.reason).toContain("interrupted migration")
+  expect(interrupted.pending).toContain("recover-interrupted-migration")
+  expect(syncNotice(interrupted)).toContain("explicit source")
+  expect(readFileSync(join(area, "journal.json"), "utf8")).toBe(journalBytes)
+  expect(existsSync(join(area, "state.json"))).toBe(false)
+  expect(at(f, ".mcp.json")).toBe(mcpBefore)
+}, 60000)
+
+test("automatic startup reports invalid authority and receipts while honoring explicit source precedence", async () => {
+  const f = fixture()
+  const { io } = committedInstallation(f)
+  const pointer = ".overwatch/source.json"
+  write(f.home, pointer, "{ broken")
+  const malformed = await syncAutomatic(io)
+  expect(malformed.status).toBe("error")
+  expect(typeof malformed.reason).toBe("string")
+  const invalidExplicit = await syncAutomatic(io, { sourceRoot: "" })
+  expect(invalidExplicit.status).toBe("blocked")
+  expect(invalidExplicit.conflicts[0]).toContain("authority root")
+
+  write(f.home, pointer, JSON.stringify({ sourceRoot: 42 }))
+  const invalid = await syncAutomatic(io)
+  expect(invalid.status).toBe("error")
+  expect(invalid.reason).toContain("invalid machine authority")
+
+  write(f.home, pointer, JSON.stringify({ sourceRoot: join(f.base, "offline"), runtimeRoot: io.root }))
+  expect((await syncAutomatic(io)).status).toBe("offline")
+  expect(existsSync(join(f.project, ".overwatch/vault"))).toBe(false)
+  expect(existsSync(join(f.project, ".mcp.json"))).toBe(false)
+
+  write(f.home, pointer, "{ broken")
+  expect((await syncAutomatic(io, { sourceRoot: io.root })).status).toBe("applied")
+  expect((await syncAutomatic(io)).status).toBe("current")
+  const invalidReceipt = "{ preserve this invalid receipt"
+  write(f.project, ".overwatch/sync/state.json", invalidReceipt)
+  expect((await syncAutomatic(io)).status).toBe("blocked")
+  expect(at(f, ".overwatch/sync/state.json")).toBe(invalidReceipt)
+}, 60000)

@@ -252,7 +252,7 @@ usage. No prices, net savings, or unreported main-agent usage are inferred.
 
 Overwatch follows an exact committed Git reference for shared infrastructure. The
 same functions serve the CLI, MCP, portable host start, and Claude session start.
-No timer polls projects. Initialization and reconnection check for missing changes.
+No timer polls projects. After authority setup, initialization and reconnection check for missing changes.
 
 ```text
 overwatch sync source <source-checkout> [--ref <git-ref>] [--runtime <shared-checkout>]
@@ -273,6 +273,11 @@ authority takes precedence. This machine-local pointer also lets a newly install
 plugin cache, which has no Git history, find the shared source. Git transports
 commits between machines; synchronization consumes the configured committed ref,
 never uncommitted source bytes or a package-version label alone.
+
+Automatic startup requires an explicit source, machine authority, or existing project
+receipt. An unconfigured project stays unchanged, including when Overwatch runs
+from a Git checkout containing its own manifest. Explicit check, migrate, and
+verify commands retain the running checkout as a deliberate bootstrap default.
 
 `data/sync-manifest.json` explicitly lists shared assets and ordered migration
 versions. Existing project notes, plans, guards, claims, workflows and instructions

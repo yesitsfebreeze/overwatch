@@ -16,7 +16,7 @@ Reproduce the issue, change its owning implementation, and run meaningful checks
 
 ## Synchronize shared infrastructure
 
-Use sync_check, sync_migrate, and sync_verify, or the equivalent overwatch sync commands. The receipt in .overwatch/sync/state.json records the committed authority, migration and schema versions, shared-file ownership, and project extensions. Automatic checks run on initialization and reconnection.
+Use sync_check, sync_migrate, and sync_verify, or the equivalent overwatch sync commands. The receipt in .overwatch/sync/state.json records the committed authority, migration and schema versions, shared-file ownership, and project extensions. Automatic checks run on initialization and reconnection after an authority or project receipt is configured. Unconfigured startup leaves the project unchanged.
 
 Only committed source content is eligible for migration. Shared infrastructure and project-owned data have separate ownership. Project notes, live plans, claims, guards, custom MCP servers, workflows, credentials, and unrelated files are preserved. A conflict, active claim, dirty shared target, offline source, or incompatible schema is reported explicitly. Do not clear a lock, weaken a check, overwrite a customization, or replace project state to force synchronization.
 

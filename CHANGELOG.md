@@ -7,6 +7,7 @@ All notable changes to this project, one section per version, newest first.
 - Add commit-bound cross-project synchronization through one shared MCP, CLI and startup core.
 - Preserve customized infrastructure and active work with owned migrations, recovery journals and guarded runtime fast-forwards.
 - Record shared authority, installed versions, capabilities, extensions and loaded-runtime provenance.
+- Keep unconfigured startup read-only; explicit authority setup enables automatic migration.
 
 ## [0.2.0] - 2026-11-12
 
