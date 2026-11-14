@@ -3,4 +3,5 @@ node_modules/
 .kern/
 /adapters/opencode/node_modules/
 /adapters/opencode/bun.lock
-.overwatch/
+.overwatch/*
+!.overwatch/vault/
