@@ -9,6 +9,7 @@ import { launch, launched } from "./launch.ts"
 import { asBlock, checklist, evaluation, firedBy, learned, mistake, mistakesPage, rate, report, scan, status, surface, tally, VERDICTS } from "./surface.ts"
 import { liveResultBudget } from "./paging.ts"
 import { CHECK_TIERS } from "./guards.ts"
+import { syncCheck, syncConfigure, syncMigrate, syncVerify, type SyncReport } from "./sync.ts"
 import { TOOL_PREFIX, type ToolSpec } from "./catalog.ts"
 
 /** One tool over one of overwatch's commands: its schema and what it runs. A thrown Error is an error result. */
@@ -17,7 +18,44 @@ type CommandTool = ToolSpec & { run: (io: Io, e: any, context?: { maxOutputChars
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "")
 
 /** The commands exposed as `mcp__overwatch__<name>`; bin/overwatch runs the same functions from a terminal. */
+const SYNC_PROPERTIES = {
+  source_root: { type: "string", description: "Authoritative Overwatch Git checkout; otherwise reuse the project's recorded source." },
+  source_ref: { type: "string", description: "Committed Git reference to follow, such as origin/main; otherwise reuse the recorded reference." },
+  runtime_root: { type: "string", description: "Shared clean Overwatch checkout to update safely; preserves dirty or divergent installations." },
+}
+const syncOptions = (e: any) => ({ sourceRoot: text(e.source_root) || undefined, sourceRef: text(e.source_ref) || undefined, runtimeRoot: text(e.runtime_root) || undefined })
+const verifiedSync = (r: SyncReport) => {
+  if (!r.verification.ok) throw new Error(JSON.stringify(r))
+  return r
+}
+
 export const COMMAND_TOOLS: Record<string, CommandTool> = {
+  sync_source: {
+    description: "Set this machine's default authoritative Overwatch Git source and shared runtime for new projects. Validates the committed source before saving; existing projects retain their recorded authority.",
+    properties: SYNC_PROPERTIES,
+    required: ["source_root"],
+    run: async (io, e) => {
+      const r = await syncConfigure(io, syncOptions(e))
+      if (!["current", "applied"].includes(r.status)) throw new Error(JSON.stringify(r))
+      return r
+    },
+  },
+
+  sync_check: {
+    description: "Compare installed Overwatch commit, migrations, vault, workflows and capabilities with the authoritative committed source. Read-only; reports extensions, active claims, conflicts and restart requirements.",
+    properties: SYNC_PROPERTIES,
+    run: (io, e) => syncCheck(io, syncOptions(e)),
+  },
+  sync_migrate: {
+    description: "Apply missing shared migrations with ownership checks, an exclusive lock and a recovery journal. Preserves project tools, content, plans, guards, claims and customized files; reports conflicts without overwriting them.",
+    properties: SYNC_PROPERTIES,
+    run: async (io, e) => verifiedSync(await syncMigrate(io, syncOptions(e))),
+  },
+  sync_verify: {
+    description: "Verify installed shared files, commit provenance, tools, vault and workflow compatibility against the recorded source. Read-only; fails when compatibility is unverified.",
+    properties: SYNC_PROPERTIES,
+    run: async (io, e) => verifiedSync(await syncVerify(io, syncOptions(e))),
+  },
   vault_init: {
     description: "Create the project's spec vault in .overwatch/vault (an Obsidian vault git tracks): Home, the Plan note, the spec template and the Plan View plugin. Never overwrites a file. unit_new runs it when the vault is missing.",
     run: (io) => vaultInit(io),

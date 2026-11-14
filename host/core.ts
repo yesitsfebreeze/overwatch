@@ -18,6 +18,7 @@ import { schemaOf, TOOL_PREFIX, type ToolSpec } from "../hooks/catalog.ts"
 import { ignoreHint, join, STATE_DIR, type Io } from "../hooks/io.ts"
 import { VAULT_TOOLS } from "../hooks/vault.ts"
 import { CHANGELOG_TOOLS } from "../hooks/changelog.ts"
+import { syncAutomatic, syncNotice } from "../hooks/sync.ts"
 const ALL_PLAN_TOOLS = { ...PLAN_TOOLS, ...VAULT_TOOLS, ...CHANGELOG_TOOLS }
 
 export { schemaOf }
@@ -108,8 +109,8 @@ export async function onEvent(io: Io, e: Event): Promise<Outcome> {
   switch (e.kind) {
     case "start": {
       // Once per session: the gardener's ask, earlier sessions' lessons and, until git ignores the state folder, the line asking for it.
-      const [lessons, hint, disk] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), fullNotice(at).then(plain, () => "")])
-      return withState(io, root, (s) => [{ ...s, told: false }, { context: [hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
+      const [lessons, hint, disk, sync] = await Promise.all([learned(at).catch(() => ""), ignoreHint(at), fullNotice(at).then(plain, () => ""), syncAutomatic(at, { reason: "session.start" }).then(syncNotice, (e) => "[overwatch] synchronization failed: " + String(e?.message ?? e))])
+      return withState(io, root, (s) => [{ ...s, told: false }, { context: [sync, hint, disk, plain(reminder(s.plan, false, HOST_CONTRACT)), lessons].filter(Boolean).join("\n\n") }])
     }
     case "prompt":
       return withState(io, root, (s) => [

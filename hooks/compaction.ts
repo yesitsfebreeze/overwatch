@@ -85,6 +85,17 @@ const hasMedia = (v: any): boolean => !!v && typeof v === 'object' && (isMediaNo
 function boundedValue(value: unknown, max: number, id: string, error: boolean): unknown {
   const small = minifyDeep(value, max, id);
   if (JSON.stringify(small).length <= max && (!error || JSON.stringify(value).length <= max)) return small;
+  // A built-in tool's result is an object its schema checks: cut its longest strings, keep its shape.
+  // MCP content arrays may still become one string, which MCP results accept.
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    let low = 0, high = max;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (JSON.stringify(minifyDeep(value, mid, id)).length <= max) low = mid;
+      else high = mid - 1;
+    }
+    return minifyDeep(value, low, id);
+  }
   let text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   if (error) {
     const evidence = text.split(/\n|\\n/).filter((line) => /\b(error|fail(?:ed|ure)?|assertion|panic|traceback)\b/i.test(line)).slice(0, 4).map((line) => cut(line, 200)).join('\n');

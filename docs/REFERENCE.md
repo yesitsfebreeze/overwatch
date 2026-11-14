@@ -247,3 +247,58 @@ of compaction registration. Malformed report snapshots display unavailable.
 The legacy `saved`/`lastFold` values estimate context tokens removed; `savedKind`
 labels that meaning explicitly. They do not measure billed savings or offset Jev
 usage. No prices, net savings, or unreported main-agent usage are inferred.
+
+## Shared infrastructure synchronization
+
+Overwatch follows an exact committed Git reference for shared infrastructure. The
+same functions serve the CLI, MCP, portable host start, and Claude session start.
+No timer polls projects. Initialization and reconnection check for missing changes.
+
+```text
+overwatch sync source <source-checkout> [--ref <git-ref>] [--runtime <shared-checkout>]
+overwatch sync check [--source <checkout>] [--ref <git-ref>] [--runtime <checkout>]
+overwatch sync migrate [--source <checkout>] [--ref <git-ref>] [--runtime <checkout>]
+overwatch sync verify [--source <checkout>] [--ref <git-ref>] [--runtime <checkout>]
+```
+
+MCP offers `sync_source`, `sync_check`, `sync_migrate`, and `sync_verify`, with
+`source_root`, `source_ref`, and `runtime_root` arguments. Check is read-only.
+Verify fails when compatibility is unproven; migration reports conflicts instead
+of replacing customized or claimed files. CLI status is nonzero for an incomplete
+check, migration, or verification. Invalid arguments exit 2.
+
+Configure the authority once per machine. `~/.overwatch/source.json` stores its
+source checkout, reference, and shared runtime checkout. A project's recorded
+authority takes precedence. This machine-local pointer also lets a newly installed
+plugin cache, which has no Git history, find the shared source. Git transports
+commits between machines; synchronization consumes the configured committed ref,
+never uncommitted source bytes or a package-version label alone.
+
+`data/sync-manifest.json` explicitly lists shared assets and ordered migration
+versions. Existing project notes, plans, guards, claims, workflows and instructions
+remain project-owned. Seed documents are created only when absent. Shared files
+are updated only when their installed provenance and unchanged bytes prove
+ownership. Community plugin arrays keep custom entries. MCP configuration changes
+only the proven Overwatch entry; other servers and keys survive. Common instructions
+live in `.overwatch/shared/OVERWATCH.md` and are surfaced during startup.
+
+The project receipt at `.overwatch/sync/state.json` records the source commit,
+migration, vault and workflow versions, capability fingerprint, owned files and
+extensions. A repeated unchanged synchronization does not rewrite the receipt.
+Unknown formats, missing migrations, offline sources, dirty managed paths and
+active claims are explicit non-success outcomes.
+
+One shared runtime is updated under a separate process lock. Only a clean tracked
+checkout that can fast-forward to the authoritative commit is eligible. Divergent
+history, staged changes, conflicting untracked files and active ownership are
+preserved and reported. No stash, reset, force update or process termination is used.
+
+Project writes use an exclusive lock, preconditions and a write-ahead journal.
+Originals are recorded before atomic file replacement; the receipt is written last.
+A retry recovers a known interrupted transaction and re-plans. Unknown concurrent
+edits block recovery. Completed journals retain practical rollback evidence.
+
+Installed files and loaded code are separate facts. Runtime provenance is captured
+at startup; updating a checkout cannot relabel an existing process. A changed
+runtime or installed plugin may require a supported reconnect/reload. Migration
+never stops custom MCPs or active sessions to make a status appear current.

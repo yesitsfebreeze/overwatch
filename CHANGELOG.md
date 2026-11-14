@@ -2,6 +2,12 @@
 
 All notable changes to this project, one section per version, newest first.
 
+## [0.3.0] - 2026-11-14
+
+- Add commit-bound cross-project synchronization through one shared MCP, CLI and startup core.
+- Preserve customized infrastructure and active work with owned migrations, recovery journals and guarded runtime fast-forwards.
+- Record shared authority, installed versions, capabilities, extensions and loaded-runtime provenance.
+
 ## [0.2.0] - 2026-11-12
 
 - overwatch: claim protocol, evidence runs, tiered checks, and a Dataview dashboard (53c6574)

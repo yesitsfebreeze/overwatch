@@ -50,8 +50,8 @@ session("native mistakes reader returns structured exact history pages", async (
   let joined = "", args: any = {}
   while (true) {
     const result: any = await $.tool.call({ tool: "mcp__overwatch__mistakes", ...args } as any)
-    const page = result.result
-    expect(typeof page).toBe("object")
+    expect(typeof result.result).toBe("string")
+    const page = JSON.parse(result.result)
     joined += page.text
     if (page.next_offset === null) break
     args = { id: page.id, offset: page.next_offset }

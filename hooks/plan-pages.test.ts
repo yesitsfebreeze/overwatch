@@ -53,20 +53,20 @@ session("plan_show: native pages keep exact text through live result handling", 
   const title = 'Unicode 😀 mcp__overwatch__literal \\"\n'.repeat(300)
   await $.tool.call({ tool: tool("task_add"), titles: [title] } as any)
   const first: any = await $.tool.call({ tool: tool("plan_show"), limit: 100000 } as any)
-  expect(typeof first.result).toBe("object")
-  let page = first.result
+  expect(typeof first.result).toBe("string")
+  let page = JSON.parse(first.result)
   let restored = ""
   do {
-    expect(JSON.stringify({ result: page }).length).toBeLessThan(8000)
+    expect(JSON.stringify(page).length).toBeLessThan(8000)
     restored += page.text
     if (page.next_offset === null) break
     const next: any = await $.tool.call({ tool: tool("plan_show"), id: page.id, offset: page.next_offset, limit: 100000 } as any)
-    page = next.result
+    page = JSON.parse(next.result)
   } while (true)
   expect(restored).toBe(detail({ tasks: [{ id: 1, title: title.trim(), progress: 0, status: "todo" }], nextId: 2, guards: [] }, CLEAN))
   const bad: any = await $.tool.call({ tool: tool("plan_show"), offset: -1 } as any)
   expect(JSON.stringify(bad)).toContain("offset")
   await $.tool.call({ tool: tool("task_add"), titles: ["new revision"] } as any)
-  const stale: any = await $.tool.call({ tool: tool("plan_show"), id: first.result.id, offset: 1 } as any)
+  const stale: any = await $.tool.call({ tool: tool("plan_show"), id: JSON.parse(first.result).id, offset: 1 } as any)
   expect(JSON.stringify(stale)).toContain("plan changed")
 })

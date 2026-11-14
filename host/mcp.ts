@@ -5,6 +5,9 @@
 import type { Io } from "../hooks/io.ts"
 import { callTool, schemaOf, TOOLS } from "./core.ts"
 import pkg from "../package.json" with { type: "json" }
+import { captureSyncRuntime, syncAutomatic, syncNotice } from "../hooks/sync.ts"
+
+const initialized = new WeakSet<Io>()
 
 type Req = { jsonrpc: "2.0"; id?: number | string | null; method: string; params?: any }
 
@@ -12,12 +15,17 @@ async function answer(io: Io, req: Req): Promise<object | undefined> {
   const ok = (result: object) => ({ jsonrpc: "2.0", id: req.id, result })
   if (req.id === undefined || req.id === null) return undefined // a notification
   switch (req.method) {
-    case "initialize":
+    case "initialize": {
+      const reason = initialized.has(io) ? "reconnect" : "initialize"
+      const instructions = await syncAutomatic(io, { reason }).then(syncNotice, (e) => "[overwatch] synchronization failed: " + String(e?.message ?? e))
+      initialized.add(io)
       return ok({
         protocolVersion: req.params?.protocolVersion ?? "2025-06-18",
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "overwatch", version: pkg.version },
+        ...(instructions ? { instructions } : {}),
       })
+    }
     case "ping":
       return ok({})
     case "tools/list":
@@ -32,6 +40,7 @@ async function answer(io: Io, req: Req): Promise<object | undefined> {
 }
 
 export async function serve(io: Io): Promise<void> {
+  await captureSyncRuntime(io).catch(() => {})
   const send = (o: object) => process.stdout.write(JSON.stringify(o) + "\n")
   let buf = ""
   // Calls answer in arrival order: the plan file is read-modify-write.

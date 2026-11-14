@@ -24,32 +24,30 @@ hooks (`overwatch hook <host> <event>`) or the MCP server (`overwatch mcp`).
 State lives in .overwatch/ in the project root; the session start asks to
 gitignore it.
 
-UPDATE (when `command -v overwatch` prints a path)
+UPDATE AND SHARED SYNCHRONIZATION
 
-U1. Find the checkout:
-      OW="$(cd "$(dirname "$(readlink "$(command -v overwatch)")")/.." && pwd)"
-      test -x "$OW/bin/overwatch" && git -C "$OW" rev-parse --show-toplevel   # expect $OW
-    Fails: ask the user for the checkout; never clone a second.
-U2. Check:
-      git -C "$OW" fetch --quiet origin
-      git -C "$OW" log --oneline HEAD..@{u}
-    Exit 0 and no output: current. Report `git -C "$OW" log --oneline -1` and stop.
-U3. Update, fast-forward only. Local changes (`git -C "$OW" status --short`) or
-    a refused pull: stop and report; never stash, reset or force.
-      git -C "$OW" pull --ff-only
-      cd "$OW" && bun test ./host/host.check.ts                # expect 0 fail
-U4. Refresh the host. Hosts that run the checkout itself are done (the
-    `overwatch` binary, pi, Hermes, Gemini, Cursor, Droid, Claude Code with
-    --plugin-dir). Hosts that run a copy:
-      Claude Code (installed plugin):
-        claude plugin marketplace update overwatch
-        claude plugin update overwatch@overwatch
-      Codex CLI, Copilot CLI: run the HOST section's install commands again.
-      opencode: cd "$OW/adapters/opencode" && bun install
-    The pulled install.txt names a hook or config entry the host lacks: merge
-    it as the HOST section says.
-U5. Run the HOST section's VERIFY line. Tell the user the commits pulled, the
-    VERIFY output, and that the agent must be restarted.
+U1. Identify the authoritative Overwatch Git checkout and the shared runtime
+    checkout. Fetch/reconcile source history through Git first; preserve dirty
+    files and divergent commits. The configured ref identifies committed bytes.
+    An older Overwatch without sync commands needs this one bootstrap update:
+    fast-forward its clean checkout, verify the core, then use the commands below.
+U2. Configure this machine once (source and runtime may be the same checkout):
+      overwatch sync source <source-checkout> --ref <git-ref> --runtime <shared-checkout>
+    This writes ~/.overwatch/source.json. Existing projects retain recorded sources.
+U3. From each project, inspect, migrate and verify through the same core:
+      overwatch sync check
+      overwatch sync migrate
+      overwatch sync verify
+    Conflicts/offline/dirty/claimed paths are reported and preserved. No reset,
+    stash, directory mirroring or replacement of custom project tools is allowed.
+    Future initialization/reconnection performs the same safe synchronization.
+U4. For a host that installs a package copy, use its supported update operation:
+      claude plugin update overwatch@overwatch --scope user
+    Update project-scope installations explicitly from their project directories.
+    Keep existing MCP definitions; merge only the Overwatch entry. Observe the
+    supported host reload/reconnect before claiming its loaded runtime is updated.
+U5. Report authoritative and installed commits, runtime provenance, migrations,
+    preserved extensions, verification and any deferred conflicts/reconnections.
 
 COMMON STEPS (every host)
 

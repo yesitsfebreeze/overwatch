@@ -1,0 +1,165 @@
+{
+  "format": 1,
+  "vaultSchemaVersion": 1,
+  "workflowVersion": 1,
+  "capabilities": [
+    "sync_check",
+    "sync_migrate",
+    "sync_verify",
+    "plan_show",
+    "guard_check",
+    "unit_claim",
+    "unit_load",
+    "unit_record",
+    "vault_status",
+    "sync_source"
+  ],
+  "runtimePaths": [
+    "hooks",
+    "host",
+    "bin",
+    "types",
+    "adapters",
+    ".claude-plugin",
+    "package.json",
+    "data/sync-manifest.json",
+    "data/shared",
+    ".codex-plugin",
+    ".cursor-plugin",
+    ".github/plugin",
+    "jev"
+  ],
+  "migrations": [
+    {
+      "version": 1,
+      "id": "shared-infrastructure-v1",
+      "files": [
+        {
+          "source": "data/vault/Home.md",
+          "path": ".overwatch/vault/Home.md",
+          "mode": "seed"
+        },
+        {
+          "source": "data/vault/00 Meta/Plan.md",
+          "path": ".overwatch/vault/00 Meta/Plan.md",
+          "mode": "seed"
+        },
+        {
+          "source": "data/vault/00 Meta/Dashboard.md",
+          "path": ".overwatch/vault/00 Meta/Dashboard.md",
+          "mode": "seed"
+        },
+        {
+          "source": "data/vault/00 Meta/PRDs.md",
+          "path": ".overwatch/vault/00 Meta/PRDs.md",
+          "mode": "seed"
+        },
+        {
+          "source": "data/vault/00 Meta/Spec Template.md",
+          "path": ".overwatch/vault/00 Meta/Spec Template.md",
+          "mode": "seed"
+        },
+        {
+          "source": "data/vault/00 Meta/PRD Template.md",
+          "path": ".overwatch/vault/00 Meta/PRD Template.md",
+          "mode": "seed"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/plan-view/main.js",
+          "path": ".overwatch/vault/.obsidian/plugins/plan-view/main.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/plan-view/manifest.json",
+          "path": ".overwatch/vault/.obsidian/plugins/plan-view/manifest.json",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/plan-view/styles.css",
+          "path": ".overwatch/vault/.obsidian/plugins/plan-view/styles.css",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/dataview/main.js",
+          "path": ".overwatch/vault/.obsidian/plugins/dataview/main.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/dataview/manifest.json",
+          "path": ".overwatch/vault/.obsidian/plugins/dataview/manifest.json",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/dataview/styles.css",
+          "path": ".overwatch/vault/.obsidian/plugins/dataview/styles.css",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/main.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/main.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/manifest.json",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/manifest.json",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/styles.css",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/styles.css",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/view.html",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/view.html",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/cube.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/cube.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/graph-core.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/graph-core.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/map-merge.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/map-merge.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/codenotes.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/codenotes.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/mapnotes.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/mapnotes.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/similar.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/similar.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/plugins/hotmap/server.js",
+          "path": ".overwatch/vault/.obsidian/plugins/hotmap/server.js",
+          "mode": "shared"
+        },
+        {
+          "source": "data/vault/.obsidian/community-plugins.json",
+          "path": ".overwatch/vault/.obsidian/community-plugins.json",
+          "mode": "merge-array"
+        },
+        {
+          "source": "data/shared/OVERWATCH.md",
+          "path": ".overwatch/shared/OVERWATCH.md",
+          "mode": "shared"
+        }
+      ]
+    }
+  ]
+}

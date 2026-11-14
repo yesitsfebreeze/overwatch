@@ -8,6 +8,7 @@ import { loadout } from "../hooks/loadout.ts"
 import { launch, launched } from "../hooks/launch.ts"
 import { checklist, index, mistake, mistakesPage, rate, report, scan, status } from "../hooks/surface.ts"
 import { fromNode } from "./node-io.ts"
+import { captureSyncRuntime, syncCheck, syncConfigure, syncMigrate, syncVerify } from "../hooks/sync.ts"
 import { serve } from "../host/mcp.ts"
 import { callTool } from "../host/core.ts"
 import { hook } from "../host/hooks.ts"
@@ -15,6 +16,10 @@ import { hook } from "../host/hooks.ts"
 const USAGE = `overwatch — the terminal side of the overwatch plugin (the same code its tools run)
 
   overwatch status                 git state, frozen checks, guard blocks, memory hogs
+  overwatch sync check|migrate|verify [--source <checkout>] [--ref <git-ref>] [--runtime <checkout>]
+                                   inspect, safely migrate or verify shared infrastructure
+  overwatch sync source <checkout> [--ref <git-ref>] [--runtime <checkout>]
+                                   configure the machine default for new projects
   overwatch scan                   discover this repo's checks and freeze them
   overwatch checks [tier]          the frozen checks plus the mistakes; tier is fast, unit or milestone
   overwatch mistakes [offset] [limit] [id]  exact pages of the complete mistake history
@@ -46,9 +51,28 @@ State: .overwatch/ in the working directory. Gitignore it as .overwatch/* plus !
 async function main(argv: string[]): Promise<{ text: string; code: number }> {
   const io = fromNode()
   const [act = "status", ...args] = argv
+  if (act === "sync") await captureSyncRuntime(io)
   const rest = args.join(" ")
   const ok = (text: string) => ({ text, code: 0 })
   switch (act) {
+    case "sync": {
+      const [mode, ...flags] = args
+      if (!["source", "check", "migrate", "verify"].includes(mode ?? "")) return { text: "usage: overwatch sync check|migrate|verify [--source <checkout>] [--ref <git-ref>]", code: 2 }
+      const options: { sourceRoot?: string; sourceRef?: string; runtimeRoot?: string } = {}
+      if (mode === "source") {
+        options.sourceRoot = flags.shift()
+        if (!options.sourceRoot || options.sourceRoot.startsWith("--")) return { text: "usage: overwatch sync source <checkout> [--ref <git-ref>] [--runtime <checkout>]", code: 2 }
+      }
+      for (let i = 0; i < flags.length; i += 2) {
+        const flag = flags[i], value = flags[i + 1]
+        if (!["--source", "--ref", "--runtime"].includes(flag!) || !value || value.startsWith("--")) return { text: "sync expects --source <checkout>, --ref <git-ref> or --runtime <checkout>", code: 2 }
+        const key = flag === "--source" ? "sourceRoot" : flag === "--runtime" ? "runtimeRoot" : "sourceRef"
+        if (options[key] !== undefined) return { text: "duplicate sync option: " + flag, code: 2 }
+        options[key] = value
+      }
+      const report = await (mode === "source" ? syncConfigure : mode === "check" ? syncCheck : mode === "migrate" ? syncMigrate : syncVerify)(io, options)
+      return { text: JSON.stringify(report), code: (mode === "source" || report.verification.ok) && ["current", "applied"].includes(report.status) ? 0 : 1 }
+    }
     case "status": return ok(await status(io))
     case "scan": return ok(await scan(io))
     case "vault":

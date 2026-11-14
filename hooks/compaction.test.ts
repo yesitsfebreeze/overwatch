@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing';
 import { session } from './test-session.ts'
-import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads, compactToolCall, compactHistory, register as configureCompaction } from './compaction.ts';
+import { slim, keepFrom, fileLists, cut, minify, minifyDeep, failureLine, fold, frozenEnd, FOLD_TAG, statusPayload, jevHeads, compactToolCall, compactHistory, projectToolResult, register as configureCompaction } from './compaction.ts';
 import { compact, resolveOptions } from '../jev/compact.ts';
 import { estimateTokens } from '../jev/state.ts';
 import { originalPage } from './paging.ts';
@@ -16,7 +16,8 @@ const stored = ($: any, on: any, files: Record<string, string>) => {
     const name = norm(e.path).replace('/h/.overwatch/context/sid/', '');
     return Object.hasOwn(files, name) ? { value: files[name] } : { deny: 'ENOENT' };
   });
-  return async (id: string) => $.tool.call({ tool: 'mcp__overwatch__decompress', id });
+  // An MCP result is text: a page arrives as its JSON.
+  return async (id: string) => { const r: any = await $.tool.call({ tool: 'mcp__overwatch__decompress', id }); return r.isError ? r : { ...r, result: JSON.parse(r.result) }; };
 };
 
 /** One user prompt, then 20 Bash calls of 4000 chars each with their results. */
@@ -464,4 +465,13 @@ test('an answered Jev call appends one dataset line; a failed log write still fo
   const failing = await jevHeads($(async () => { throw new Error('disk full'); }), region, { preserveRecentMessages: 0 }, out);
   expect(out.jev).toBe('jev');
   expect(failing.size).toBe(heads.size);
+});
+
+test('a large built-in result keeps its object shape when cut', () => {
+  const r = { result: { stdout: Array.from({ length: 5000 }, (_, i) => `line ${i}`).join('\n'), stderr: 'warn', interrupted: false } };
+  const p = projectToolResult('Bash', 'toolu_shape', r, 2000);
+  expect(typeof p.response.result).toBe('object');
+  expect(p.response.result.interrupted).toBe(false);
+  expect(p.response.result.stdout).toContain('overwatch cut');
+  expect(JSON.stringify(p.response.result).length).toBeLessThanOrEqual(2000);
 });

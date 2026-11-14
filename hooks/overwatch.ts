@@ -9,6 +9,10 @@ import { PLAN_TOOLS } from "./plan.ts"
 import { VAULT_TOOLS } from "./vault.ts"
 import { CHANGELOG_TOOLS } from "./changelog.ts"
 import { planReminder, register as plan, startPlan } from "./plan-hooks.ts"
+import { syncAutomatic, syncNotice } from "./sync.ts"
+
+let syncHint = ""
+const takeSyncHint = () => { const hint = syncHint; syncHint = ""; return hint }
 
 // The plugin's one hooks module. Each part (followline, compaction, commands, plan)
 // registers its own hooks, all matched or on an event of its own. The engine takes one
@@ -43,6 +47,7 @@ async function takeDiskNotice($: any, full: number): Promise<string> {
 // and `session.start`, which re-declares every tool (catalog.ts).
 export const register: Register = async (on, options) => {
   hinted = false
+  syncHint = ""
   diskAt = 0
   diskTold = false
   const compacting = compactionEnabled(options)
@@ -60,7 +65,10 @@ export const register: Register = async (on, options) => {
   // result also carries the gardener's ask when the disk filled up mid-turn.
   on("tool.call", async ($, e, next) => {
     countCall(e as any)
-    const r: any = await (compacting ? compactToolCall($, e, next as any) : next(e))
+    let r: any = await (compacting ? compactToolCall($, e, next as any) : next(e))
+    // An MCP result is text or content blocks; overwatch's paged tools build objects.
+    if (String((e as any).tool).startsWith(TOOL_PREFIX) && r?.result && typeof r.result === "object" && !Array.isArray(r.result))
+      r = { ...r, result: JSON.stringify(r.result) }
     const notice = (e as any).agentId || r?.deny !== undefined ? "" : await takeDiskNotice($, full)
     return notice ? { ...r, context: [...(r?.context ?? []), notice] } : r
   })
@@ -73,7 +81,7 @@ export const register: Register = async (on, options) => {
 
   // Beside every prompt: the one-off notices, then the plan.
   on("prompt.submit", async ($, e: any, next) => {
-    const parts = await Promise.all([takeIgnoreHint($), takeDiskNotice($, full), takeNotice($), takeEvaluation($), planReminder($, e)])
+    const parts = await Promise.all([takeSyncHint(), takeIgnoreHint($), takeDiskNotice($, full), takeNotice($), takeEvaluation($), planReminder($, e)])
     return next({ ...e, context: [...(e.context ?? []), ...parts.filter(Boolean)] })
   })
 
@@ -82,7 +90,7 @@ export const register: Register = async (on, options) => {
   await plan(on, options)
 
   on("session.start", async ($, e, next) => {
-    await Promise.all([declareCatalog($, cat), startPlan($, e)])
+    await Promise.all([declareCatalog($, cat), startPlan($, e), sessionIo($).then((at) => syncAutomatic(at, { reason: "session.start" })).then((r) => { syncHint = syncNotice(r) }, (err) => { syncHint = "[overwatch] synchronization failed: " + String(err?.message ?? err) })])
     return next(e)
   })
 }

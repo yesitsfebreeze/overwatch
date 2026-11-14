@@ -2,7 +2,7 @@ import { test, expect } from "claude-code/testing"
 import { session } from "./test-session.ts"
 import { engineRun, resetShellArgv, type Runner } from "./io.ts"
 import { makeGuard } from "./guards.ts"
-import { CLEAN, EMPTY, FRESH, PLAN_TOOLS, checkReport, runAutoChecks, runCheck, runPicked, stopVerdict, tool, withDecided } from "./plan.ts"
+import { CLEAN, EMPTY, FRESH, PLAN_TOOLS, checkReport, runAutoChecks, runCheck, runChecks, runPicked, stopVerdict, tool, withDecided } from "./plan.ts"
 import type { Guard } from "../types/index.d.ts"
 
 const guard: Guard = { id: "probe", question: "Does the probe pass?", check: "guard-probe" }
@@ -25,6 +25,26 @@ test("guard budgets default to 60s, accept long checks and reject invalid settin
   expect(budgets).toHaveLength(2)
   expect(makeGuard([], guard.question, undefined, undefined, undefined, 120000)).toContain("only applies")
   expect(PLAN_TOOLS.guard_add.properties!.check).toBeDefined()
+})
+
+test("checks run at once, and a note check borrows its plan guard's budget", async () => {
+  resetShellArgv()
+  let running = 0, most = 0
+  const budgets: [string, number][] = []
+  const run: Runner = async (argv, init) => {
+    const check = argv.at(-1)!
+    if (!check.startsWith("seq-")) return { code: 0, stdout: "", stderr: "" }
+    running++; most = Math.max(most, running)
+    budgets.push([check, init!.timeoutMs!])
+    await new Promise((r) => setTimeout(r, 5))
+    running--
+    return { code: 0, stdout: "", stderr: "" }
+  }
+  const slow: Guard = { id: "slow", question: "Does the slow check pass?", check: "seq-slow", timeout_ms: 600000 }
+  await runChecks(run, ["seq-slow", "seq-fast"], undefined, [slow])
+  await runAutoChecks(run, [slow, { ...guard, check: "seq-other" }])
+  expect(most).toBe(2)
+  expect(budgets.slice(0, 2)).toEqual([["seq-slow", 600000], ["seq-fast", 60000]])
 })
 
 test("timed-out guards remain unmet without automatic retries; explicit checks update and recover", async () => {
