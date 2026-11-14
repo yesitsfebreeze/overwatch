@@ -83,16 +83,23 @@ export const runCheck = async (run: Runner, g: Guard, cwd?: string): Promise<Gua
   return r.timedOut ? { ...result, last: { ...result.last, timedOut: true, timeout_ms: timeout } } : result
 }
 
+/** Checks run at once; a project whose build replaces a binary its tests run snapshots that binary itself. */
+const inParallel = <T>(items: T[], f: (item: T) => Promise<Guard> | Guard): Promise<Guard[]> => Promise.all(items.map(f))
+
 /** Timeouts remain unmet but do not launch another process until an explicit guard_check. */
 export const runAutoChecks = (run: Runner, guards: Guard[], cwd?: string): Promise<Guard[]> =>
-  Promise.all(guards.filter((g) => g.check).map((g) => g.last?.timedOut ? { ...g, met: false } : runCheck(run, g, cwd)))
+  inParallel(guards.filter((g) => g.check), (g) => g.last?.timedOut ? { ...g, met: false } : runCheck(run, g, cwd))
 
 /**
  * One outcome per check command, run from `cwd`. The guard objects are throwaway: a note's checks
- * are not plan guards, so only the command and its `met` matter.
+ * are not plan guards, so only the command and its `met` matter; a plan guard with the same command
+ * lends its timeout_ms.
  */
-export const runChecks = (run: Runner, checks: string[], cwd?: string): Promise<Guard[]> =>
-  Promise.all(checks.map((check) => runCheck(run, { id: check, question: `Does \`${check}\` pass?`, check, met: false }, cwd)))
+export const runChecks = (run: Runner, checks: string[], cwd?: string, guards: Guard[] = []): Promise<Guard[]> =>
+  inParallel(checks, (check) => {
+    const timeout_ms = guards.find((g) => g.check === check)?.timeout_ms
+    return runCheck(run, { id: check, question: `Does \`${check}\` pass?`, check, met: false, ...(timeout_ms ? { timeout_ms } : {}) }, cwd)
+  })
 
 /** The plan with the decided guards written back by id, onto whatever it holds now. */
 export const withDecided = (s: Plan, decided: Guard[]): Plan => {
@@ -125,7 +132,7 @@ export async function runPicked(s: Plan, guard_id: unknown, tier: unknown, run: 
     const valid = checkTimeout(g.timeout_ms)
     if (typeof valid === "string") return `${g.id}: ${valid}; set timeout_ms on guard_check to correct it`
   }
-  const decided = await Promise.all(selected.map((g) => runCheck(run, g, cwd)))
+  const decided = await inParallel(selected, (g) => runCheck(run, g, cwd))
   return { decided, report: checkReport(decided) }
 }
 

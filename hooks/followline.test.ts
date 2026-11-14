@@ -41,7 +41,6 @@ session("a producer's put draws the line above the prompt", { plugins: [producer
   on("turn.complete", async () => ({ text: "" }))
   on("clock.after", async () => ({ value: { cancel() {} } }) as any)
   on("session.usage", async () => ({ value: { context: { tokens: 0 } } }) as any)
-  on("ui.render", async () => null as any)
   await $.turn.complete({ turnId: "t1", answer: "", reason: "end_turn" } as any)
   const tree = JSON.stringify(await $.ui.render({ surface: "terminal", component: "AbovePrompt", props: { hasSurvey: false, bodyColumns: 80 } } as any))
   for (const t of [":D", " kern ", " plan ", "80%", "100%"]) expect(tree).toContain(t)

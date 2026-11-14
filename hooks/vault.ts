@@ -140,7 +140,14 @@ export async function writePlan(io: Io): Promise<{ data: PlanData; wrote: string
 /** vault_plan: writes the projections and reports the waves. */
 export async function vaultPlan(io: Io): Promise<string> {
   const { data, wrote } = await writePlan(io)
-  return planReport(data, wrote)
+  return planReport(data, wrote) + (await hint(io))
+}
+
+/** The first line of .overwatch/hint.txt, a project tool's advisory line (Mosaic writes Jev
+ * rankings there). Shown after vault_plan and unit_next; it never reorders or holds a unit. */
+async function hint(io: Io): Promise<string> {
+  const line = ((await io.read(state(io, "hint.txt"))) ?? "").split(/\r?\n/)[0].trim()
+  return line ? `\nhint (advisory): ${line}` : ""
 }
 // --- scaffold and unit notes ---
 
@@ -345,7 +352,7 @@ export async function unitRecord(io: Io, s: Plan, e: { summary?: unknown; limita
   // The unit's checks are re-run from the commands unit_load kept, so a plan whose guards were
   // dropped or re-added still cannot record the unit without them passing.
   const checks = [...new Set([...(unit.checks ?? []), ...spec.checks])]
-  const decided = await runChecks(io.run, checks, io.cwd)
+  const decided = await runChecks(io.run, checks, io.cwd, s.guards)
   // The plan's guards learn the outcome when their command is one of the unit's checks.
   const decidedPlan: Plan = { ...s, guards: s.guards.map((g) => decided.find((d) => d.check === g.check) ?? g) }
   const failing = decided.filter((g) => !g.met)
@@ -416,7 +423,8 @@ export async function unitNext(io: Io, s: Plan, e: { owner?: unknown }): Promise
   }
   const spec = findSpec(io, specs, ready[0].name)
   if (typeof spec === "string") return refuse(s, spec)
-  return loadUnit(io, s, spec, specs, data, owner)
+  const r = await loadUnit(io, s, spec, specs, data, owner)
+  return r.warn ? r : { ...r, text: r.text + (await hint(io)) }
 }
 
 type Evidence = {

@@ -60,7 +60,10 @@ export const register: Register = async (on, options) => {
   // result also carries the gardener's ask when the disk filled up mid-turn.
   on("tool.call", async ($, e, next) => {
     countCall(e as any)
-    const r: any = await (compacting ? compactToolCall($, e, next as any) : next(e))
+    let r: any = await (compacting ? compactToolCall($, e, next as any) : next(e))
+    // An MCP result is text or content blocks; overwatch's paged tools build objects.
+    if (String((e as any).tool).startsWith(TOOL_PREFIX) && r?.result && typeof r.result === "object" && !Array.isArray(r.result))
+      r = { ...r, result: JSON.stringify(r.result) }
     const notice = (e as any).agentId || r?.deny !== undefined ? "" : await takeDiskNotice($, full)
     return notice ? { ...r, context: [...(r?.context ?? []), notice] } : r
   })

@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing"
 import type { Plan } from "../types/index.d.ts"
 import { memIo, type Runner } from "./io.ts"
 import { EMPTY } from "./plan.ts"
-import { claimStale, closeNote, computePlan, frontmatter, parseSpec, patchFrontmatter, planItems, PLAN_DATA, PLAN_TASKS, serialize, tickItems, unitClaim, unitLoad, unitNew, unitNext, unitRecord, unitRelease, unitVerify, vaultInit, vaultStatus } from "./vault.ts"
+import { claimStale, closeNote, computePlan, frontmatter, parseSpec, patchFrontmatter, planItems, PLAN_DATA, PLAN_TASKS, serialize, tickItems, unitClaim, unitLoad, unitNew, unitNext, unitRecord, unitRelease, unitVerify, vaultInit, vaultPlan, vaultStatus } from "./vault.ts"
 
 const V = "/p/.overwatch/vault"
 const TEMPLATE = "---\ntitle: {{title}}\ncategory:\nstatus: target\nupdated: {{date}}\n---\n\n# {{title}}\n\n## Summary\n\nOne paragraph.\n\n## Plan\n\n- [ ] placeholder\n\n## Status\n\nNothing yet.\n\n## Open questions\n\n-\n"
@@ -236,6 +236,15 @@ test("evidence: unit_record writes a run, unit_verify compares it with HEAD, rer
   expect((await unitVerify(x, EMPTY, { unit: "A" })).text).toContain("stale")
   expect((await unitVerify(x, EMPTY, { unit: "A", rerun: true })).text).toContain("upheld")
   expect(frontmatter(x.files[`${V}/01 Specs/A.md`]).fields.owner).toBeUndefined()
+})
+
+test("vault_plan and unit_next show the first line of .overwatch/hint.txt; a refusal does not", async () => {
+  const x = io({ ...spec("A", ""), "/p/.overwatch/hint.txt": "jev: 3 untested\nsecond line\n" })
+  expect(await vaultPlan(x)).toEndWith("\nhint (advisory): jev: 3 untested")
+  const next = await unitNext(x, EMPTY, { owner: "d@1" })
+  expect(next.text).toEndWith("\nhint (advisory): jev: 3 untested")
+  expect((await unitNext(x, next.state, { owner: "e@1" })).text).not.toContain("hint")
+  expect(await vaultPlan(io(spec("A", "")))).not.toContain("hint")
 })
 
 test("unit_next loads the first startable unit and vault_status lists claims and readiness", async () => {
